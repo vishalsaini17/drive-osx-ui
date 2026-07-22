@@ -5,9 +5,9 @@ export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '/api/v1').rep
 
 export interface RegisterPayload {
   username: string;
-  passwordHash: string; // The UI sends password as plain text/hash, let's map it cleanly
-  fullName: string;
-  email: string;
+  passwordHash: string;
+  firstName: string;
+  lastName: string;
   recoveryEmail?: string;
   mobile?: string;
 }
@@ -77,20 +77,19 @@ class ApiServiceClass {
   async register(payload: {
     username: string;
     passwordHash: string;
-    fullName: string;
-    email: string;
+    firstName: string;
+    lastName: string;
     recoveryEmail?: string;
     mobile?: string;
   }): Promise<{ success: boolean; message: string; data?: any }> {
     try {
-      // API expects { username, password, fullName, email, recoveryEmail, mobile }
       const body = {
         username: payload.username,
-        password: payload.passwordHash, // Maps passwordHash from UI state to password
-        fullName: payload.fullName,
-        email: payload.email,
-        recoveryEmail: payload.recoveryEmail || `${payload.username}@gmail.com`,
-        mobile: payload.mobile || '919876543210'
+        password: payload.passwordHash,
+        firstName: payload.firstName,
+        lastName: payload.lastName,
+        recoveryEmail: payload.recoveryEmail?.trim() || undefined,
+        mobile: payload.mobile?.trim() || undefined
       };
 
       const response = await fetch(`${API_BASE_URL}/register`, {

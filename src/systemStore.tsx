@@ -37,7 +37,7 @@ interface SystemState {
   usersList: User[];
   isAuthenticated: boolean;
   login: (username: string, passwordHash: string) => Promise<boolean>;
-  signup: (username: string, fullName: string, passwordHash: string, avatarUrl: string, email?: string) => Promise<{ success: boolean; message: string }>;
+  signup: (payload: { username: string; firstName: string; lastName: string; passwordHash: string; avatarUrl: string; recoveryEmail?: string; mobile?: string }) => Promise<{ success: boolean; message: string }>;
   logout: () => void;
   
   // Actions
@@ -148,20 +148,26 @@ export const useSystemStore = create<SystemState>((set, get) => ({
     return false;
   },
 
-  signup: async (username, fullName, passwordHash, avatarUrl, email) => {
+  signup: async ({ username, firstName, lastName, passwordHash, avatarUrl, recoveryEmail, mobile }) => {
     const { usersList, playClickSound } = get();
     playClickSound();
-    if (!username.trim() || !fullName.trim() || !passwordHash.trim()) {
-      return { success: false, message: 'Please fill in all fields.' };
+    if (!username.trim() || !firstName.trim() || !lastName.trim() || !passwordHash.trim()) {
+      return { success: false, message: 'Username, first name, last name, and password are required.' };
+    }
+    if (!recoveryEmail?.trim() && !mobile?.trim()) {
+      return { success: false, message: 'Provide a recovery email or recovery phone.' };
     }
 
+    const fullName = `${firstName.trim()} ${lastName.trim()}`;
+
     // 1. Attempt API Registration
-    const resolvedEmail = email || `${username.toLowerCase()}@example.com`;
     const apiResult = await ApiService.register({
       username,
       passwordHash,
-      fullName,
-      email: resolvedEmail,
+      firstName,
+      lastName,
+      recoveryEmail,
+      mobile,
     });
 
     if (apiResult.success) {
@@ -171,7 +177,9 @@ export const useSystemStore = create<SystemState>((set, get) => ({
         fullName, 
         passwordHash, 
         avatarUrl,
-        email: resolvedEmail,
+        email: recoveryEmail,
+        recoveryEmail,
+        mobile,
       };
       const updatedUsers = [...usersList.filter(u => u.username.toLowerCase() !== username.toLowerCase()), newUser];
       StorageService.set('webos-users-list', updatedUsers);
@@ -179,24 +187,7 @@ export const useSystemStore = create<SystemState>((set, get) => ({
       return { success: true, message: apiResult.message || 'Account created successfully!' };
     }
 
-    // 2. Check if the error is a local collision first, or if we fallback to local signup because the server is offline/unreachable.
-    const isNetworkError = apiResult.message?.toLowerCase().includes('failed to fetch') || 
-                          apiResult.message?.toLowerCase().includes('network') ||
-                          apiResult.message?.toLowerCase().includes('error occurred during registration');
-                          
-    if (isNetworkError) {
-      const exists = usersList.some(u => u.username.toLowerCase() === username.toLowerCase());
-      if (exists) {
-        return { success: false, message: 'Username is already taken.' };
-      }
-      const newUser: User = { username, fullName, passwordHash, avatarUrl, email: resolvedEmail };
-      const updatedUsers = [...usersList, newUser];
-      StorageService.set('webos-users-list', updatedUsers);
-      set({ usersList: updatedUsers });
-      return { success: true, message: 'Server is currently offline. Account created locally!' };
-    }
-
-    // If it's a real API failure (e.g. username taken), return the API error message
+    // Registration only succeeds when the API confirms the username is unique.
     return { success: false, message: apiResult.message };
   },
 
@@ -356,9 +347,12 @@ export const useSystemStore = create<SystemState>((set, get) => ({
     get().playClickSound();
     set((state) => {
       const updated = state.windows.map(w => w.id === id ? { ...w, isOpen: false } : w);
+      const nextActiveWindow = updated
+        .filter(w => w.isOpen && !w.isMinimized)
+        .sort((a, b) => b.zIndex - a.zIndex)[0];
       return {
         windows: updated,
-        activeWindowId: state.activeWindowId === id ? null : state.activeWindowId
+        activeWindowId: state.activeWindowId === id ? nextActiveWindow?.id || null : state.activeWindowId
       };
     });
   },
@@ -367,9 +361,12 @@ export const useSystemStore = create<SystemState>((set, get) => ({
     get().playClickSound();
     set((state) => {
       const updated = state.windows.map(w => w.id === id ? { ...w, isMinimized: true } : w);
+      const nextActiveWindow = updated
+        .filter(w => w.isOpen && !w.isMinimized)
+        .sort((a, b) => b.zIndex - a.zIndex)[0];
       return {
         windows: updated,
-        activeWindowId: state.activeWindowId === id ? null : state.activeWindowId
+        activeWindowId: state.activeWindowId === id ? nextActiveWindow?.id || null : state.activeWindowId
       };
     });
   },

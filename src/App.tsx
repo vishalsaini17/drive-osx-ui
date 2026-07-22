@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import Wallpaper from './components/Wallpaper';
 import Dock from './components/Dock';
@@ -22,6 +22,7 @@ import ResetPasswordScreen from './components/ResetPasswordScreen';
 
 // Import Zustand Store
 import { useSystemStore, getAppIcon } from './systemStore';
+import { AppRegistry } from './core/AppRegistry';
 
 export default function App() {
   const initializeStore = useSystemStore((state) => state.initializeStore);
@@ -39,12 +40,8 @@ export default function App() {
   // Handle global auth-based redirects
   useEffect(() => {
     if (isAuthenticated) {
-      if (location.pathname === '/login' || location.pathname === '/register' || location.pathname === '/') {
-        navigate('/desktop');
-      }
-    } else {
-      if (location.pathname === '/desktop' || location.pathname === '/') {
-        navigate('/login');
+      if (location.pathname === '/login' || location.pathname === '/register') {
+        navigate('/');
       }
     }
   }, [isAuthenticated, location.pathname, navigate]);
@@ -59,17 +56,10 @@ export default function App() {
         <Route path="/register" element={<LoginScreen />} />
         <Route path="/forgot-password" element={<ForgotPasswordScreen />} />
         <Route path="/reset-password" element={<ResetPasswordScreen />} />
-        <Route 
-          path="/desktop" 
-          element={
-            isAuthenticated ? (
-              <DesktopLayout />
-            ) : (
-              <Navigate to="/login" replace />
-            )
-          } 
-        />
-        <Route path="*" element={<Navigate to={isAuthenticated ? "/desktop" : "/login"} replace />} />
+        <Route path="/desktop" element={<Navigate to="/" replace />} />
+        <Route path="/" element={isAuthenticated ? <DesktopLayout /> : <Navigate to="/login" replace />} />
+        <Route path="/:appRoute" element={isAuthenticated ? <DesktopLayout /> : <Navigate to="/login" replace />} />
+        <Route path="*" element={<Navigate to={isAuthenticated ? "/" : "/login"} replace />} />
       </Routes>
     </main>
   );
@@ -79,6 +69,40 @@ function DesktopLayout() {
   const settings = useSystemStore((state) => state.settings);
   const windows = useSystemStore((state) => state.windows);
   const toggleWindow = useSystemStore((state) => state.toggleWindow);
+  const activeWindowId = useSystemStore((state) => state.activeWindowId);
+  const openAppWindow = useSystemStore((state) => state.openAppWindow);
+  const navigate = useNavigate();
+  const location = useLocation();
+  const routeOpeningApp = useRef<string | null>(null);
+
+  useEffect(() => {
+    const appId = AppRegistry.getAppIdForPath(location.pathname);
+
+    if (!appId) {
+      if (location.pathname !== '/') {
+        navigate('/', { replace: true });
+      }
+      return;
+    }
+
+    if (activeWindowId !== appId) {
+      routeOpeningApp.current = appId;
+      openAppWindow(appId);
+    } else {
+      routeOpeningApp.current = null;
+    }
+  }, [activeWindowId, location.pathname, navigate, openAppWindow]);
+
+  useEffect(() => {
+    if (routeOpeningApp.current) {
+      return;
+    }
+
+    const activePath = activeWindowId ? AppRegistry.getPathForApp(activeWindowId) : '/';
+    if (activePath && location.pathname !== activePath) {
+      navigate(activePath, { replace: true });
+    }
+  }, [activeWindowId, location.pathname, navigate]);
 
   return (
     <>

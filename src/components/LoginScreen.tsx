@@ -59,9 +59,9 @@ export default function LoginScreen() {
   
   // Signup fields
   const [signupUser, setSignupUser] = useState<string>('');
-  const [signupName, setSignupName] = useState<string>('');
+  const [signupFirstName, setSignupFirstName] = useState<string>('');
+  const [signupLastName, setSignupLastName] = useState<string>('');
   const [signupPass, setSignupPass] = useState<string>('');
-  const [signupEmail, setSignupEmail] = useState<string>('');
   const [signupRecoveryEmail, setSignupRecoveryEmail] = useState<string>('');
   const [signupMobile, setSignupMobile] = useState<string>('');
   const [signupAvatar, setSignupAvatar] = useState<number>(0);
@@ -120,8 +120,13 @@ export default function LoginScreen() {
     setErrorMsg('');
     setSuccessMsg('');
 
-    if (!signupUser.trim() || !signupName.trim() || !signupPass.trim() || !signupEmail.trim()) {
-      setErrorMsg('Please fill in all required fields (Username, Full Name, Email, Password).');
+    if (!signupUser.trim() || !signupFirstName.trim() || !signupLastName.trim() || !signupPass.trim()) {
+      setErrorMsg('Username, first name, last name, and password are required.');
+      return;
+    }
+
+    if (!signupRecoveryEmail.trim() && !signupMobile.trim()) {
+      setErrorMsg('Provide a recovery email or recovery phone.');
       return;
     }
 
@@ -130,13 +135,15 @@ export default function LoginScreen() {
       const selectedPreset = AVATAR_PRESETS[signupAvatar];
       const avatarStr = selectedPreset.emoji;
 
-      const result = await signup(
-        signupUser, 
-        signupName, 
-        signupPass, 
-        avatarStr, 
-        signupEmail
-      );
+      const result = await signup({
+        username: signupUser,
+        firstName: signupFirstName,
+        lastName: signupLastName,
+        passwordHash: signupPass,
+        avatarUrl: avatarStr,
+        recoveryEmail: signupRecoveryEmail,
+        mobile: signupMobile,
+      });
       setIsLoading(false);
 
       if (result.success) {
@@ -146,9 +153,9 @@ export default function LoginScreen() {
         setLoginPass('');
         // Clear signup fields
         setSignupUser('');
-        setSignupName('');
+        setSignupFirstName('');
+        setSignupLastName('');
         setSignupPass('');
-        setSignupEmail('');
         setSignupRecoveryEmail('');
         setSignupMobile('');
         // Switch view to login
@@ -408,34 +415,19 @@ export default function LoginScreen() {
                     onSubmit={handleSignupSubmit}
                     className="space-y-3.5"
                   >
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-[10px] font-bold uppercase tracking-wider text-white/40 mb-1 ml-1">Username *</label>
-                        <div className="relative">
-                          <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-white/30">
-                            <User size={13} />
-                          </span>
-                          <input
-                            type="text"
-                            value={signupUser}
-                            onChange={(e) => setSignupUser(e.target.value)}
-                            placeholder="john"
-                            disabled={isLoading}
-                            className="w-full bg-white/[0.03] border border-white/10 rounded-xl py-2 pl-8.5 pr-2.5 text-xs font-medium text-white placeholder-white/20 focus:outline-none focus:border-pink-500/50 focus:bg-white/[0.05] transition-all"
-                            required
-                          />
-                        </div>
-                      </div>
-
-                      <div>
-                        <label className="block text-[10px] font-bold uppercase tracking-wider text-white/40 mb-1 ml-1">Full Name *</label>
+                    <div>
+                      <label className="block text-[10px] font-bold uppercase tracking-wider text-white/40 mb-1 ml-1">Username *</label>
+                      <div className="relative">
+                        <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-white/30">
+                          <User size={13} />
+                        </span>
                         <input
                           type="text"
-                          value={signupName}
-                          onChange={(e) => setSignupName(e.target.value)}
-                          placeholder="John Doe"
+                          value={signupUser}
+                          onChange={(e) => setSignupUser(e.target.value)}
+                          placeholder="john"
                           disabled={isLoading}
-                          className="w-full bg-white/[0.03] border border-white/10 rounded-xl py-2 px-3 text-xs font-medium text-white placeholder-white/20 focus:outline-none focus:border-pink-500/50 focus:bg-white/[0.05] transition-all"
+                          className="w-full bg-white/[0.03] border border-white/10 rounded-xl py-2 pl-8.5 pr-2.5 text-xs font-medium text-white placeholder-white/20 focus:outline-none focus:border-pink-500/50 focus:bg-white/[0.05] transition-all"
                           required
                         />
                       </div>
@@ -443,24 +435,33 @@ export default function LoginScreen() {
 
                     <div className="grid grid-cols-2 gap-3">
                       <div>
-                        <label className="block text-[10px] font-bold uppercase tracking-wider text-white/40 mb-1 ml-1">Email Address *</label>
-                        <div className="relative">
-                          <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-white/30">
-                            <Mail size={13} />
-                          </span>
-                          <input
-                            type="email"
-                            value={signupEmail}
-                            onChange={(e) => setSignupEmail(e.target.value)}
-                            placeholder="john.doe@example.com"
-                            disabled={isLoading}
-                            className="w-full bg-white/[0.03] border border-white/10 rounded-xl py-2 pl-8.5 pr-2.5 text-xs font-medium text-white placeholder-white/20 focus:outline-none focus:border-pink-500/50 focus:bg-white/[0.05] transition-all"
-                            required
-                          />
-                        </div>
+                        <label className="block text-[10px] font-bold uppercase tracking-wider text-white/40 mb-1 ml-1">First Name *</label>
+                        <input
+                          type="text"
+                          value={signupFirstName}
+                          onChange={(e) => setSignupFirstName(e.target.value)}
+                          placeholder="John"
+                          disabled={isLoading}
+                          className="w-full bg-white/[0.03] border border-white/10 rounded-xl py-2 px-3 text-xs font-medium text-white placeholder-white/20 focus:outline-none focus:border-pink-500/50 focus:bg-white/[0.05] transition-all"
+                          required
+                        />
                       </div>
 
                       <div>
+                        <label className="block text-[10px] font-bold uppercase tracking-wider text-white/40 mb-1 ml-1">Last Name *</label>
+                        <input
+                          type="text"
+                          value={signupLastName}
+                          onChange={(e) => setSignupLastName(e.target.value)}
+                          placeholder="Doe"
+                          disabled={isLoading}
+                          className="w-full bg-white/[0.03] border border-white/10 rounded-xl py-2 px-3 text-xs font-medium text-white placeholder-white/20 focus:outline-none focus:border-pink-500/50 focus:bg-white/[0.05] transition-all"
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div>
                         <label className="block text-[10px] font-bold uppercase tracking-wider text-white/40 mb-1 ml-1">Password *</label>
                         <div className="relative">
                           <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-white/30">
@@ -487,7 +488,6 @@ export default function LoginScreen() {
                           </button>
                         </div>
                       </div>
-                    </div>
 
                     <div className="grid grid-cols-2 gap-3">
                       <div>

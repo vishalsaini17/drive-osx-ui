@@ -287,6 +287,19 @@ const registry: Record<string, AppRegistryEntry> = {
   }
 };
 
+const appRoutes: Record<string, string> = {
+  launcher: 'apps',
+  browser: 'browser',
+  terminal: 'terminal',
+  fileManager: 'folder',
+  settings: 'settings',
+  messenger: 'messenger',
+  clock: 'clock',
+  editor: 'editor',
+  paint: 'paint',
+  trash: 'trash',
+};
+
 export const AppRegistry = {
   getAppIds(): string[] {
     return Object.keys(registry);
@@ -302,6 +315,16 @@ export const AppRegistry = {
 
   getAppComponent(id: string): React.ComponentType<any> | undefined {
     return registry[id]?.component;
+  },
+
+  getPathForApp(id: string): string | undefined {
+    const route = appRoutes[id];
+    return route ? `/${route}` : undefined;
+  },
+
+  getAppIdForPath(pathname: string): string | undefined {
+    const route = pathname.replace(/^\//, '').replace(/\/$/, '');
+    return Object.entries(appRoutes).find(([, value]) => value === route)?.[0];
   },
 
   getAppIcon(id: string, className?: string): React.ReactNode {
