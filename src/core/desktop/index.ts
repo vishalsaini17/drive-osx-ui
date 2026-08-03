@@ -1,0 +1,2 @@
+// desktop core module
+export {};

@@ -1,13 +1,17 @@
 import React from 'react';
 import { create } from 'zustand';
-import { WindowState, FileItem, ChatMessage, SystemSettings, User } from './types';
+import { WindowState, FileItem, ChatMessage, SystemSettings, User, WorldCity, DEFAULT_WORLD_CITIES, CalendarEvent } from './types';
 import { AppRegistry } from './core/AppRegistry';
 import { StorageService } from './services/StorageService';
 import { ApiService } from './services/ApiService';
 
 const defaultFiles: FileItem[] = [
   { id: 'folder-documents', name: 'Documents', type: 'folder', parentId: null, createdAt: '10.07.2023' },
+  { id: 'folder-downloads', name: 'Downloads', type: 'folder', parentId: null, createdAt: '10.07.2023' },
+  { id: 'folder-projects', name: 'Projects', type: 'folder', parentId: null, createdAt: '10.07.2023' },
   { id: 'folder-pictures', name: 'Pictures', type: 'folder', parentId: null, createdAt: '10.07.2023' },
+  { id: 'folder-videos', name: 'Videos', type: 'folder', parentId: null, createdAt: '10.07.2023' },
+  { id: 'folder-music', name: 'Music', type: 'folder', parentId: null, createdAt: '10.07.2023' },
   { id: 'folder-system', name: 'System', type: 'folder', parentId: null, createdAt: '10.07.2023' },
   { id: 'file-readme', name: 'readme.txt', type: 'file', content: 'Welcome to Drive OSX v1.0!\n\nThis operating system is built entirely with React, Tailwind CSS, and Motion.\n\nDouble-click text files to open them in the Text Editor. Click and drag windows to reposition, or use corners to resize!\n\nTry writing files and saving them back to the disk.', parentId: 'folder-documents', createdAt: '10.07.2023' },
   { id: 'file-todo', name: 'todo.txt', type: 'file', content: '==== TODO LIST ====\n- Learn React 19 typing specifications\n- Change system wallpaper to Sunset Glow\n- Empty the trash bin\n- Export a beautiful drawing from Paint App', parentId: 'folder-documents', createdAt: '10.07.2023' },
@@ -36,13 +40,31 @@ interface SystemState {
   currentUser: User | null;
   usersList: User[];
   isAuthenticated: boolean;
+  updateCurrentUser: (updatedUser: Partial<User>) => void;
   login: (username: string, passwordHash: string) => Promise<boolean>;
   signup: (payload: { username: string; firstName: string; lastName: string; passwordHash: string; avatarUrl: string; recoveryEmail?: string; mobile?: string }) => Promise<{ success: boolean; message: string }>;
   logout: () => void;
   
+  // World Clocks state & actions
+  worldCities: WorldCity[];
+  addWorldCity: (city: WorldCity) => void;
+  removeWorldCity: (id: string) => void;
+  clockAppShowAddCity: boolean;
+  openClockAppToAddCity: () => void;
+  resetClockAppShowAddCity: () => void;
+
+  // Calendar Events state & actions
+  calendarEvents: CalendarEvent[];
+  addCalendarEvent: (event: Omit<CalendarEvent, 'id'>) => void;
+  updateCalendarEvent: (id: string, updated: Partial<CalendarEvent>) => void;
+  deleteCalendarEvent: (id: string) => void;
+  setCalendarEvents: (events: CalendarEvent[]) => void;
+
   // Actions
   initializeStore: () => void;
   setSettings: (updater: SystemSettings | ((prev: SystemSettings) => SystemSettings)) => void;
+  updateAppPreference: (appId: string, prefKey: string, value: any) => void;
+  resetAppPreferences: (appId: string) => void;
   setCurrentDesktop: (desktop: number) => void;
   focusWindow: (id: string) => void;
   toggleWindow: (id: string) => void;
@@ -60,6 +82,7 @@ interface SystemState {
   setFiles: (updater: FileItem[] | ((prev: FileItem[]) => FileItem[])) => void;
   playClickSound: () => void;
   openAppWindow: (id: string) => void;
+  clampWindowsToViewport: () => void;
 }
 
 export const useSystemStore = create<SystemState>((set, get) => ({
@@ -72,6 +95,25 @@ export const useSystemStore = create<SystemState>((set, get) => ({
     volume: 75,
     wifiStatus: 'connected',
     fontFamily: 'Poppins',
+    accentColor: '#8b5cf6', // Purple
+    iconSize: 'md',
+    desktopIcons: { trash: true, files: true, settings: true, terminal: true, paint: true, browser: true, calculator: true, spreadsheet: true, presentation: true, 'pdf-viewer': true },
+    dockPosition: 'bottom',
+    dockAutohide: false,
+    dockMagnification: true,
+    taskbarPosition: 'top',
+    clockFormat: '12h',
+    showBattery: true,
+    showWifiInTaskbar: true,
+    notificationsEnabled: true,
+    dndEnabled: false,
+    notificationSound: 'Chime',
+    notificationPriority: 'all',
+    defaultApps: { browser: 'browser', editor: 'editor', terminal: 'terminal', calendar: 'calendar', paint: 'paint' },
+    zoomLevel: 100,
+    fontScaling: 100,
+    twoFactorEnabled: false,
+    storageLimitGB: 16,
   },
   currentDesktop: 1,
   maxZIndex: 100,
@@ -191,6 +233,17 @@ export const useSystemStore = create<SystemState>((set, get) => ({
     return { success: false, message: apiResult.message };
   },
 
+  updateCurrentUser: (updatedUser: Partial<User>) => {
+    set((state) => {
+      if (!state.currentUser) return state;
+      const nextUser = { ...state.currentUser, ...updatedUser };
+      StorageService.set('webos-current-user', nextUser);
+      const updatedList = state.usersList.map((u) => u.username === nextUser.username ? nextUser : u);
+      StorageService.set('webos-users-list', updatedList);
+      return { currentUser: nextUser, usersList: updatedList };
+    });
+  },
+
   logout: () => {
     const { playClickSound } = get();
     playClickSound();
@@ -199,12 +252,139 @@ export const useSystemStore = create<SystemState>((set, get) => ({
     set({ currentUser: null, isAuthenticated: false });
   },
 
+  worldCities: DEFAULT_WORLD_CITIES,
+  clockAppShowAddCity: false,
+
+  addWorldCity: (city) => {
+    set((state) => {
+      if (state.worldCities.some((c) => c.name.toLowerCase() === city.name.toLowerCase())) {
+        return state;
+      }
+      const updated = [...state.worldCities, city];
+      StorageService.set('webos-world-cities', updated);
+      return { worldCities: updated };
+    });
+  },
+
+  removeWorldCity: (id) => {
+    set((state) => {
+      const updated = state.worldCities.filter((c) => c.id !== id);
+      StorageService.set('webos-world-cities', updated);
+      return { worldCities: updated };
+    });
+  },
+
+  openClockAppToAddCity: () => {
+    const { openAppWindow } = get();
+    openAppWindow('clock');
+    set({ clockAppShowAddCity: true });
+  },
+
+  resetClockAppShowAddCity: () => {
+    set({ clockAppShowAddCity: false });
+  },
+
+  calendarEvents: [],
+
+  addCalendarEvent: (evt) => {
+    const newEvt: CalendarEvent = {
+      ...evt,
+      id: `evt-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+    };
+    set((state) => {
+      const updated = [...state.calendarEvents, newEvt];
+      StorageService.set('webos-calendar-events', updated);
+      return { calendarEvents: updated };
+    });
+  },
+
+  updateCalendarEvent: (id, updatedFields) => {
+    set((state) => {
+      const updated = state.calendarEvents.map((e) =>
+        e.id === id ? { ...e, ...updatedFields } : e
+      );
+      StorageService.set('webos-calendar-events', updated);
+      return { calendarEvents: updated };
+    });
+  },
+
+  deleteCalendarEvent: (id) => {
+    set((state) => {
+      const updated = state.calendarEvents.filter((e) => e.id !== id);
+      StorageService.set('webos-calendar-events', updated);
+      return { calendarEvents: updated };
+    });
+  },
+
+  setCalendarEvents: (events) => {
+    StorageService.set('webos-calendar-events', events);
+    set({ calendarEvents: events });
+  },
+
   initializeStore: () => {
     const savedFiles = StorageService.get<FileItem[] | null>('webos-files', null);
     const savedTrash = StorageService.get<FileItem[] | null>('webos-trash', null);
     const savedSettings = StorageService.get<Partial<SystemSettings> | null>('webos-settings', null);
     const savedCurrentUser = StorageService.get<User | null>('webos-current-user', null);
     const savedUsersList = StorageService.get<User[] | null>('webos-users-list', null);
+    const savedWorldCities = StorageService.get<WorldCity[] | null>('webos-world-cities', null);
+    const savedEvents = StorageService.get<CalendarEvent[] | null>('webos-calendar-events', null);
+
+    const todayISO = new Date().toISOString().split('T')[0];
+    const defaultEvents: CalendarEvent[] = [
+      {
+        id: 'evt-1',
+        title: 'Team Sync & Project Review',
+        date: todayISO,
+        time: '10:00 AM',
+        endTime: '11:00 AM',
+        category: 'Work',
+        description: 'Review system design & upcoming sprints with team leads.',
+        location: 'OSX Meet Virtual Room',
+        attendees: [
+          { email: 'alex@driveosx.com', name: 'Alex Johnson', status: 'accepted' },
+          { email: 'sarah@driveosx.com', name: 'Sarah Miller', status: 'pending' },
+          { email: 'dev@driveosx.com', name: 'Dev Team', status: 'accepted' },
+        ],
+        meetingLink: 'https://meet.driveosx.com/room-teamsync',
+        recurrence: 'weekly',
+        reminder: '15m',
+        timezone: 'America/New_York',
+      },
+      {
+        id: 'evt-2',
+        title: 'Lunch with Alex',
+        date: todayISO,
+        time: '01:00 PM',
+        endTime: '02:00 PM',
+        category: 'Personal',
+        description: 'Bistro Cafe on 5th Avenue',
+        location: 'Bistro Cafe',
+        attendees: [{ email: 'alex@driveosx.com', name: 'Alex Johnson', status: 'accepted' }],
+        recurrence: 'none',
+        reminder: '30m',
+        timezone: 'America/New_York',
+      },
+      {
+        id: 'evt-3',
+        title: 'Weekly Sprint Planning',
+        date: todayISO,
+        time: '03:00 PM',
+        endTime: '04:00 PM',
+        category: 'Work',
+        description: 'Backlog refinement and task allocation.',
+        location: 'HQ Conference Room A',
+        attendees: [{ email: 'pm@driveosx.com', name: 'Product Manager', status: 'accepted' }],
+        meetingLink: 'https://meet.driveosx.com/room-sprintplan',
+        recurrence: 'weekly',
+        reminder: '1h',
+        timezone: 'UTC',
+      },
+    ];
+    const finalEvents = savedEvents !== null ? savedEvents : defaultEvents;
+    if (savedEvents === null) {
+      StorageService.set('webos-calendar-events', defaultEvents);
+    }
 
     const defaultUser: User = {
       username: 'admin',
@@ -220,34 +400,38 @@ export const useSystemStore = create<SystemState>((set, get) => ({
 
     set((state) => {
       const nextSettings = savedSettings ? { ...state.settings, ...savedSettings } : state.settings;
-      const nextFiles = savedFiles ? savedFiles : defaultFiles;
+      const cleanedSavedFiles = savedFiles ? savedFiles.filter((f) => f.id !== 'volume-511gb' && f.id !== 'data-disk' && !f.name.includes('511 GB') && !f.name.includes('Data Disk')) : null;
+      const nextFiles = cleanedSavedFiles ? cleanedSavedFiles : defaultFiles;
       const nextTrash = savedTrash ? savedTrash : [];
-      const isAuth = !!savedCurrentUser;
+      const userToUse = savedCurrentUser || defaultUser;
+      const rawWorldCities = savedWorldCities && savedWorldCities.length > 0 ? savedWorldCities : DEFAULT_WORLD_CITIES;
+      const nextWorldCities = rawWorldCities.filter(
+        (c) => !c.isCurrentLocation && c.desc !== 'Current location' && c.id !== 'delhi'
+      );
 
       if (!savedFiles) {
         StorageService.set('webos-files', defaultFiles);
       }
 
-      let finalMessages = state.messages;
-      if (savedCurrentUser) {
-        finalMessages = [
-          {
-            id: 'msg-init',
-            sender: 'assistant',
-            text: `👋 Welcome back, ${savedCurrentUser.fullName}! I am OS Caption, your AI-guided operating system assistant.\n\nI can execute actual desktop commands on your system! Try asking me:\n\n👉 "change wallpaper to sunset"\n👉 "open the terminal"\n👉 "mute volume"\n👉 "open paint"\n\nHow can I automate your system today?`,
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          }
-        ];
-      }
+      const finalMessages: ChatMessage[] = [
+        {
+          id: 'msg-init',
+          sender: 'assistant',
+          text: `👋 Welcome back, ${userToUse.fullName}! I am OS Caption, your AI-guided operating system assistant.\n\nI can execute actual desktop commands on your system! Try asking me:\n\n👉 "change wallpaper to sunset"\n👉 "open the terminal"\n👉 "mute volume"\n👉 "open paint"\n\nHow can I automate your system today?`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        }
+      ];
 
       return {
         settings: nextSettings,
         files: nextFiles,
         deletedFiles: nextTrash,
-        currentUser: savedCurrentUser,
+        currentUser: userToUse,
         usersList: finalUsersList,
-        isAuthenticated: isAuth,
+        isAuthenticated: true,
         messages: finalMessages,
+        worldCities: nextWorldCities,
+        calendarEvents: finalEvents,
       };
     });
   },
@@ -255,6 +439,37 @@ export const useSystemStore = create<SystemState>((set, get) => ({
   setSettings: (updater) => {
     set((state) => {
       const nextSettings = typeof updater === 'function' ? updater(state.settings) : updater;
+      StorageService.set('webos-settings', nextSettings);
+      return { settings: nextSettings };
+    });
+  },
+
+  updateAppPreference: (appId, prefKey, value) => {
+    set((state) => {
+      const currentAppPrefs = state.settings.appPreferences?.[appId] || {};
+      const nextSettings: SystemSettings = {
+        ...state.settings,
+        appPreferences: {
+          ...state.settings.appPreferences,
+          [appId]: {
+            ...currentAppPrefs,
+            [prefKey]: value,
+          },
+        },
+      };
+      StorageService.set('webos-settings', nextSettings);
+      return { settings: nextSettings };
+    });
+  },
+
+  resetAppPreferences: (appId) => {
+    set((state) => {
+      const newAppPrefs = { ...state.settings.appPreferences };
+      delete newAppPrefs[appId];
+      const nextSettings: SystemSettings = {
+        ...state.settings,
+        appPreferences: newAppPrefs,
+      };
       StorageService.set('webos-settings', nextSettings);
       return { settings: nextSettings };
     });
@@ -288,6 +503,10 @@ export const useSystemStore = create<SystemState>((set, get) => ({
   },
 
   focusWindow: (id) => {
+    if (!id) {
+      set({ activeWindowId: null });
+      return;
+    }
     get().playClickSound();
     set((state) => {
       const nextZ = state.maxZIndex + 1;
@@ -321,7 +540,10 @@ export const useSystemStore = create<SystemState>((set, get) => ({
             activeId = id;
             return { ...w, isMinimized: false, zIndex: state.maxZIndex + 1 };
           } else if (state.activeWindowId === id) {
-            activeId = null;
+            const remaining = state.windows
+              .filter(w => w.id !== id && w.isOpen && !w.isMinimized)
+              .sort((a, b) => b.zIndex - a.zIndex)[0];
+            activeId = remaining?.id || null;
             return { ...w, isMinimized: true };
           } else {
             activeId = id;
@@ -346,13 +568,35 @@ export const useSystemStore = create<SystemState>((set, get) => ({
   handleCloseWindow: (id) => {
     get().playClickSound();
     set((state) => {
-      const updated = state.windows.map(w => w.id === id ? { ...w, isOpen: false } : w);
-      const nextActiveWindow = updated
-        .filter(w => w.isOpen && !w.isMinimized)
-        .sort((a, b) => b.zIndex - a.zIndex)[0];
+      let updated = state.windows.map(w => w.id === id ? { ...w, isOpen: false } : w);
+
+      const openWindows = updated.filter(w => w.isOpen);
+      let nextActiveId: string | null = null;
+
+      if (openWindows.length > 0) {
+        let topApp = openWindows
+          .filter(w => !w.isMinimized)
+          .sort((a, b) => b.zIndex - a.zIndex)[0];
+
+        // If all remaining open windows were minimized, pick the top one and unminimize it so user focuses another app
+        if (!topApp) {
+          topApp = openWindows.sort((a, b) => b.zIndex - a.zIndex)[0];
+          if (topApp) {
+            updated = updated.map(w => w.id === topApp.id ? { ...w, isMinimized: false } : w);
+          }
+        }
+
+        if (topApp) {
+          nextActiveId = topApp.id;
+        }
+      }
+
+      const activeApp = updated.find(w => w.id === state.activeWindowId);
+      const isCurrentActiveClosed = !activeApp || !activeApp.isOpen || state.activeWindowId === id;
+
       return {
         windows: updated,
-        activeWindowId: state.activeWindowId === id ? nextActiveWindow?.id || null : state.activeWindowId
+        activeWindowId: isCurrentActiveClosed ? nextActiveId : state.activeWindowId
       };
     });
   },
@@ -361,12 +605,18 @@ export const useSystemStore = create<SystemState>((set, get) => ({
     get().playClickSound();
     set((state) => {
       const updated = state.windows.map(w => w.id === id ? { ...w, isMinimized: true } : w);
-      const nextActiveWindow = updated
-        .filter(w => w.isOpen && !w.isMinimized)
-        .sort((a, b) => b.zIndex - a.zIndex)[0];
+      let nextActiveId = state.activeWindowId;
+
+      if (state.activeWindowId === id) {
+        const topUnminimized = updated
+          .filter(w => w.isOpen && !w.isMinimized)
+          .sort((a, b) => b.zIndex - a.zIndex)[0];
+        nextActiveId = topUnminimized?.id || null;
+      }
+
       return {
         windows: updated,
-        activeWindowId: state.activeWindowId === id ? nextActiveWindow?.id || null : state.activeWindowId
+        activeWindowId: nextActiveId
       };
     });
   },
@@ -395,10 +645,74 @@ export const useSystemStore = create<SystemState>((set, get) => ({
 
   openAppWindow: (id) => {
     set((state) => {
-      const updated = state.windows.map(w => w.id === id ? { ...w, isOpen: true, isMinimized: false } : w);
+      const manifest = AppRegistry.getAppManifest(id);
+      const updated = state.windows.map(w => {
+        if (w.id === id) {
+          const reqMinW = manifest?.defaultWindow.minW ?? w.minW;
+          const reqMinH = manifest?.defaultWindow.minH ?? w.minH;
+          const reqW = manifest?.defaultWindow.w ?? w.w;
+          const reqH = manifest?.defaultWindow.h ?? w.h;
+
+          const finalMinW = Math.max(w.minW, reqMinW);
+          const finalMinH = Math.max(w.minH, reqMinH);
+          const finalW = Math.max(w.w, reqW, finalMinW);
+          const finalH = Math.max(w.h, reqH, finalMinH);
+
+          return { 
+            ...w, 
+            isOpen: true, 
+            isMinimized: false,
+            minW: finalMinW,
+            minH: finalMinH,
+            w: finalW,
+            h: finalH,
+          };
+        }
+        return w;
+      });
       return { windows: updated };
     });
     get().focusWindow(id);
+    get().clampWindowsToViewport();
+  },
+
+  clampWindowsToViewport: () => {
+    if (typeof window === 'undefined') return;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    set((state) => {
+      const dockD = state.settings.dockSize === 'sm' ? 52 : (state.settings.dockSize === 'lg' ? 92 : 78);
+      let changed = false;
+
+      const updated = state.windows.map((w) => {
+        if (!w.isOpen || w.isMaximized) return w;
+
+        const manifest = AppRegistry.getAppManifest(w.id);
+        const reqMinW = manifest?.defaultWindow.minW ?? w.minW;
+        const reqMinH = manifest?.defaultWindow.minH ?? w.minH;
+
+        const effectiveMinW = Math.max(w.minW, reqMinW);
+        const effectiveMinH = Math.max(w.minH, reqMinH);
+
+        const maxW = Math.max(effectiveMinW, vw);
+        const maxH = Math.max(effectiveMinH, vh - dockD);
+
+        let newW = Math.max(effectiveMinW, Math.min(w.w, maxW));
+        let newH = Math.max(effectiveMinH, Math.min(w.h, maxH));
+
+        let newX = Math.max(0, Math.min(w.x, vw - newW));
+        let newY = Math.max(0, Math.min(w.y, vh - dockD - newH));
+
+        if (newX !== w.x || newY !== w.y || newW !== w.w || newH !== w.h || effectiveMinW !== w.minW || effectiveMinH !== w.minH) {
+          changed = true;
+          return { ...w, x: newX, y: newY, w: newW, h: newH, minW: effectiveMinW, minH: effectiveMinH };
+        }
+        return w;
+      });
+
+      return changed ? { windows: updated } : state;
+    });
   },
 
   openTextFileInEditor: (fileId, name, content) => {

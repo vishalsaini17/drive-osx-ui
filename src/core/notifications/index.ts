@@ -1,0 +1,2 @@
+// notifications core module
+export {};

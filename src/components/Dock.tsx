@@ -16,7 +16,12 @@ import {
   Pin
 } from 'lucide-react';
 import { useSystemStore, getAppIcon } from '../systemStore';
+import { useContextMenuStore, ContextMenuItem } from '../services/contextMenuStore';
 import { StorageService } from '../services/StorageService';
+import CalendarClockPopup from './CalendarClockPopup';
+import SystemNotificationPopup from './SystemNotificationPopup';
+import ApplicationMenuPopup from './ApplicationMenuPopup';
+import MoreAppsPopup from './MoreAppsPopup';
 
 export default function Dock() {
   const [time, setTime] = useState<Date>(new Date());
@@ -28,6 +33,8 @@ export default function Dock() {
   const [isLoggedOut, setIsLoggedOut] = useState<boolean>(false);
   const [showMorePopup, setShowMorePopup] = useState<boolean>(false);
   const [windowWidth, setWindowWidth] = useState<number>(typeof window !== 'undefined' ? window.innerWidth : 1200);
+  const [windowHeight, setWindowHeight] = useState<number>(typeof window !== 'undefined' ? window.innerHeight : 800);
+  const [isCursorAtBottom, setIsCursorAtBottom] = useState<boolean>(false);
   
   const [dockAppOrder, setDockAppOrder] = useState<string[]>([]);
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -42,12 +49,100 @@ export default function Dock() {
   // Subscribing to central system store
   const windows = useSystemStore((state) => state.windows);
   const toggleWindow = useSystemStore((state) => state.toggleWindow);
+  const openAppWindow = useSystemStore((state) => state.openAppWindow);
+  const handleCloseWindow = useSystemStore((state) => state.handleCloseWindow);
+  const handleMinimizeWindow = useSystemStore((state) => state.handleMinimizeWindow);
   const activeWindowId = useSystemStore((state) => state.activeWindowId);
   const settings = useSystemStore((state) => state.settings);
   const setSettings = useSystemStore((state) => state.setSettings);
   const currentDesktop = useSystemStore((state) => state.currentDesktop);
   const currentUser = useSystemStore((state) => state.currentUser);
   const logout = useSystemStore((state) => state.logout);
+  const openContextMenu = useContextMenuStore((state) => state.openContextMenu);
+
+  const handleDockIconContextMenu = (e: React.MouseEvent, app: any) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const isPinnedApp = isPinned(app.id);
+    const isOpen = app.isOpen;
+
+    const items: ContextMenuItem[] = [
+      {
+        id: 'open',
+        label: isOpen ? `Show ${app.title}` : `Open ${app.title}`,
+        onClick: () => {
+          toggleWindow(app.id);
+        },
+      },
+      {
+        id: 'pin',
+        label: isPinnedApp ? 'Unpin from Dock' : 'Pin to Dock',
+        onClick: () => {
+          togglePin(app.id);
+        },
+      },
+      ...(isOpen ? [
+        { divider: true },
+        {
+          id: 'minimize',
+          label: 'Minimize Window',
+          onClick: () => {
+            handleMinimizeWindow(app.id);
+          },
+        },
+        {
+          id: 'close',
+          label: 'Quit / Close',
+          danger: true,
+          onClick: () => {
+            handleCloseWindow(app.id);
+          },
+        },
+      ] : []),
+      { divider: true },
+      {
+        id: 'settings',
+        label: 'System Settings',
+        onClick: () => {
+          openAppWindow('settings');
+        },
+      },
+    ];
+
+    openContextMenu(e, items, app.title);
+  };
+
+  const handleDockBarContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const items: ContextMenuItem[] = [
+      {
+        id: 'size-sm',
+        label: `Small Dock ${dockSize === 'sm' ? '✓' : ''}`,
+        onClick: () => setSettings((prev) => ({ ...prev, dockSize: 'sm' })),
+      },
+      {
+        id: 'size-md',
+        label: `Medium Dock ${dockSize === 'md' ? '✓' : ''}`,
+        onClick: () => setSettings((prev) => ({ ...prev, dockSize: 'md' })),
+      },
+      {
+        id: 'size-lg',
+        label: `Large Dock ${dockSize === 'lg' ? '✓' : ''}`,
+        onClick: () => setSettings((prev) => ({ ...prev, dockSize: 'lg' })),
+      },
+      { divider: true },
+      {
+        id: 'settings',
+        label: 'System Settings...',
+        onClick: () => openAppWindow('settings'),
+      },
+    ];
+
+    openContextMenu(e, items, 'Dock Options');
+  };
 
   const dockSize = settings.dockSize || 'md';
 
@@ -64,17 +159,34 @@ export default function Dock() {
     const otherAppIds = windows.filter(w => w.id !== 'launcher').map(w => w.id);
     const savedPinned = StorageService.get<string[] | null>('dock-pinned-apps', null);
     if (savedPinned) {
-      setPinnedAppIds(savedPinned);
+      let mergedPinned = savedPinned;
+      if (!mergedPinned.includes('calendar')) mergedPinned = [...mergedPinned, 'calendar'];
+      if (!mergedPinned.includes('meeting')) mergedPinned = [...mergedPinned, 'meeting'];
+      if (!mergedPinned.includes('mail')) mergedPinned = [...mergedPinned, 'mail'];
+      setPinnedAppIds(mergedPinned);
+      if (mergedPinned.length !== savedPinned.length) {
+        StorageService.set('dock-pinned-apps', mergedPinned);
+      }
     } else if (otherAppIds.length > 0) {
       setPinnedAppIds(otherAppIds);
       StorageService.set('dock-pinned-apps', otherAppIds);
     }
+
+    const handlePinsUpdated = () => {
+      const updatedPinned = StorageService.get<string[] | null>('dock-pinned-apps', null);
+      if (updatedPinned) {
+        setPinnedAppIds(updatedPinned);
+      }
+    };
+    window.addEventListener('dock-pins-updated', handlePinsUpdated);
+    return () => window.removeEventListener('dock-pins-updated', handlePinsUpdated);
   }, [windows]);
 
   const togglePin = (id: string) => {
     setPinnedAppIds(prev => {
       const next = prev.includes(id) ? prev.filter(pId => pId !== id) : [...prev, id];
       StorageService.set('dock-pinned-apps', next);
+      window.dispatchEvent(new Event('dock-pins-updated'));
       return next;
     });
   };
@@ -130,14 +242,29 @@ export default function Dock() {
     
     const handleResize = () => {
       setWindowWidth(window.innerWidth);
+      setWindowHeight(window.innerHeight);
     };
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const dockHeightFromBottom = dockSize === 'sm' ? 60 : (dockSize === 'lg' ? 95 : 82);
+      
+      // Reveal dock when cursor is within 10px from bottom edge
+      if (e.clientY >= window.innerHeight - 10) {
+        setIsCursorAtBottom(true);
+      } else if (e.clientY < window.innerHeight - (dockHeightFromBottom + 15)) {
+        setIsCursorAtBottom(false);
+      }
+    };
+
     window.addEventListener('resize', handleResize);
+    window.addEventListener('mousemove', handleMouseMove);
     
     return () => {
       clearInterval(interval);
       window.removeEventListener('resize', handleResize);
+      window.removeEventListener('mousemove', handleMouseMove);
     };
-  }, []);
+  }, [dockSize]);
 
   const formatTime = (date: Date) => {
     const hours = String(date.getHours()).padStart(2, '0');
@@ -263,133 +390,68 @@ export default function Dock() {
 
   const draggableApps = visibleApps.filter(app => app.id !== 'launcher');
 
+  const dockHeightFromBottom = dockSize === 'sm' ? 60 : (dockSize === 'lg' ? 95 : 82);
+
+  const isDockOverlapped = windows.some((w) => {
+    if (w.id === 'launcher' || !w.isOpen || w.isMinimized) return false;
+    if (w.isMaximized) return true;
+    const windowBottom = w.y + w.h;
+    const dockZoneTop = windowHeight - dockHeightFromBottom;
+    return windowBottom > dockZoneTop;
+  });
+
+  const shouldHideDock =
+    isDockOverlapped &&
+    !isCursorAtBottom &&
+    !showAppDirectoryPopup &&
+    !showMorePopup &&
+    !showPopup &&
+    !showRightPopup;
+
   return (
-    <div className={`absolute ${activeSizes.bottom} left-0 right-0 flex items-center justify-center z-[999] pointer-events-none select-none ${activeSizes.outerGap}`}>
+    <>
+      {/* Invisible bottom hover trigger zone (10px from bottom) for auto-revealing floating dock */}
+      <div
+        id="dock-hover-trigger-zone"
+        className="fixed bottom-0 left-0 right-0 h-[10px] z-[998] pointer-events-auto"
+        onMouseEnter={() => setIsCursorAtBottom(true)}
+      />
+
+      <motion.div
+        id="desktop-dock-container"
+        initial={false}
+        animate={{
+          y: shouldHideDock ? 110 : 0,
+          opacity: shouldHideDock ? 0 : 1,
+        }}
+        transition={{
+          type: 'spring',
+          stiffness: 280,
+          damping: 26,
+        }}
+        onMouseEnter={() => setIsCursorAtBottom(true)}
+        className={`absolute ${activeSizes.bottom} left-0 right-0 flex items-center justify-center z-[999] pointer-events-none select-none ${activeSizes.outerGap}`}
+      >
       {/* 1. Main Icon Bar Pill Wrapper */}
       <div className="relative">
         <AnimatePresence>
           {showAppDirectoryPopup && (
-            <>
-              {/* Invisible Click-away backdrop */}
-              <div 
-                className="fixed inset-0 z-[990] cursor-default pointer-events-auto" 
-                onClick={() => setShowAppDirectoryPopup(false)} 
-              />
-              
-              {/* App Directory Popup - WIDER AND EXPANDED GRID AS REQUESTED */}
-              <motion.div
-                id="dock-app-directory-panel"
-                initial={{ opacity: 0, y: 15, scale: 0.95 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: 15, scale: 0.95 }}
-                transition={{ type: "spring", damping: 20, stiffness: 220 }}
-                className="absolute bottom-[84px] left-0 w-[520px] bg-[#beb2e9] rounded-[28px] p-5.5 shadow-[0_15px_35px_rgba(33,22,37,0.22)] flex flex-col gap-4.5 border border-white/30 z-[999] pointer-events-auto"
-              >
-                {/* Search Bar */}
-                <div className="relative w-full">
-                  <Search className="absolute left-4 top-3.5 w-4.5 h-4.5 text-black/55" />
-                  <input
-                    type="text"
-                    placeholder="Search apps..."
-                    value={appSearchQuery}
-                    onChange={(e) => setAppSearchQuery(e.target.value)}
-                    className="w-full bg-white/45 border border-white/25 rounded-2xl py-3 pl-11 pr-4 text-sm font-bold text-black placeholder-black/50 focus:outline-none focus:ring-2 focus:ring-purple-600/40 transition-shadow duration-200"
-                  />
-                </div>
-
-                {/* Grid of Apps - 5 COLUMNS WITH INCREASED HEIGHT */}
-                <div className="grid grid-cols-5 gap-3.5 max-h-[480px] overflow-y-auto pr-1 custom-scrollbar">
-                  {otherAppsSorted.filter(app => app.title.toLowerCase().includes(appSearchQuery.toLowerCase())).map((app) => (
-                    <button
-                      key={app.id}
-                      onClick={() => {
-                        toggleWindow(app.id);
-                        setShowAppDirectoryPopup(false);
-                      }}
-                      className="relative flex flex-col items-center justify-center p-2 pt-4 pb-2 rounded-[20px] bg-white/20 hover:bg-white/40 border border-white/15 hover:border-white/30 hover:scale-[1.03] active:scale-[0.97] transition-all duration-200 cursor-pointer text-center group focus:outline-none"
-                      title={`Open ${app.title}`}
-                    >
-                      {/* Pin/Unpin Toggle Button */}
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          togglePin(app.id);
-                        }}
-                        className="absolute top-1.5 right-1.5 p-1 rounded-full bg-black/5 hover:bg-black/15 text-black/60 hover:text-black hover:scale-110 active:scale-95 transition-all z-20"
-                        title={isPinned(app.id) ? "Unpin from Dock" : "Pin to Dock"}
-                      >
-                        <Pin size={11} className={isPinned(app.id) ? "fill-black text-black" : "text-black/35"} />
-                      </button>
-
-                      {/* Unified App Icon Source of Truth */}
-                      <div className="w-10 h-10 flex items-center justify-center rounded-2xl mb-1.5 shadow-sm group-hover:scale-105 transition-transform shrink-0">
-                        {getAppIcon(app.id, 'w-full h-full')}
-                      </div>
-                      <span className="text-[9px] font-bold text-black/85 tracking-tight leading-tight break-words w-full px-0.5">
-                        {app.title.replace("System ", "").replace("Web ", "")}
-                      </span>
-                    </button>
-                  ))}
-                  {otherAppsSorted.filter(app => app.title.toLowerCase().includes(appSearchQuery.toLowerCase())).length === 0 && (
-                    <div className="col-span-5 py-10 text-center text-black/55 text-xs font-bold select-none">
-                      No matching apps found.
-                    </div>
-                  )}
-                </div>
-              </motion.div>
-            </>
+            <ApplicationMenuPopup
+              onClose={() => setShowAppDirectoryPopup(false)}
+              apps={windows}
+              toggleWindow={toggleWindow}
+              pinnedAppIds={pinnedAppIds}
+              togglePin={togglePin}
+              isPinned={isPinned}
+            />
           )}
+
           {showMorePopup && (
-            <>
-              {/* Invisible Click-away backdrop */}
-              <div 
-                className="fixed inset-0 z-[990] cursor-default pointer-events-auto" 
-                onClick={() => setShowMorePopup(false)} 
-              />
-              
-              {/* More Apps Dropup Panel */}
-              <motion.div
-                id="dock-more-apps-panel"
-                initial={{ opacity: 0, y: 15, scale: 0.95 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: 15, scale: 0.95 }}
-                transition={{ type: "spring", damping: 20, stiffness: 220 }}
-                className="absolute bottom-[84px] right-0 bg-[#beb2e9] rounded-[24px] p-4 shadow-[0_15px_35px_rgba(33,22,37,0.22)] flex flex-col gap-3 border border-white/30 z-[999] pointer-events-auto w-[250px]"
-              >
-                <div className="text-[10px] font-extrabold text-black/55 tracking-wider uppercase mb-1 px-1">More Apps</div>
-                <div className="grid grid-cols-3 gap-2.5">
-                  {overflowApps.map((app) => {
-                    const isActive = app.isOpen;
-                    return (
-                      <button
-                        key={app.id}
-                        onClick={() => {
-                          toggleWindow(app.id);
-                          setShowMorePopup(false);
-                          setShowAppDirectoryPopup(false);
-                          setShowPopup(false);
-                          setShowRightPopup(false);
-                        }}
-                        className="flex flex-col items-center justify-center p-2 rounded-xl bg-white/25 hover:bg-white/45 border border-white/10 hover:border-white/20 hover:scale-[1.05] active:scale-[0.95] transition-all duration-200 cursor-pointer text-center relative group focus:outline-none"
-                        title={`Open ${app.title}`}
-                      >
-                        <div className="w-8.5 h-8.5 flex items-center justify-center rounded-xl mb-1 shrink-0">
-                          {getAppIcon(app.id, 'w-full h-full')}
-                        </div>
-                        <span className="text-[8px] font-bold text-black/85 tracking-tight leading-tight truncate w-full">
-                          {app.title.replace("System ", "").replace("Web ", "")}
-                        </span>
-                        
-                        {/* Running Status Dot */}
-                        {isActive && (
-                          <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-white rounded-full shadow-[0_0_4px_rgba(255,255,255,0.9)]" />
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              </motion.div>
-            </>
+            <MoreAppsPopup
+              onClose={() => setShowMorePopup(false)}
+              overflowApps={overflowApps}
+              toggleWindow={toggleWindow}
+            />
           )}
         </AnimatePresence>
         
@@ -397,6 +459,7 @@ export default function Dock() {
         <div 
           id="dock-apps-pill"
           className={`pointer-events-auto flex items-center justify-center bg-[#7b6db5] border border-white/20 rounded-2xl shadow-xl shadow-purple-950/10 transition-all duration-300 ${activeSizes.dock}`}
+          onContextMenu={handleDockBarContextMenu}
         >
           {/* Launcher / App Directory (Fixed & Separated on the left side) */}
           {launcherApp && (
@@ -409,6 +472,7 @@ export default function Dock() {
                   setShowRightPopup(false);
                   setShowMorePopup(false);
                 }}
+                onContextMenu={(e) => handleDockIconContextMenu(e, launcherApp)}
                 whileHover={{ scale: 1.16, y: -6 }}
                 whileTap={{ scale: 0.92 }}
                 className={`cursor-pointer relative flex items-center justify-center ${activeSizes.icon} ${
@@ -439,8 +503,8 @@ export default function Dock() {
                   isDragging ? 'opacity-30' : ''
                 }`}
                 draggable
-                onDragStart={(e) => handleDragStart(e, app.id)}
-                onDragOver={(e) => handleDragOver(e, app.id)}
+                onDragStart={(e: any) => handleDragStart(e, app.id)}
+                onDragOver={(e: any) => handleDragOver(e, app.id)}
                 onDragEnd={handleDragEnd}
               >
                 <motion.button
@@ -452,6 +516,7 @@ export default function Dock() {
                     setShowPopup(false);
                     setShowRightPopup(false);
                   }}
+                  onContextMenu={(e) => handleDockIconContextMenu(e, app)}
                   whileHover={{ scale: 1.16, y: -6 }}
                   whileTap={{ scale: 0.92 }}
                   className={`cursor-pointer cursor-grab active:cursor-grabbing relative flex items-center justify-center ${activeSizes.icon}`}
@@ -499,184 +564,22 @@ export default function Dock() {
       <div className="relative">
         <AnimatePresence>
           {showPopup && (
-            <>
-              {/* Invisible Click-away backdrop */}
-              <div 
-                className="fixed inset-0 z-[990] cursor-default pointer-events-auto" 
-                onClick={() => setShowPopup(false)} 
-              />
-              
-              {/* Calendar & Clock Popup */}
-              <motion.div
-                id="dock-calendar-clock-panel"
-                initial={{ opacity: 0, y: 15, scale: 0.95 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: 15, scale: 0.95 }}
-                transition={{ type: "spring", damping: 20, stiffness: 220 }}
-                className="absolute bottom-[84px] left-0 -translate-x-[20%] w-[220px] bg-[#beb2e9] rounded-[28px] p-5 shadow-[0_15px_35px_rgba(33,22,37,0.22)] flex flex-col items-center justify-center border border-white/30 z-[999] pointer-events-auto"
-              >
-                {/* Large Display Time */}
-                <span className="text-[44px] font-bold tracking-tight text-black tabular-nums leading-none">
-                  {formatTime(time)}
-                </span>
-                
-                {/* Date */}
-                <span className="text-sm font-semibold text-black/80 tracking-wide mt-2 leading-none">
-                  {formatDate(time)}
-                </span>
-                
-                {/* Action Buttons Container */}
-                <div className="w-full flex flex-col gap-2.5 mt-5">
-                  <button
-                    onClick={() => {
-                      toggleWindow('clock');
-                      setShowPopup(false);
-                    }}
-                    className="w-full bg-white hover:bg-zinc-50 active:scale-[0.97] transition-all py-2.5 px-4 rounded-[14px] flex items-center justify-center gap-2 shadow-[0_2px_8px_rgba(0,0,0,0.06)] text-black font-bold text-xs select-none focus:outline-none cursor-pointer"
-                  >
-                    <Calendar size={15} className="text-black" strokeWidth={2.4} />
-                    <span>Calendar</span>
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      toggleWindow('settings');
-                      setShowPopup(false);
-                    }}
-                    className="w-full bg-white hover:bg-zinc-50 active:scale-[0.97] transition-all py-2.5 px-4 rounded-[14px] flex items-center justify-center gap-2 shadow-[0_2px_8px_rgba(0,0,0,0.06)] text-black font-bold text-xs select-none focus:outline-none cursor-pointer"
-                  >
-                    <SettingsIcon size={15} className="text-black" strokeWidth={2.4} />
-                    <span>Settings</span>
-                  </button>
-                </div>
-              </motion.div>
-            </>
+            <CalendarClockPopup
+              onClose={() => setShowPopup(false)}
+              time={time}
+            />
           )}
 
           {showRightPopup && (
-            <>
-              {/* Invisible Click-away backdrop */}
-              <div 
-                className="fixed inset-0 z-[990] cursor-default pointer-events-auto" 
-                onClick={() => setShowRightPopup(false)} 
-              />
-              
-              {/* Control Panel & Notifications Popup */}
-              <motion.div
-                id="dock-system-notifications-panel"
-                initial={{ opacity: 0, y: 15, scale: 0.95 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: 15, scale: 0.95 }}
-                transition={{ type: "spring", damping: 20, stiffness: 220 }}
-                className="absolute bottom-[84px] right-0 w-[270px] bg-[#beb2e9] rounded-[28px] p-4.5 shadow-[0_15px_35px_rgba(33,22,37,0.22)] flex flex-col gap-3.5 border border-white/30 z-[999] pointer-events-auto"
-              >
-                {/* 1. Notification Center (Top) */}
-                <div className="flex flex-col gap-1.5 bg-white/20 p-2.5 rounded-[18px] border border-white/15">
-                  <div className="flex items-center justify-between px-1 mb-1 select-none">
-                    <span className="text-[9px] font-bold text-black/60 tracking-wider">SYSTEM NOTIFICATIONS</span>
-                    {notifications.length > 0 && (
-                      <button 
-                        onClick={() => setNotifications([])}
-                        className="text-[9px] font-extrabold text-purple-950/60 hover:text-black transition-colors focus:outline-none cursor-pointer"
-                      >
-                        Clear All
-                      </button>
-                    )}
-                  </div>
-
-                  <div className="flex flex-col gap-1 max-h-[120px] overflow-y-auto pr-0.5 custom-scrollbar">
-                    {notifications.length > 0 ? (
-                      notifications.map(n => (
-                        <div key={n.id} className="bg-white/40 p-2 rounded-[12px] border border-white/15 flex items-start gap-1.5 group relative">
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center justify-between gap-1">
-                              <span className="text-[8px] font-bold text-purple-950/80 leading-none truncate">{n.sender}</span>
-                              <span className="text-[7px] text-purple-950/50 leading-none select-none">{n.time}</span>
-                            </div>
-                            <p className="text-[9px] text-black/80 font-medium leading-tight mt-1 truncate">{n.text}</p>
-                          </div>
-                          <button 
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setNotifications(prev => prev.filter(item => item.id !== n.id));
-                            }}
-                            className="p-0.5 hover:bg-black/10 rounded-full text-black/40 hover:text-black/80 transition-all opacity-0 group-hover:opacity-100 self-center focus:outline-none cursor-pointer"
-                            title="Dismiss Notification"
-                          >
-                            <X size={10} />
-                          </button>
-                        </div>
-                      ))
-                    ) : (
-                      <div className="flex flex-col items-center justify-center py-5 text-center select-none">
-                        <Check size={16} className="text-purple-950/40 mb-1" />
-                        <span className="text-[9px] font-extrabold text-purple-950/50">All caught up!</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* 3. Fast Control Toggles */}
-                <div className="grid grid-cols-2 gap-2">
-                  {/* Theme Toggle (Dark Mode) */}
-                  <button
-                    onClick={() => {
-                      setSettings(prev => ({
-                        ...prev,
-                        theme: prev.theme === 'modern-dark' ? 'classic-light' : 'modern-dark'
-                      }));
-                    }}
-                    className={`flex flex-col items-center justify-center p-2 rounded-[16px] border transition-all active:scale-95 text-center focus:outline-none select-none cursor-pointer ${
-                      settings.theme === 'modern-dark'
-                        ? 'bg-zinc-950/70 border-white/10 text-white'
-                        : 'bg-white border-white/40 text-black shadow-sm'
-                    }`}
-                  >
-                    {settings.theme === 'modern-dark' ? (
-                      <Moon size={15} className="mb-1 text-purple-400" />
-                    ) : (
-                      <Sun size={15} className="mb-1 text-amber-500" />
-                    )}
-                    <span className="text-[10px] font-bold leading-none">Dark Mode</span>
-                    <span className="text-[8px] opacity-65 mt-1 font-medium leading-none">
-                      {settings.theme === 'modern-dark' ? 'Enabled' : 'Disabled'}
-                    </span>
-                  </button>
-
-                  {/* Do Not Disturb (DND) */}
-                  <button
-                    onClick={() => setNotificationsMuted(!notificationsMuted)}
-                    className={`flex flex-col items-center justify-center p-2 rounded-[16px] border transition-all active:scale-95 text-center focus:outline-none select-none cursor-pointer ${
-                      notificationsMuted
-                        ? 'bg-zinc-950/70 border-white/10 text-white'
-                        : 'bg-white border-white/40 text-black shadow-sm'
-                    }`}
-                  >
-                    {notificationsMuted ? (
-                      <BellOff size={15} className="mb-1 text-zinc-400" />
-                    ) : (
-                      <Bell size={15} className="mb-1 text-purple-500 animate-bounce" />
-                    )}
-                    <span className="text-[10px] font-bold leading-none">Silent Mode</span>
-                    <span className="text-[8px] opacity-65 mt-1 font-medium leading-none">
-                      {notificationsMuted ? 'Muted' : 'Normal'}
-                    </span>
-                  </button>
-                </div>
-
-                {/* 4. Logout Session Action */}
-                <button
-                  onClick={() => {
-                    logout();
-                    setShowRightPopup(false);
-                  }}
-                  className="w-full bg-zinc-950/10 hover:bg-zinc-950/20 active:scale-[0.97] transition-all py-2 px-4 rounded-[14px] flex items-center justify-center gap-2 text-zinc-900 font-bold text-xs select-none focus:outline-none cursor-pointer"
-                >
-                  <LogOut size={13} strokeWidth={2.4} />
-                  <span>Logout {currentUser?.fullName || 'User'}</span>
-                </button>
-              </motion.div>
-            </>
+            <SystemNotificationPopup
+              onClose={() => setShowRightPopup(false)}
+              notifications={notifications}
+              setNotifications={setNotifications}
+              notificationsMuted={notificationsMuted}
+              setNotificationsMuted={setNotificationsMuted}
+              currentUser={currentUser}
+              logout={logout}
+            />
           )}
         </AnimatePresence>
 
@@ -736,6 +639,7 @@ export default function Dock() {
           </button>
         </div>
       </div>
-    </div>
-  );
+    </motion.div>
+  </>
+);
 }

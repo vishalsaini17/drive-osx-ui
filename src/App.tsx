@@ -1,20 +1,15 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import Wallpaper from './components/Wallpaper';
 import Dock from './components/Dock';
 import AppWindow from './components/AppWindow';
+import GlobalContextMenu from './components/GlobalContextMenu';
+import { useContextMenuStore, ContextMenuItem } from './services/contextMenuStore';
+import { StorageService } from './services/StorageService';
+import { FolderPlus, FileText, Terminal as TerminalIcon, Image, RefreshCw, Settings as SettingsIcon, LogOut, ExternalLink, Info, Pin, Monitor } from 'lucide-react';
 
-// Import apps
-import AppLauncher from './components/apps/AppLauncher';
-import WebBrowser from './components/apps/WebBrowser';
-import Terminal from './components/apps/Terminal';
-import FileManager from './components/apps/FileManager';
-import Settings from './components/apps/Settings';
-import Messenger from './components/apps/Messenger';
-import ClockApp from './components/apps/ClockApp';
-import TextEditor from './components/apps/TextEditor';
-import PaintApp from './components/apps/PaintApp';
-import TrashApp from './components/apps/TrashApp';
+// Import ApplicationRenderer
+import ApplicationRenderer from './applications';
 
 import LoginScreen from './components/LoginScreen';
 import ForgotPasswordScreen from './components/ForgotPasswordScreen';
@@ -37,10 +32,10 @@ export default function App() {
     initializeStore();
   }, [initializeStore]);
 
-  // Handle global auth-based redirects
+  // Handle global auth-based redirects (disabled temporarily for open access)
   useEffect(() => {
-    if (isAuthenticated) {
-      if (location.pathname === '/login' || location.pathname === '/register') {
+    if (location.pathname === '/login' || location.pathname === '/register') {
+      if (isAuthenticated) {
         navigate('/');
       }
     }
@@ -57,10 +52,11 @@ export default function App() {
         <Route path="/forgot-password" element={<ForgotPasswordScreen />} />
         <Route path="/reset-password" element={<ResetPasswordScreen />} />
         <Route path="/desktop" element={<Navigate to="/" replace />} />
-        <Route path="/" element={isAuthenticated ? <DesktopLayout /> : <Navigate to="/login" replace />} />
-        <Route path="/:appRoute" element={isAuthenticated ? <DesktopLayout /> : <Navigate to="/login" replace />} />
-        <Route path="*" element={<Navigate to={isAuthenticated ? "/" : "/login"} replace />} />
+        <Route path="/" element={<DesktopLayout />} />
+        <Route path="/:appRoute" element={<DesktopLayout />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+      <GlobalContextMenu />
     </main>
   );
 }
@@ -71,103 +67,275 @@ function DesktopLayout() {
   const toggleWindow = useSystemStore((state) => state.toggleWindow);
   const activeWindowId = useSystemStore((state) => state.activeWindowId);
   const openAppWindow = useSystemStore((state) => state.openAppWindow);
+  const focusWindow = useSystemStore((state) => state.focusWindow);
+  const setFiles = useSystemStore((state) => state.setFiles);
+  const logout = useSystemStore((state) => state.logout);
+  const clampWindowsToViewport = useSystemStore((state) => state.clampWindowsToViewport);
+  const openContextMenu = useContextMenuStore((state) => state.openContextMenu);
   const navigate = useNavigate();
   const location = useLocation();
-  const routeOpeningApp = useRef<string | null>(null);
+
+  const [desktopShortcutIds, setDesktopShortcutIds] = useState<string[]>(() => {
+    return StorageService.get<string[]>('desktop-shortcuts', ['fileManager', 'paint', 'messenger']);
+  });
 
   useEffect(() => {
-    const appId = AppRegistry.getAppIdForPath(location.pathname);
+    const handleShortcutsUpdated = () => {
+      const updated = StorageService.get<string[]>('desktop-shortcuts', ['fileManager', 'paint', 'messenger']);
+      setDesktopShortcutIds(updated);
+    };
+    window.addEventListener('desktop-shortcuts-updated', handleShortcutsUpdated);
+    return () => window.removeEventListener('desktop-shortcuts-updated', handleShortcutsUpdated);
+  }, []);
 
-    if (!appId) {
-      if (location.pathname !== '/') {
+  const handleDesktopContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const desktopItems: ContextMenuItem[] = [
+      {
+        id: 'new-folder',
+        label: 'New Folder',
+        icon: <FolderPlus size={15} className="text-amber-400" />,
+        onClick: () => {
+          openAppWindow('fileManager');
+          setFiles((prev) => [
+            ...prev,
+            {
+              id: `folder-${Date.now()}`,
+              name: `New Folder ${Date.now().toString().slice(-4)}`,
+              type: 'folder',
+              parentId: null,
+              createdAt: new Date().toLocaleDateString(),
+            },
+          ]);
+        },
+      },
+      {
+        id: 'new-file',
+        label: 'New Text Document',
+        icon: <FileText size={15} className="text-blue-400" />,
+        onClick: () => {
+          openAppWindow('editor');
+        },
+      },
+      { divider: true },
+      {
+        id: 'terminal-here',
+        label: 'Open Terminal Here',
+        icon: <TerminalIcon size={15} className="text-emerald-400" />,
+        shortcut: 'Ctrl+Alt+T',
+        onClick: () => {
+          openAppWindow('terminal');
+        },
+      },
+      {
+        id: 'change-wallpaper',
+        label: 'Change Wallpaper...',
+        icon: <Image size={15} className="text-purple-400" />,
+        onClick: () => {
+          openAppWindow('settings');
+        },
+      },
+      { divider: true },
+      {
+        id: 'refresh-desktop',
+        label: 'Refresh Desktop',
+        icon: <RefreshCw size={15} className="text-slate-300" />,
+        shortcut: 'F5',
+        onClick: () => {
+          window.dispatchEvent(new Event('resize'));
+        },
+      },
+      {
+        id: 'system-settings',
+        label: 'System Settings',
+        icon: <SettingsIcon size={15} className="text-slate-300" />,
+        onClick: () => {
+          openAppWindow('settings');
+        },
+      },
+      { divider: true },
+      {
+        id: 'lock-logout',
+        label: 'Lock / Sign Out',
+        icon: <LogOut size={15} className="text-red-400" />,
+        danger: true,
+        onClick: () => {
+          logout();
+        },
+      },
+    ];
+
+    openContextMenu(e, desktopItems, 'Desktop');
+  };
+
+  const handleShortcutContextMenu = (e: React.MouseEvent, appId: string, title: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const currentDockPinned = StorageService.get<string[] | null>('dock-pinned-apps', null) || windows.filter(w => w.id !== 'launcher').map(w => w.id);
+    const isDockPinned = currentDockPinned.includes(appId);
+
+    const shortcutItems: ContextMenuItem[] = [
+      {
+        id: 'open-app',
+        label: `Open ${title}`,
+        icon: <ExternalLink size={15} className="text-blue-400" />,
+        onClick: () => {
+          openAppWindow(appId);
+        },
+      },
+      { divider: true },
+      {
+        id: 'unpin-desktop',
+        label: 'Unpin from Desktop',
+        icon: <Monitor size={15} className="text-amber-400" />,
+        onClick: () => {
+          const current = StorageService.get<string[]>('desktop-shortcuts', ['fileManager', 'paint', 'messenger']);
+          const next = current.filter((id) => id !== appId);
+          StorageService.set('desktop-shortcuts', next);
+          window.dispatchEvent(new Event('desktop-shortcuts-updated'));
+        },
+      },
+      {
+        id: 'pin-dock',
+        label: isDockPinned ? 'Unpin from Dock' : 'Pin to Dock',
+        icon: <Pin size={15} className={isDockPinned ? 'text-amber-400' : 'text-purple-400'} />,
+        onClick: () => {
+          const next = isDockPinned
+            ? currentDockPinned.filter((id) => id !== appId)
+            : [...currentDockPinned, appId];
+          StorageService.set('dock-pinned-apps', next);
+          window.dispatchEvent(new Event('dock-pins-updated'));
+        },
+      },
+      { divider: true },
+      {
+        id: 'app-info',
+        label: 'App Properties',
+        icon: <Info size={15} className="text-slate-300" />,
+        onClick: () => {
+          openAppWindow('settings');
+        },
+      },
+    ];
+
+    openContextMenu(e, shortcutItems, title);
+  };
+
+  const prevPathRef = useRef<string | null>(null);
+  const prevActiveWindowRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const handleResize = () => {
+      clampWindowsToViewport();
+    };
+    window.addEventListener('resize', handleResize);
+    handleResize();
+    return () => window.removeEventListener('resize', handleResize);
+  }, [clampWindowsToViewport]);
+
+  useEffect(() => {
+    const currentPath = location.pathname;
+    const currentActiveWindow = activeWindowId;
+
+    const isInitialMount = prevPathRef.current === null;
+    const pathChanged = !isInitialMount && prevPathRef.current !== currentPath;
+
+    prevPathRef.current = currentPath;
+    prevActiveWindowRef.current = currentActiveWindow;
+
+    // 1. Handle browser direct URL navigation or back/forward buttons
+    if (isInitialMount || pathChanged) {
+      const appId = AppRegistry.getAppIdForPath(currentPath);
+      if (appId) {
+        const targetWin = windows.find(w => w.id === appId);
+        if (!targetWin?.isOpen || currentActiveWindow !== appId) {
+          openAppWindow(appId);
+        }
+      } else if (currentPath !== '/') {
         navigate('/', { replace: true });
+        focusWindow(null);
+      } else if (currentActiveWindow !== null) {
+        focusWindow(null);
       }
-      return;
-    }
+    } 
+    // 2. Handle internal OS state changes (opening, closing, or switching app windows)
+    else {
+      let expectedPath = '/';
 
-    if (activeWindowId !== appId) {
-      routeOpeningApp.current = appId;
-      openAppWindow(appId);
-    } else {
-      routeOpeningApp.current = null;
-    }
-  }, [activeWindowId, location.pathname, navigate, openAppWindow]);
+      if (currentActiveWindow) {
+        const activeApp = windows.find(w => w.id === currentActiveWindow);
+        if (activeApp && activeApp.isOpen) {
+          expectedPath = AppRegistry.getPathForApp(currentActiveWindow) || '/';
+        }
+      }
 
-  useEffect(() => {
-    if (routeOpeningApp.current) {
-      return;
+      if (currentPath !== expectedPath) {
+        navigate(expectedPath, { replace: true });
+      }
     }
-
-    const activePath = activeWindowId ? AppRegistry.getPathForApp(activeWindowId) : '/';
-    if (activePath && location.pathname !== activePath) {
-      navigate(activePath, { replace: true });
-    }
-  }, [activeWindowId, location.pathname, navigate]);
+  }, [location.pathname, activeWindowId, windows, navigate, openAppWindow, focusWindow]);
 
   return (
-    <>
+    <div 
+      className="relative w-full h-full overflow-hidden select-none"
+      onClick={() => focusWindow(null)}
+      onContextMenu={handleDesktopContextMenu}
+    >
       {/* 1. LAYERED VECTOR WAVES DESKTOP WALLPAPER */}
       <Wallpaper settings={settings} />
 
       {/* 2. WINDOW STAGE AREA */}
-      <div id="desktop-window-stage" className="absolute inset-0 pt-4 pb-20 pointer-events-none z-[50]">
-        {windows.filter(app => app.id !== 'launcher').map(app => (
-          <AppWindow key={app.id} app={app}>
-            {/* Render proper component according to the window id */}
-            {app.id === 'browser' && <WebBrowser />}
-            {app.id === 'terminal' && <Terminal />}
-            {app.id === 'fileManager' && <FileManager />}
-            {app.id === 'settings' && <Settings />}
-            {app.id === 'messenger' && <Messenger />}
-            {app.id === 'clock' && <ClockApp />}
-            {app.id === 'editor' && <TextEditor />}
-            {app.id === 'paint' && <PaintApp />}
-            {app.id === 'trash' && <TrashApp />}
+      <div id="desktop-window-stage" className="absolute inset-0 pointer-events-none z-[50]">
+        {windows.map(app => (
+          <AppWindow
+            key={app.id}
+            app={app}
+            minW={app.minW}
+            minH={app.minH}
+            showStatusBar={!['fileManager', 'editor', 'trash', 'launcher', 'calendar', 'meeting', 'mail'].includes(app.id)}
+          >
+            {/* Render app dynamically using ApplicationRenderer */}
+            <ApplicationRenderer appId={app.id} />
           </AppWindow>
         ))}
       </div>
 
       {/* 4. DESKTOP SHORTCUTS */}
-      <div className="absolute top-6 left-6 flex flex-col gap-5 z-20 pointer-events-auto select-none">
-        <button
-          onClick={() => toggleWindow('fileManager')}
-          className="flex flex-col items-center justify-center w-16 h-16 rounded-xl hover:bg-white/5 active:scale-95 transition-all text-center cursor-pointer group"
-        >
-          <div className="w-10 h-10 filter drop-shadow-md group-hover:scale-105 transition-transform shrink-0">
-            {getAppIcon('fileManager', 'w-full h-full')}
-          </div>
-          <span className="text-[10px] font-semibold text-white/90 tracking-wide mt-1 drop-shadow-sm select-none">
-            {windows.find(w => w.id === 'fileManager')?.title || 'Files'}
-          </span>
-        </button>
-
-        <button
-          onClick={() => toggleWindow('paint')}
-          className="flex flex-col items-center justify-center w-16 h-16 rounded-xl hover:bg-white/5 active:scale-95 transition-all text-center cursor-pointer group"
-        >
-          <div className="w-10 h-10 filter drop-shadow-md group-hover:scale-105 transition-transform shrink-0">
-            {getAppIcon('paint', 'w-full h-full')}
-          </div>
-          <span className="text-[10px] font-semibold text-white/90 tracking-wide mt-1 drop-shadow-sm select-none">
-            {windows.find(w => w.id === 'paint')?.title || 'Paint Studio'}
-          </span>
-        </button>
-
-        <button
-          onClick={() => toggleWindow('messenger')}
-          className="flex flex-col items-center justify-center w-16 h-16 rounded-xl hover:bg-white/5 active:scale-95 transition-all text-center cursor-pointer group"
-        >
-          <div className="w-10 h-10 filter drop-shadow-md group-hover:scale-105 transition-transform shrink-0">
-            {getAppIcon('messenger', 'w-full h-full')}
-          </div>
-          <span className="text-[10px] font-semibold text-white/90 tracking-wide mt-1 drop-shadow-sm select-none">
-            {windows.find(w => w.id === 'messenger')?.title || 'OS Caption'}
-          </span>
-        </button>
+      <div 
+        className="absolute top-6 left-6 flex flex-col gap-5 z-20 pointer-events-auto select-none"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {desktopShortcutIds.map((appId) => {
+          const app = windows.find((w) => w.id === appId);
+          const title = app?.title || appId;
+          return (
+            <button
+              key={appId}
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleWindow(appId);
+              }}
+              onContextMenu={(e) => handleShortcutContextMenu(e, appId, title)}
+              className="flex flex-col items-center justify-center w-16 h-16 rounded-xl hover:bg-white/5 active:scale-95 transition-all text-center cursor-pointer group"
+            >
+              <div className="w-10 h-10 filter drop-shadow-md group-hover:scale-105 transition-transform shrink-0">
+                {getAppIcon(appId, 'w-full h-full')}
+              </div>
+              <span className="text-[10px] font-semibold text-white/90 tracking-wide mt-1 drop-shadow-sm select-none truncate max-w-[70px]">
+                {title}
+              </span>
+            </button>
+          );
+        })}
       </div>
 
       {/* 5. BOTTOM SYSTEM DOCK */}
-      <Dock />
-    </>
+      <div onClick={(e) => e.stopPropagation()}>
+        <Dock />
+      </div>
+    </div>
   );
 }

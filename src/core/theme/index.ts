@@ -1,0 +1,2 @@
+// theme core module
+export {};
