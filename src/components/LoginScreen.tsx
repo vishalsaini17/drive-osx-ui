@@ -104,10 +104,10 @@ export default function LoginScreen() {
 
     setIsLoading(true);
     try {
-      const success = await login(loginUser, loginPass);
+      const result = await login(loginUser, loginPass);
       setIsLoading(false);
-      if (!success) {
-        setErrorMsg('Invalid username or password.');
+      if (!result.success) {
+        setErrorMsg(result.message || 'Invalid username or password.');
       }
     } catch (err: any) {
       setIsLoading(false);
@@ -132,15 +132,11 @@ export default function LoginScreen() {
 
     setIsLoading(true);
     try {
-      const selectedPreset = AVATAR_PRESETS[signupAvatar];
-      const avatarStr = selectedPreset.emoji;
-
       const result = await signup({
         username: signupUser,
         firstName: signupFirstName,
         lastName: signupLastName,
         passwordHash: signupPass,
-        avatarUrl: avatarStr,
         recoveryEmail: signupRecoveryEmail,
         mobile: signupMobile,
       });

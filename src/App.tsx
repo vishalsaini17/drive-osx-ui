@@ -32,10 +32,19 @@ export default function App() {
     initializeStore();
   }, [initializeStore]);
 
-  // Handle global auth-based redirects (disabled temporarily for open access)
+  // Handle global auth-based redirects
   useEffect(() => {
-    if (location.pathname === '/login' || location.pathname === '/register') {
-      if (isAuthenticated) {
+    if (!isAuthenticated) {
+      if (
+        location.pathname !== '/login' &&
+        location.pathname !== '/register' &&
+        location.pathname !== '/forgot-password' &&
+        location.pathname !== '/reset-password'
+      ) {
+        navigate('/login');
+      }
+    } else {
+      if (location.pathname === '/login' || location.pathname === '/register') {
         navigate('/');
       }
     }

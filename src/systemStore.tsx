@@ -41,8 +41,8 @@ interface SystemState {
   usersList: User[];
   isAuthenticated: boolean;
   updateCurrentUser: (updatedUser: Partial<User>) => void;
-  login: (username: string, passwordHash: string) => Promise<boolean>;
-  signup: (payload: { username: string; firstName: string; lastName: string; passwordHash: string; avatarUrl: string; recoveryEmail?: string; mobile?: string }) => Promise<{ success: boolean; message: string }>;
+  login: (username: string, passwordHash: string) => Promise<{ success: boolean; message?: string }>;
+  signup: (payload: { username: string; firstName: string; lastName: string; passwordHash: string; recoveryEmail?: string; mobile?: string }) => Promise<{ success: boolean; message: string }>;
   logout: () => void;
   
   // World Clocks state & actions
@@ -161,11 +161,11 @@ export const useSystemStore = create<SystemState>((set, get) => ({
       // Fetch profile details or construct from API response
       const profile = await ApiService.getProfile();
       const user: User = {
-        username: profile?.username || username,
+        username: profile?.username || apiResult.user?.username || username,
         fullName: profile?.fullName || apiResult.user?.fullName || username,
-        passwordHash, // Keep password hash for local comparison if needed
+        passwordHash,
         avatarUrl: profile?.avatarUrl || '👾',
-        email: profile?.email || apiResult.user?.email,
+        email: profile?.email || apiResult.user?.email || profile?.recoveryEmail || apiResult.user?.recoveryEmail,
         recoveryEmail: profile?.recoveryEmail || apiResult.user?.recoveryEmail,
         mobile: profile?.mobile || apiResult.user?.mobile,
       };
@@ -184,14 +184,14 @@ export const useSystemStore = create<SystemState>((set, get) => ({
           }
         ]
       });
-      return true;
+      return { success: true, message: apiResult.message || 'Login successful' };
     }
 
-    return false;
+    return { success: false, message: apiResult.message || 'Invalid username or password.' };
   },
 
-  signup: async ({ username, firstName, lastName, passwordHash, avatarUrl, recoveryEmail, mobile }) => {
-    const { usersList, playClickSound } = get();
+  signup: async ({ username, firstName, lastName, passwordHash, recoveryEmail, mobile }) => {
+    const { playClickSound } = get();
     playClickSound();
     if (!username.trim() || !firstName.trim() || !lastName.trim() || !passwordHash.trim()) {
       return { success: false, message: 'Username, first name, last name, and password are required.' };
@@ -200,9 +200,7 @@ export const useSystemStore = create<SystemState>((set, get) => ({
       return { success: false, message: 'Provide a recovery email or recovery phone.' };
     }
 
-    const fullName = `${firstName.trim()} ${lastName.trim()}`;
-
-    // 1. Attempt API Registration
+    // Attempt API Registration
     const apiResult = await ApiService.register({
       username,
       passwordHash,
@@ -213,23 +211,9 @@ export const useSystemStore = create<SystemState>((set, get) => ({
     });
 
     if (apiResult.success) {
-      // Register locally in usersList too as a cache
-      const newUser: User = { 
-        username, 
-        fullName, 
-        passwordHash, 
-        avatarUrl,
-        email: recoveryEmail,
-        recoveryEmail,
-        mobile,
-      };
-      const updatedUsers = [...usersList.filter(u => u.username.toLowerCase() !== username.toLowerCase()), newUser];
-      StorageService.set('webos-users-list', updatedUsers);
-      set({ usersList: updatedUsers });
       return { success: true, message: apiResult.message || 'Account created successfully!' };
     }
 
-    // Registration only succeeds when the API confirms the username is unique.
     return { success: false, message: apiResult.message };
   },
 
@@ -386,24 +370,15 @@ export const useSystemStore = create<SystemState>((set, get) => ({
       StorageService.set('webos-calendar-events', defaultEvents);
     }
 
-    const defaultUser: User = {
-      username: 'admin',
-      fullName: 'Administrator',
-      passwordHash: 'admin123',
-      avatarUrl: '👾'
-    };
-
-    const finalUsersList = savedUsersList && savedUsersList.length > 0 ? savedUsersList : [defaultUser];
-    if (!savedUsersList || savedUsersList.length === 0) {
-      StorageService.set('webos-users-list', finalUsersList);
-    }
-
     set((state) => {
       const nextSettings = savedSettings ? { ...state.settings, ...savedSettings } : state.settings;
       const cleanedSavedFiles = savedFiles ? savedFiles.filter((f) => f.id !== 'volume-511gb' && f.id !== 'data-disk' && !f.name.includes('511 GB') && !f.name.includes('Data Disk')) : null;
       const nextFiles = cleanedSavedFiles ? cleanedSavedFiles : defaultFiles;
       const nextTrash = savedTrash ? savedTrash : [];
-      const userToUse = savedCurrentUser || defaultUser;
+      const hasAuthToken = !!ApiService.getToken();
+      const isAuthenticated = hasAuthToken && !!savedCurrentUser;
+      const currentUser = isAuthenticated ? savedCurrentUser : null;
+
       const rawWorldCities = savedWorldCities && savedWorldCities.length > 0 ? savedWorldCities : DEFAULT_WORLD_CITIES;
       const nextWorldCities = rawWorldCities.filter(
         (c) => !c.isCurrentLocation && c.desc !== 'Current location' && c.id !== 'delhi'
@@ -417,7 +392,7 @@ export const useSystemStore = create<SystemState>((set, get) => ({
         {
           id: 'msg-init',
           sender: 'assistant',
-          text: `👋 Welcome back, ${userToUse.fullName}! I am OS Caption, your AI-guided operating system assistant.\n\nI can execute actual desktop commands on your system! Try asking me:\n\n👉 "change wallpaper to sunset"\n👉 "open the terminal"\n👉 "mute volume"\n👉 "open paint"\n\nHow can I automate your system today?`,
+          text: `👋 Welcome back, ${currentUser?.fullName || 'User'}! I am OS Caption, your AI-guided operating system assistant.\n\nI can execute actual desktop commands on your system! Try asking me:\n\n👉 "change wallpaper to sunset"\n👉 "open the terminal"\n👉 "mute volume"\n👉 "open paint"\n\nHow can I automate your system today?`,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         }
       ];
@@ -426,9 +401,9 @@ export const useSystemStore = create<SystemState>((set, get) => ({
         settings: nextSettings,
         files: nextFiles,
         deletedFiles: nextTrash,
-        currentUser: userToUse,
-        usersList: finalUsersList,
-        isAuthenticated: true,
+        currentUser: currentUser,
+        usersList: savedUsersList || [],
+        isAuthenticated: isAuthenticated,
         messages: finalMessages,
         worldCities: nextWorldCities,
         calendarEvents: finalEvents,

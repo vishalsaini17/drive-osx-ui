@@ -29,6 +29,33 @@ export interface ApiResponse<T> {
   error?: string;
 }
 
+/**
+ * Offline fallback user — only activated when the API server is unreachable
+ * and the user logs in with username "test" and password "password".
+ */
+const OFFLINE_TEST_TOKEN = 'offline-test-session-token';
+const OFFLINE_TEST_USER = {
+  id: 'local-test-user',
+  username: 'test',
+  firstName: 'Test',
+  lastName: 'User',
+  fullName: 'Test User',
+  email: 'test@driveosx.local',
+  recoveryEmail: 'test@driveosx.local',
+  mobile: '+10000000000',
+  avatarUrl: '🧪',
+};
+
+function isServerUnreachable(error: unknown): boolean {
+  return (
+    error instanceof TypeError &&
+    (error.message.includes('Failed to fetch') ||
+      error.message.includes('NetworkError') ||
+      error.message.includes('ERR_CONNECTION_REFUSED') ||
+      error.message.includes('ERR_NAME_NOT_RESOLVED'))
+  );
+}
+
 class ApiServiceClass {
   private tokenKey = 'webos-jwt-token';
 
@@ -100,27 +127,31 @@ class ApiServiceClass {
 
       const data = await response.json();
       if (!response.ok) {
-        return { 
-          success: false, 
-          message: data.message || data.error || 'Registration failed' 
+        return {
+          success: false,
+          message: data.message || data.error || 'Registration failed'
         };
       }
-      return { 
-        success: true, 
-        message: data.message || 'User registered successfully', 
-        data 
+      return {
+        success: true,
+        message: data.message || 'User registered successfully',
+        data
       };
     } catch (error: any) {
       console.error('Registration API error:', error);
-      return { 
-        success: false, 
-        message: error.message || 'An error occurred during registration. Please try again.' 
+      return {
+        success: false,
+        message: error.message || 'An error occurred during registration. Please try again.'
       };
     }
   }
 
   /**
    * POST /login
+   *
+   * Falls back to an offline test session when:
+   *   - the server is unreachable (network error), AND
+   *   - the user provides username="test" with password="password".
    */
   async login(payload: { username: string; passwordHash: string }): Promise<{ success: boolean; message: string; token?: string; user?: any }> {
     try {
@@ -129,36 +160,54 @@ class ApiServiceClass {
         headers: this.getHeaders(),
         body: JSON.stringify({
           username: payload.username,
-          password: payload.passwordHash // maps passwordHash from UI state to password
+          password: payload.passwordHash,
         }),
       });
 
       const data = await response.json();
       if (!response.ok) {
-        return { 
-          success: false, 
-          message: data.message || data.error || 'Login failed' 
+        return {
+          success: false,
+          message: data.message || data.error || 'Login failed',
         };
       }
 
-      // If token is in the response, store it
+      // Store the JWT returned by the real API
       const token = data.token || data.data?.token || data.accessToken;
       if (token) {
         this.setToken(token);
       }
 
-      return { 
-        success: true, 
-        message: data.message || 'Login successful', 
+      return {
+        success: true,
+        message: data.message || 'Login successful',
         token,
-        user: data.user || data.data?.user || null
+        user: data.user || data.data?.user || null,
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Login API error:', error);
-      return { 
-        success: false, 
-        message: error.message || 'An error occurred during authentication.' 
-      };
+
+      // ── Offline fallback ──────────────────────────────────────────────────
+      // Only activate when the server is genuinely unreachable AND the caller
+      // is using the reserved test credentials.
+      if (
+        isServerUnreachable(error) &&
+        payload.username.trim().toLowerCase() === 'test' &&
+        payload.passwordHash === 'password'
+      ) {
+        console.warn('API unreachable — activating offline test session.');
+        this.setToken(OFFLINE_TEST_TOKEN);
+        return {
+          success: true,
+          message: 'Offline mode: logged in as test user.',
+          token: OFFLINE_TEST_TOKEN,
+          user: OFFLINE_TEST_USER,
+        };
+      }
+      // ─────────────────────────────────────────────────────────────────────
+
+      const msg = error instanceof Error ? error.message : 'An error occurred during authentication.';
+      return { success: false, message: msg };
     }
   }
 
