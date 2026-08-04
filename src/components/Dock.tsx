@@ -40,13 +40,10 @@ export default function Dock() {
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [pinnedAppIds, setPinnedAppIds] = useState<string[]>([]);
 
-  const [notifications, setNotifications] = useState([
-    { id: 'n1', text: 'System optimization complete. CPU load is 2%.', sender: 'System Terminal', time: 'Just now' },
-    { id: 'n2', text: 'Hello Vishal! How can I assist you today?', sender: 'OS Caption', time: '2m ago' },
-    { id: 'n3', text: 'You have 3 active virtual workspaces ready.', sender: 'Workspace Monitor', time: '5m ago' }
-  ]);
-
   // Subscribing to central system store
+  const notifications = useSystemStore((state) => state.notifications);
+  const removeNotification = useSystemStore((state) => state.removeNotification);
+  const clearNotifications = useSystemStore((state) => state.clearNotifications);
   const windows = useSystemStore((state) => state.windows);
   const toggleWindow = useSystemStore((state) => state.toggleWindow);
   const openAppWindow = useSystemStore((state) => state.openAppWindow);
@@ -145,15 +142,6 @@ export default function Dock() {
   };
 
   const dockSize = settings.dockSize || 'md';
-
-  useEffect(() => {
-    setNotifications(prev => prev.map(n => {
-      if (n.id === 'n2') {
-        return { ...n, text: `Hello ${currentUser?.fullName || 'Guest'}! How can I assist you today?` };
-      }
-      return n;
-    }));
-  }, [currentUser]);
 
   useEffect(() => {
     const otherAppIds = windows.filter(w => w.id !== 'launcher').map(w => w.id);
@@ -573,8 +561,6 @@ export default function Dock() {
           {showRightPopup && (
             <SystemNotificationPopup
               onClose={() => setShowRightPopup(false)}
-              notifications={notifications}
-              setNotifications={setNotifications}
               notificationsMuted={notificationsMuted}
               setNotificationsMuted={setNotificationsMuted}
               currentUser={currentUser}

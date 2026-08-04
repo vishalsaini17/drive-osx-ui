@@ -1,9 +1,15 @@
 import React from 'react';
 import { create } from 'zustand';
-import { WindowState, FileItem, ChatMessage, SystemSettings, User, WorldCity, DEFAULT_WORLD_CITIES, CalendarEvent } from './types';
+import { WindowState, FileItem, ChatMessage, SystemSettings, User, WorldCity, DEFAULT_WORLD_CITIES, CalendarEvent, SystemNotification } from './types';
 import { AppRegistry } from './core/AppRegistry';
 import { StorageService } from './services/StorageService';
 import { ApiService } from './services/ApiService';
+
+const defaultNotifications: SystemNotification[] = [
+  { id: 'n1', text: 'System optimization complete. Operating in local mode.', sender: 'System Terminal', time: 'Just now', type: 'info' },
+  { id: 'n2', text: 'Drive OSX Offline Engine ready. Offline mode enabled.', sender: 'Network Manager', time: '2m ago', type: 'info' },
+  { id: 'n3', text: 'Virtual workspace filesystem synchronized locally.', sender: 'Storage Manager', time: '5m ago', type: 'info' }
+];
 
 const defaultFiles: FileItem[] = [
   { id: 'folder-documents', name: 'Documents', type: 'folder', parentId: null, createdAt: '10.07.2023' },
@@ -60,6 +66,15 @@ interface SystemState {
   deleteCalendarEvent: (id: string) => void;
   setCalendarEvents: (events: CalendarEvent[]) => void;
 
+  // System Notifications & Offline Engine
+  notifications: SystemNotification[];
+  addNotification: (notification: { sender: string; text: string; type?: 'info' | 'error' | 'warning' | 'success' }) => void;
+  removeNotification: (id: string) => void;
+  clearNotifications: () => void;
+  notifyApiError: (appName: string, errorMessage: string) => void;
+  isOfflineMode: boolean;
+  setOfflineMode: (offline: boolean) => void;
+
   // Actions
   initializeStore: () => void;
   setSettings: (updater: SystemSettings | ((prev: SystemSettings) => SystemSettings)) => void;
@@ -97,7 +112,7 @@ export const useSystemStore = create<SystemState>((set, get) => ({
     fontFamily: 'Poppins',
     accentColor: '#8b5cf6', // Purple
     iconSize: 'md',
-    desktopIcons: { trash: true, files: true, settings: true, terminal: true, paint: true, browser: true, calculator: true, spreadsheet: true, presentation: true, 'pdf-viewer': true },
+    desktopIcons: { trash: true, files: true, settings: true, terminal: true, paint: true, browser: true, calculator: true, spreadsheet: true, presentation: true, 'pdf-viewer': true, contacts: true },
     dockPosition: 'bottom',
     dockAutohide: false,
     dockMagnification: true,
@@ -305,6 +320,57 @@ export const useSystemStore = create<SystemState>((set, get) => ({
     set({ calendarEvents: events });
   },
 
+  notifications: defaultNotifications,
+  isOfflineMode: typeof navigator !== 'undefined' ? !navigator.onLine : false,
+
+  setOfflineMode: (offline: boolean) => {
+    set({ isOfflineMode: offline });
+  },
+
+  addNotification: (notification) => {
+    const newNotif: SystemNotification = {
+      id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      sender: notification.sender,
+      text: notification.text,
+      time: 'Just now',
+      type: notification.type || 'info',
+    };
+
+    set((state) => {
+      const updated = [newNotif, ...state.notifications];
+      StorageService.set('webos-notifications', updated);
+      return { notifications: updated };
+    });
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent('system-toast-notification', { detail: newNotif })
+      );
+    }
+  },
+
+  removeNotification: (id) => {
+    set((state) => {
+      const updated = state.notifications.filter((n) => n.id !== id);
+      StorageService.set('webos-notifications', updated);
+      return { notifications: updated };
+    });
+  },
+
+  clearNotifications: () => {
+    StorageService.set('webos-notifications', []);
+    set({ notifications: [] });
+  },
+
+  notifyApiError: (appName, errorMessage) => {
+    const { addNotification } = get();
+    addNotification({
+      sender: appName,
+      text: errorMessage,
+      type: 'error',
+    });
+  },
+
   initializeStore: () => {
     const savedFiles = StorageService.get<FileItem[] | null>('webos-files', null);
     const savedTrash = StorageService.get<FileItem[] | null>('webos-trash', null);
@@ -313,6 +379,7 @@ export const useSystemStore = create<SystemState>((set, get) => ({
     const savedUsersList = StorageService.get<User[] | null>('webos-users-list', null);
     const savedWorldCities = StorageService.get<WorldCity[] | null>('webos-world-cities', null);
     const savedEvents = StorageService.get<CalendarEvent[] | null>('webos-calendar-events', null);
+    const savedNotifications = StorageService.get<SystemNotification[] | null>('webos-notifications', null);
 
     const todayISO = new Date().toISOString().split('T')[0];
     const defaultEvents: CalendarEvent[] = [
@@ -407,6 +474,7 @@ export const useSystemStore = create<SystemState>((set, get) => ({
         messages: finalMessages,
         worldCities: nextWorldCities,
         calendarEvents: finalEvents,
+        notifications: savedNotifications || defaultNotifications,
       };
     });
   },

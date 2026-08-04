@@ -15,6 +15,8 @@ import LoginScreen from './components/LoginScreen';
 import ForgotPasswordScreen from './components/ForgotPasswordScreen';
 import ResetPasswordScreen from './components/ResetPasswordScreen';
 
+import SystemToastNotifier from './components/SystemToastNotifier';
+
 // Import Zustand Store
 import { useSystemStore, getAppIcon } from './systemStore';
 import { AppRegistry } from './core/AppRegistry';
@@ -23,6 +25,8 @@ export default function App() {
   const initializeStore = useSystemStore((state) => state.initializeStore);
   const settings = useSystemStore((state) => state.settings);
   const isAuthenticated = useSystemStore((state) => state.isAuthenticated);
+  const addNotification = useSystemStore((state) => state.addNotification);
+  const setOfflineMode = useSystemStore((state) => state.setOfflineMode);
 
   const navigate = useNavigate();
   const location = useLocation();
@@ -30,7 +34,33 @@ export default function App() {
   // Initialize the store from localStorage on mount
   useEffect(() => {
     initializeStore();
-  }, [initializeStore]);
+
+    const handleOffline = () => {
+      setOfflineMode(true);
+      addNotification({
+        sender: 'Network Manager',
+        text: 'Internet connection lost. Switched to System Offline Mode.',
+        type: 'error',
+      });
+    };
+
+    const handleOnline = () => {
+      setOfflineMode(false);
+      addNotification({
+        sender: 'Network Manager',
+        text: 'Internet connection restored. Online services connected.',
+        type: 'success',
+      });
+    };
+
+    window.addEventListener('offline', handleOffline);
+    window.addEventListener('online', handleOnline);
+
+    return () => {
+      window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('online', handleOnline);
+    };
+  }, [initializeStore, addNotification, setOfflineMode]);
 
   // Handle global auth-based redirects
   useEffect(() => {
@@ -66,6 +96,7 @@ export default function App() {
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
       <GlobalContextMenu />
+      <SystemToastNotifier />
     </main>
   );
 }

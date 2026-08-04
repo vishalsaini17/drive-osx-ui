@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ArrowLeft, ArrowRight, RotateCw, Home, Search, ExternalLink, Globe, Sliders } from 'lucide-react';
+import { ArrowLeft, ArrowRight, RotateCw, Home, Search, ExternalLink, Globe, Sliders, WifiOff, AlertCircle, RefreshCw } from 'lucide-react';
 import { useSystemStore } from '../../systemStore';
 
 interface TabState {
@@ -9,6 +9,7 @@ interface TabState {
 }
 
 export default function WebBrowser() {
+  const notifyApiError = useSystemStore((state) => state.notifyApiError);
   const browserPrefs = useSystemStore((state) => state.settings.appPreferences?.browser);
   const homepage = browserPrefs?.homepage || 'https://duckduckgo.com';
   const searchEngine = browserPrefs?.searchEngine || 'DuckDuckGo';
@@ -30,10 +31,21 @@ export default function WebBrowser() {
   const [isXNext, setIsXNext] = useState(true);
   const [gameResult, setGameResult] = useState('');
 
+  const isLocalSite = (u: string) => {
+    return u.startsWith('giggle.com') || u.startsWith('wikiweb.org') || u.startsWith('techcrunchy.net') || u.startsWith('arcade.com');
+  };
+
   const navigateTo = (url: string) => {
     const cleanedUrl = url.toLowerCase().trim();
     const newHistory = browserState.history.slice(0, browserState.historyIndex + 1);
     newHistory.push(cleanedUrl);
+
+    if (!isLocalSite(cleanedUrl)) {
+      notifyApiError(
+        'Browser App',
+        `API/Network request to '${cleanedUrl}' is unreachable in offline mode. Displaying offline view.`
+      );
+    }
 
     setBrowserState({
       url: cleanedUrl,
@@ -379,6 +391,46 @@ export default function WebBrowser() {
           </div>
         )}
 
+        {/* PAGE 5: OFFLINE EXTERNAL SITE FALLBACK */}
+        {!isLocalSite(browserState.url) && (
+          <div className="min-h-full bg-zinc-950 p-8 flex flex-col items-center justify-center text-center font-sans">
+            <div className="max-w-md w-full bg-zinc-900/90 border border-zinc-800 p-8 rounded-2xl shadow-2xl flex flex-col items-center">
+              <div className="w-14 h-14 bg-red-500/10 border border-red-500/20 rounded-2xl flex items-center justify-center text-red-400 mb-4">
+                <WifiOff className="w-7 h-7" />
+              </div>
+              <h2 className="text-xl font-bold text-white mb-2">No Internet / API Unreachable</h2>
+              <p className="text-xs text-zinc-400 mb-4 leading-relaxed">
+                Could not connect to <span className="font-mono text-pink-400 font-semibold">{browserState.url}</span>. The server API is not responding or system is running in offline mode.
+              </p>
+
+              <div className="w-full bg-zinc-950/80 border border-zinc-800/80 rounded-xl p-3 text-left mb-6">
+                <div className="flex items-center gap-2 text-xs font-semibold text-red-400 mb-1">
+                  <AlertCircle size={14} />
+                  <span>API Error Logged to System Notifications</span>
+                </div>
+                <p className="text-[11px] text-zinc-500">
+                  A system notification error has been dispatched to your notification drawer.
+                </p>
+              </div>
+
+              <div className="flex gap-3 w-full">
+                <button
+                  onClick={() => navigateTo('giggle.com')}
+                  className="flex-1 py-2.5 bg-pink-600 hover:bg-pink-500 text-white font-bold text-xs rounded-xl transition-all cursor-pointer"
+                >
+                  Go to Giggle Search
+                </button>
+                <button
+                  onClick={() => navigateTo(browserState.url)}
+                  className="px-4 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-bold text-xs rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                >
+                  <RefreshCw size={13} />
+                  Retry
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

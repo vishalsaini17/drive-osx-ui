@@ -1,6 +1,6 @@
 {
   "name": "Drive OSX",
-  "description": "A web desktop operating system simulation with PDF Viewer, Presentation Studio, Spreadsheets, file management, terminal, and multitasking windows.",
+  "description": "A web desktop operating system simulation featuring Contacts, OSX Meet, Mail Studio, Messages, Calendar, PDF Viewer, Presentation Studio, Spreadsheets, file management, terminal, and multitasking windows.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

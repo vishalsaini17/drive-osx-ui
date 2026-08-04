@@ -1,20 +1,11 @@
 import React from 'react';
-import { X, Check, Sun, Moon, Bell, BellOff, LogOut } from 'lucide-react';
+import { X, Check, Sun, Moon, Bell, BellOff, LogOut, AlertCircle, AlertTriangle, CheckCircle, Info } from 'lucide-react';
 import { useSystemStore } from '../systemStore';
 import { DockPopupPanel, DockPopupCard } from './DockPopupPanel';
-import { User } from '../types';
-
-export interface NotificationItem {
-  id: string;
-  sender: string;
-  text: string;
-  time: string;
-}
+import { User, SystemNotification } from '../types';
 
 interface SystemNotificationPopupProps {
   onClose: () => void;
-  notifications: NotificationItem[];
-  setNotifications: React.Dispatch<React.SetStateAction<NotificationItem[]>>;
   notificationsMuted: boolean;
   setNotificationsMuted: (muted: boolean) => void;
   currentUser: User | null;
@@ -23,8 +14,6 @@ interface SystemNotificationPopupProps {
 
 export default function SystemNotificationPopup({
   onClose,
-  notifications,
-  setNotifications,
   notificationsMuted,
   setNotificationsMuted,
   currentUser,
@@ -32,15 +21,18 @@ export default function SystemNotificationPopup({
 }: SystemNotificationPopupProps) {
   const theme = useSystemStore((state) => state.settings.theme);
   const setSettings = useSystemStore((state) => state.setSettings);
-  const isLight = theme === 'classic-light';
+  const notifications = useSystemStore((state) => state.notifications);
+  const removeNotification = useSystemStore((state) => state.removeNotification);
+  const clearNotifications = useSystemStore((state) => state.clearNotifications);
 
+  const isLight = theme === 'classic-light';
   const isDarkMode = theme === 'modern-dark';
 
   return (
     <DockPopupPanel
       id="dock-system-notifications-panel"
       position="right"
-      widthClass="w-[290px]"
+      widthClass="w-[310px]"
       onClose={onClose}
     >
       {/* =========================================================
@@ -53,11 +45,11 @@ export default function SystemNotificationPopup({
               isLight ? 'text-slate-500' : 'text-white/60'
             }`}
           >
-            System Notifications
+            System Notifications ({notifications.length})
           </span>
           {notifications.length > 0 && (
             <button
-              onClick={() => setNotifications([])}
+              onClick={() => clearNotifications()}
               className={`text-[10px] font-bold transition-colors focus:outline-none cursor-pointer ${
                 isLight ? 'text-blue-600 hover:text-blue-800' : 'text-blue-400 hover:text-blue-300'
               }`}
@@ -67,58 +59,91 @@ export default function SystemNotificationPopup({
           )}
         </div>
 
-        <div className="flex flex-col gap-1.5 max-h-[140px] overflow-y-auto pr-0.5 custom-scrollbar">
+        <div className="flex flex-col gap-1.5 max-h-[180px] overflow-y-auto pr-0.5 custom-scrollbar">
           {notifications.length > 0 ? (
-            notifications.map((n) => (
-              <div
-                key={n.id}
-                className={`p-2 rounded-xl border flex items-start gap-2 group relative transition-colors ${
-                  isLight
-                    ? 'bg-slate-50/80 border-slate-200/80 hover:bg-slate-100'
-                    : 'bg-white/5 border-white/10 hover:bg-white/10'
-                }`}
-              >
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between gap-1">
-                    <span
-                      className={`text-[10px] font-bold truncate ${
-                        isLight ? 'text-slate-800' : 'text-white/90'
-                      }`}
-                    >
-                      {n.sender}
-                    </span>
-                    <span
-                      className={`text-[9px] shrink-0 select-none ${
-                        isLight ? 'text-slate-400' : 'text-white/40'
-                      }`}
-                    >
-                      {n.time}
-                    </span>
-                  </div>
-                  <p
-                    className={`text-xs font-medium leading-snug mt-0.5 truncate ${
-                      isLight ? 'text-slate-600' : 'text-white/70'
-                    }`}
-                  >
-                    {n.text}
-                  </p>
-                </div>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setNotifications((prev) => prev.filter((item) => item.id !== n.id));
-                  }}
-                  className={`p-1 rounded-full transition-all opacity-0 group-hover:opacity-100 shrink-0 self-center focus:outline-none cursor-pointer ${
-                    isLight
-                      ? 'hover:bg-slate-200 text-slate-400 hover:text-slate-700'
-                      : 'hover:bg-white/10 text-white/40 hover:text-white'
+            notifications.map((n) => {
+              const isError = n.type === 'error';
+              const isWarning = n.type === 'warning';
+              const isSuccess = n.type === 'success';
+
+              return (
+                <div
+                  key={n.id}
+                  className={`p-2 rounded-xl border flex items-start gap-2 group relative transition-colors ${
+                    isError
+                      ? isLight
+                        ? 'bg-red-50/90 border-red-200 hover:bg-red-100/90'
+                        : 'bg-red-950/40 border-red-500/30 hover:bg-red-900/40'
+                      : isWarning
+                      ? isLight
+                        ? 'bg-amber-50/90 border-amber-200 hover:bg-amber-100/90'
+                        : 'bg-amber-950/40 border-amber-500/30 hover:bg-amber-900/40'
+                      : isLight
+                      ? 'bg-slate-50/80 border-slate-200/80 hover:bg-slate-100'
+                      : 'bg-white/5 border-white/10 hover:bg-white/10'
                   }`}
-                  title="Dismiss Notification"
                 >
-                  <X size={11} />
-                </button>
-              </div>
-            ))
+                  <div className="mt-0.5 shrink-0">
+                    {isError ? (
+                      <AlertCircle size={14} className="text-red-500" />
+                    ) : isWarning ? (
+                      <AlertTriangle size={14} className="text-amber-500" />
+                    ) : isSuccess ? (
+                      <CheckCircle size={14} className="text-emerald-500" />
+                    ) : (
+                      <Info size={14} className="text-blue-400" />
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between gap-1">
+                      <span
+                        className={`text-[10px] font-bold truncate ${
+                          isError
+                            ? 'text-red-600 dark:text-red-400'
+                            : isLight
+                            ? 'text-slate-800'
+                            : 'text-white/90'
+                        }`}
+                      >
+                        {n.sender}
+                      </span>
+                      <span
+                        className={`text-[9px] shrink-0 select-none ${
+                          isLight ? 'text-slate-400' : 'text-white/40'
+                        }`}
+                      >
+                        {n.time}
+                      </span>
+                    </div>
+                    <p
+                      className={`text-xs font-medium leading-snug mt-0.5 break-words ${
+                        isError
+                          ? 'text-red-700 dark:text-red-300'
+                          : isLight
+                          ? 'text-slate-600'
+                          : 'text-white/70'
+                      }`}
+                    >
+                      {n.text}
+                    </p>
+                  </div>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeNotification(n.id);
+                    }}
+                    className={`p-1 rounded-full transition-all opacity-0 group-hover:opacity-100 shrink-0 self-center focus:outline-none cursor-pointer ${
+                      isLight
+                        ? 'hover:bg-slate-200 text-slate-400 hover:text-slate-700'
+                        : 'hover:bg-white/10 text-white/40 hover:text-white'
+                    }`}
+                    title="Dismiss Notification"
+                  >
+                    <X size={11} />
+                  </button>
+                </div>
+              );
+            })
           ) : (
             <div className="flex flex-col items-center justify-center py-6 text-center select-none">
               <Check

@@ -17,6 +17,7 @@ import {
   Calculator as CalculatorIcon,
   FileSpreadsheet,
   Tv,
+  Users,
 } from 'lucide-react';
 
 // Import apps from application directory
@@ -38,6 +39,7 @@ import {
   SpreadsheetApp,
   PresentationApp,
   PDFViewerApp,
+  ContactsApp,
 } from '../applications';
 
 export interface SettingsField {
@@ -507,6 +509,27 @@ const registry: Record<string, AppRegistryEntry> = {
         <FileText className="w-[52%] h-[52%] text-white" strokeWidth={2.2} />
       </div>
     )
+  },
+  contacts: {
+    manifest: {
+      id: 'contacts',
+      title: 'Contacts',
+      iconName: 'Users',
+      category: 'productivity',
+      defaultWindow: { w: 980, h: 640, minW: 740, minH: 500, x: 150, y: 60 },
+      permissions: [],
+      settingsSchema: [
+        { id: 'sortBy', label: 'Default Sort Order', type: 'select', options: ['First Name', 'Last Name', 'Company'], defaultValue: 'First Name' },
+        { id: 'showJobTitles', label: 'Show Job Titles in List', type: 'toggle', defaultValue: true }
+      ]
+    },
+    component: ContactsApp,
+    renderIcon: (className = "w-full h-full") => (
+      <div className={`${className} bg-gradient-to-tr from-indigo-500 via-purple-600 to-pink-500 rounded-[22%] flex items-center justify-center relative border border-white/20 shadow-md overflow-hidden group`}>
+        <div className="absolute inset-0 bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity duration-200" />
+        <Users className="w-[52%] h-[52%] text-white" strokeWidth={2.2} />
+      </div>
+    )
   }
 };
 
@@ -528,6 +551,7 @@ const appRoutes: Record<string, string> = {
   spreadsheet: 'spreadsheet',
   presentation: 'presentation',
   'pdf-viewer': 'pdf-viewer',
+  contacts: 'contacts',
 };
 
 export const AppRegistry = {

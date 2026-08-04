@@ -16,6 +16,7 @@ import CalculatorApp from './calculator';
 import SpreadsheetApp from './spreadsheet';
 import PresentationApp from './presentation';
 import PDFViewerApp from './pdf-viewer';
+import ContactsApp from './contacts';
 
 export {
   AppLauncher,
@@ -35,6 +36,7 @@ export {
   SpreadsheetApp,
   PresentationApp,
   PDFViewerApp,
+  ContactsApp,
 };
 
 export const APPLICATION_MAP: Record<string, React.ComponentType<any>> = {
@@ -55,6 +57,7 @@ export const APPLICATION_MAP: Record<string, React.ComponentType<any>> = {
   spreadsheet: SpreadsheetApp,
   presentation: PresentationApp,
   'pdf-viewer': PDFViewerApp,
+  contacts: ContactsApp,
 };
 
 export interface ApplicationRendererProps {

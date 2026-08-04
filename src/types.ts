@@ -1,3 +1,32 @@
+export interface SystemNotification {
+  id: string;
+  sender: string;
+  text: string;
+  time: string;
+  type?: 'info' | 'error' | 'warning' | 'success';
+}
+
+export interface Contact {
+  id: string;
+  firstName: string;
+  lastName: string;
+  photo?: string;
+  email: string;
+  phone: string;
+  company?: string;
+  jobTitle?: string;
+  department?: string;
+  team?: string;
+  address?: string;
+  website?: string;
+  birthday?: string; // YYYY-MM-DD
+  notes?: string;
+  isFavorite?: boolean;
+  labels?: string[];
+  organization?: string;
+  avatarBg?: string;
+}
+
 export interface CalendarEvent {
   id: string;
   title: string;
