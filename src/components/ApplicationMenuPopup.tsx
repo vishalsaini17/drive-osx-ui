@@ -144,8 +144,8 @@ export default function ApplicationMenuPopup({
   const runningCount = availableApps.filter((a) => a.isOpen).length;
   const pinnedCount = availableApps.filter((a) => isPinned(a.id)).length;
 
-  // Pagination logic for MacBook Launchpad feel
-  const APPS_PER_PAGE = 16;
+  // Pagination logic for MacBook Launchpad feel - max grid 4X8 (32 apps per page)
+  const APPS_PER_PAGE = 32;
   const totalPages = Math.max(1, Math.ceil(filteredApps.length / APPS_PER_PAGE));
   const displayedApps = searchQuery
     ? filteredApps
@@ -274,7 +274,7 @@ export default function ApplicationMenuPopup({
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -12 }}
             transition={{ duration: 0.2 }}
-            className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-6 sm:gap-8 md:gap-10 w-full place-items-center py-4"
+            className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-4 sm:gap-6 md:gap-8 w-full place-items-center py-4"
           >
             {displayedApps.map((app) => {
               const pinned = isPinned(app.id);
