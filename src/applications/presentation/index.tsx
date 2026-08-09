@@ -71,6 +71,7 @@ export default function PresentationApp() {
 
   // System Store for saving to drive disk
   const setFiles = useSystemStore((state) => state.setFiles);
+  const resolveDefaultFolderId = useSystemStore((state) => state.resolveDefaultFolderId);
 
   // Active Slide Helper
   const activeSlideIndex = deck.slides.findIndex((s) => s.id === activeSlideId);
@@ -388,11 +389,11 @@ export default function PresentationApp() {
         name: `${deck.title}.json`,
         type: 'file',
         content,
-        parentId: 'folder-documents',
+        parentId: resolveDefaultFolderId('Documents') || null,
         createdAt: new Date().toLocaleDateString(),
       },
     ]);
-    alert(`💾 Presentation "${deck.title}" saved to system Documents!`);
+    alert(`💾 Presentation "${deck.title}" saved to Documents!`);
   };
 
   return (

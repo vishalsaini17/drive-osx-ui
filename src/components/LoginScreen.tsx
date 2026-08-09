@@ -42,6 +42,7 @@ export default function LoginScreen() {
   const [isLocked, setIsLocked] = useState<boolean>(true);
   const [isSignUp, setIsSignUp] = useState<boolean>(false);
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
+  const [generatedEmail, setGeneratedEmail] = useState<string>('');
 
   // Sync isSignUp with route path
   useEffect(() => {
@@ -71,6 +72,14 @@ export default function LoginScreen() {
   const [errorMsg, setErrorMsg] = useState<string>('');
   const [successMsg, setSuccessMsg] = useState<string>('');
   const [isLoading, setIsLoading] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (isSignUp && signupUser.trim()) {
+      setGeneratedEmail(`${signupUser.trim().toLowerCase()}@diveosx.com`);
+    } else {
+      setGeneratedEmail('');
+    }
+  }, [isSignUp, signupUser]);
 
   // Sync clock time
   useEffect(() => {
@@ -427,6 +436,12 @@ export default function LoginScreen() {
                           required
                         />
                       </div>
+                      {generatedEmail && (
+                        <div className="mt-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-[10px] font-semibold flex items-center gap-1.5">
+                          <Mail size={12} />
+                          <span>Your email: {generatedEmail}</span>
+                        </div>
+                      )}
                     </div>
 
                     <div className="grid grid-cols-2 gap-3">

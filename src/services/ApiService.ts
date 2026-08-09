@@ -167,7 +167,7 @@ class ApiServiceClass {
         firstName: payload.firstName,
         lastName: payload.lastName,
         fullName: `${payload.firstName} ${payload.lastName}`.trim(),
-        email: payload.recoveryEmail || `${payload.username}@driveosx.local`,
+        email: `${payload.username.toLowerCase()}@diveosx.com`,
         recoveryEmail: payload.recoveryEmail,
         mobile: payload.mobile,
         avatarUrl: '👤',
@@ -369,6 +369,106 @@ class ApiServiceClass {
       local.push(newWs);
       StorageService.set('webos-workspaces', local);
       return newWs;
+    }
+  }
+
+  /**
+   * GET /mail/inbox
+   */
+  async getInbox(): Promise<any[]> {
+    try {
+      const response = await fetch(`${API_BASE_URL}/mail/inbox`, {
+        method: 'GET',
+        headers: this.getHeaders(),
+      });
+
+      if (!response.ok) return [];
+      const data = await response.json();
+      return data.emails || data.data || [];
+    } catch (error) {
+      notifyApiFailure('Mail API', 'Mail API unreachable. Loading offline local emails.');
+      return StorageService.get<any[]>('webos-mails-inbox', []);
+    }
+  }
+
+  /**
+   * GET /mail/sent
+   */
+  async getSent(): Promise<any[]> {
+    try {
+      const response = await fetch(`${API_BASE_URL}/mail/sent`, {
+        method: 'GET',
+        headers: this.getHeaders(),
+      });
+
+      if (!response.ok) return [];
+      const data = await response.json();
+      return data.emails || data.data || [];
+    } catch (error) {
+      notifyApiFailure('Mail API', 'Mail API unreachable. Loading offline sent emails.');
+      return StorageService.get<any[]>('webos-mails-sent', []);
+    }
+  }
+
+  /**
+   * GET /mail/starred
+   */
+  async getStarred(): Promise<any[]> {
+    try {
+      const response = await fetch(`${API_BASE_URL}/mail/starred`, {
+        method: 'GET',
+        headers: this.getHeaders(),
+      });
+
+      if (!response.ok) return [];
+      const data = await response.json();
+      return data.emails || data.data || [];
+    } catch (error) {
+      return [];
+    }
+  }
+
+  /**
+   * POST /mail/send
+   */
+  async sendMail(payload: { to: string; subject: string; body?: string; cc?: string; bcc?: string; priority?: string; attachments?: any[] }): Promise<{ success: boolean; message: string }> {
+    try {
+      const response = await fetch(`${API_BASE_URL}/mail/send`, {
+        method: 'POST',
+        headers: this.getHeaders(),
+        body: JSON.stringify(payload),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        return { success: false, message: data.message || data.error || 'Failed to send email' };
+      }
+      return { success: true, message: data.message || 'Email sent' };
+    } catch (error) {
+      notifyApiFailure('Mail API', 'Mail API unreachable. Email saved to local outbox.');
+      const outbox = StorageService.get<any[]>('webos-mails-outbox', []);
+      outbox.push({ ...payload, id: `local-${Date.now()}`, timestamp: new Date().toISOString() });
+      StorageService.set('webos-mails-outbox', outbox);
+      return { success: true, message: 'Offline mode: Email saved to local outbox.' };
+    }
+  }
+
+  /**
+   * GET /mail/unread/count
+   */
+  async getUnreadCount(folder?: string): Promise<number> {
+    try {
+      const url = folder ? `${API_BASE_URL}/mail/unread/count?folder=${encodeURIComponent(folder)}` : `${API_BASE_URL}/mail/unread/count`;
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: this.getHeaders(),
+      });
+
+      if (!response.ok) return 0;
+      const data = await response.json();
+      return data.count || 0;
+    } catch (error) {
+      return 0;
     }
   }
 }

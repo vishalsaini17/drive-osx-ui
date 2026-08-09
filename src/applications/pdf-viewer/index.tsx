@@ -57,6 +57,7 @@ export default function PDFViewerApp() {
 
   // System Store for saving to virtual drive disk
   const setFiles = useSystemStore((state) => state.setFiles);
+  const resolveDefaultFolderId = useSystemStore((state) => state.resolveDefaultFolderId);
 
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -236,12 +237,12 @@ export default function PDFViewerApp() {
         name: activeDoc.fileName,
         type: 'file',
         content,
-        parentId: 'folder-documents',
+        parentId: resolveDefaultFolderId('Documents') || null,
         createdAt: new Date().toLocaleDateString(),
       },
     ]);
 
-    triggerToast(`Downloaded "${activeDoc.fileName}" & saved to System Disk!`);
+    triggerToast(`Downloaded "${activeDoc.fileName}" & saved to Documents!`);
   };
 
   // Print PDF

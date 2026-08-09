@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Folder,
   ArrowLeft,
@@ -49,6 +49,8 @@ import { FileItem } from '../../types';
 import { useSystemStore } from '../../systemStore';
 import { useContextMenuStore, ContextMenuItem } from '../../services/contextMenuStore';
 import { StorageService } from '../../services/StorageService';
+import { FileService } from '../../services/FileService';
+import { getAppForFile } from '../../core/EditorRegistry';
 import WindowStatusBar from '../../components/WindowStatusBar';
 
 import ShareModal from './components/ShareModal';
@@ -69,6 +71,7 @@ export default function FileManager() {
   const toggleWindow = useSystemStore((state) => state.toggleWindow);
   const settings = useSystemStore((state) => state.settings);
   const setSettings = useSystemStore((state) => state.setSettings);
+  const currentUser = useSystemStore((state) => state.currentUser);
 
   const activeTheme = settings.theme || 'classic-light';
 
@@ -81,6 +84,9 @@ export default function FileManager() {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [typeFilter, setTypeFilter] = useState<'all' | 'documents' | 'images' | 'audio' | 'video' | 'code' | 'archives'>('all');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>(prefView);
+
+  const DEFAULT_FOLDER_NAMES = ['Documents', 'Downloads', 'Projects', 'Pictures', 'Videos', 'Music'];
+  const [defaultFolderIdMap, setDefaultFolderIdMap] = useState<Record<string, string>>({});
 
   // Modals state
   const [activeShareItem, setActiveShareItem] = useState<FileItem | null>(null);
@@ -102,26 +108,99 @@ export default function FileManager() {
     }
   }, [fmPrefs?.defaultView]);
 
-  // Pinned sidebar folders state
-  const [pinnedFolderIds, setPinnedFolderIds] = useState<string[]>(() => {
-    const saved = StorageService.get<string[]>('sidebar-pinned-folders', [
-      'folder-documents',
-      'folder-downloads',
-      'folder-projects',
-      'folder-pictures',
-      'folder-videos',
-      'folder-music',
-    ]);
-    return saved.filter((id) => id !== 'volume-511gb' && id !== 'data-disk');
-  });
+  useEffect(() => {
+    if (!currentUser) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const backendFiles = await FileService.listChildren(null);
+        if (cancelled) return;
+        const mapped: FileItem[] = backendFiles.map((f: any) => ({
+          id: f._id,
+          name: f.name,
+          type: f.type,
+          content: f.content || '',
+          parentId: f.parentId,
+          createdAt: f.createdAt,
+          starred: f.starred || false,
+          category: f.mimeType?.split('/')[0] as any,
+          sharedWith: [],
+          publicLink: undefined,
+          activityHistory: [],
+          originalParentId: null,
+        }));
 
-  const togglePinSidebarFolder = (folderId: string) => {
-    setPinnedFolderIds((prev) => {
-      const isPinned = prev.includes(folderId);
-      const next = isPinned ? prev.filter((id) => id !== folderId) : [...prev, folderId];
-      StorageService.set('sidebar-pinned-folders', next);
-      return next;
-    });
+        const folderMap: Record<string, string> = {};
+        mapped.forEach((f) => {
+          if (f.type === 'folder' && DEFAULT_FOLDER_NAMES.includes(f.name)) {
+            folderMap[f.name.toLowerCase()] = f.id;
+          }
+        });
+        setDefaultFolderIdMap(folderMap);
+
+        const existingIds = new Set(mapped.map((f) => f.id));
+        setPinnedFolderIds((prev) => {
+          const cleaned = prev.filter((id) => {
+            if (id.startsWith('folder-')) {
+              const name = id.replace('folder-', '');
+              return existingIds.has(folderMap[name] || '');
+            }
+            return existingIds.has(id);
+          });
+          if (cleaned.length !== prev.length) {
+            StorageService.set('sidebar-pinned-folders', cleaned);
+          }
+          return cleaned;
+        });
+
+        setFiles(mapped);
+      } catch (error) {
+        console.warn('Failed to load files from backend:', error);
+      }
+    };
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser]);
+
+  // Pinned sidebar folders state
+  const [pinnedFolderIds, setPinnedFolderIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    let cancelled = false;
+    const loadPinned = async () => {
+      try {
+        const pinned = await FileService.listPinned();
+        if (cancelled) return;
+        const ids = pinned.map((f: any) => f._id || f.id).filter(Boolean);
+        setPinnedFolderIds(ids);
+      } catch (error) {
+        console.warn('Failed to load pinned folders from backend:', error);
+      }
+    };
+    loadPinned();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser]);
+
+  const togglePinSidebarFolder = async (folderId: string) => {
+    try {
+      const result = await FileService.togglePin(folderId);
+      if (result && result._id) {
+        setPinnedFolderIds((prev) => {
+          const isPinned = prev.includes(folderId);
+          if (isPinned) {
+            return prev.filter((id) => id !== folderId);
+          }
+          return [...prev, folderId];
+        });
+      }
+    } catch (error) {
+      console.warn('Failed to toggle pin on backend:', error);
+    }
   };
 
   // Custom navigation history
@@ -326,12 +405,6 @@ export default function FileManager() {
 
   const getFolderLabel = (folderId: string): string => {
     const map: Record<string, string> = {
-      'folder-documents': 'Documents',
-      'folder-downloads': 'Downloads',
-      'folder-projects': 'Projects',
-      'folder-pictures': 'Pictures',
-      'folder-videos': 'Videos',
-      'folder-music': 'Music',
       'recent': 'Recent',
       'starred': 'Starred',
       'trash': 'Trash / Recycle Bin',
@@ -593,7 +666,7 @@ export default function FileManager() {
     e.dataTransfer.setData('text/plain', item.id);
   };
 
-  const handleFolderDrop = (e: React.DragEvent, targetFolderId: string | null) => {
+  const handleFolderDrop = async (e: React.DragEvent, targetFolderId: string | null) => {
     e.preventDefault();
     e.stopPropagation();
 
@@ -619,6 +692,15 @@ export default function FileManager() {
     );
     setFiles(updated);
     setDraggedItemId(null);
+
+    if (currentUser) {
+      try {
+        await FileService.moveFile(draggedItemId, targetFolderId);
+      } catch (error) {
+        console.warn('Failed to move file on backend:', error);
+        setFiles(files);
+      }
+    }
   };
 
   // Size and Type string formatters
@@ -647,7 +729,7 @@ export default function FileManager() {
   };
 
   // Create folder
-  const handleCreateFolder = () => {
+  const handleCreateFolder = async () => {
     const name = prompt('Enter name of new folder:', 'New Folder');
     if (!name) return;
 
@@ -657,19 +739,30 @@ export default function FileManager() {
       folderName = `${name} (${count++})`;
     }
 
-    const newFolder: FileItem = {
-      id: `folder-${Date.now()}`,
-      name: folderName,
-      type: 'folder',
-      parentId: isTrashFolder ? null : currentFolderId,
-      createdAt: new Date().toLocaleDateString(),
-    };
+    try {
+      const created = await FileService.createFile({
+        name: folderName,
+        type: 'folder',
+        parentId: currentFolderId,
+      });
 
-    setFiles((prev) => [...prev, newFolder]);
+      const newFolder: FileItem = {
+        id: created._id,
+        name: created.name,
+        type: 'folder',
+        parentId: created.parentId,
+        createdAt: created.createdAt,
+      };
+
+      setFiles((prev) => [...prev, newFolder]);
+    } catch (error) {
+      console.error('Failed to create folder:', error);
+      alert('Failed to create folder. Please try again.');
+    }
   };
 
   // Create file
-  const handleCreateFile = () => {
+  const handleCreateFile = async () => {
     const name = prompt('Enter name of new text file:', 'notes.txt');
     if (!name) return;
 
@@ -681,16 +774,29 @@ export default function FileManager() {
       fileName = `${base} (${count++}).txt`;
     }
 
-    const newFile: FileItem = {
-      id: `file-${Date.now()}`,
-      name: fileName,
-      type: 'file',
-      content: 'This is a newly created text document.',
-      parentId: isTrashFolder ? null : currentFolderId,
-      createdAt: new Date().toLocaleDateString(),
-    };
+    try {
+      const created = await FileService.createFile({
+        name: fileName,
+        type: 'file',
+        parentId: currentFolderId,
+        content: 'This is a newly created text document.',
+        mimeType: 'text/plain',
+      });
 
-    setFiles((prev) => [...prev, newFile]);
+      const newFile: FileItem = {
+        id: created._id,
+        name: created.name,
+        type: 'file',
+        content: created.content || '',
+        parentId: created.parentId,
+        createdAt: created.createdAt,
+      };
+
+      setFiles((prev) => [...prev, newFile]);
+    } catch (error) {
+      console.error('Failed to create file:', error);
+      alert('Failed to create file. Please try again.');
+    }
   };
 
   // Clipboard commands
@@ -818,7 +924,7 @@ export default function FileManager() {
     useContextMenuStore.getState().closeContextMenu();
   };
 
-  const handleSaveRename = () => {
+  const handleSaveRename = async () => {
     if (!renamingId) return;
     const cleanName = renameText.trim();
     if (!cleanName) {
@@ -831,6 +937,14 @@ export default function FileManager() {
     );
     setFiles(updatedFiles);
     setRenamingId(null);
+
+    if (currentUser) {
+      try {
+        await FileService.updateFile(renamingId, { name: cleanName });
+      } catch (error) {
+        console.warn('Failed to rename file on backend:', error);
+      }
+    }
   };
 
   // Delete / Trash
@@ -863,11 +977,12 @@ export default function FileManager() {
     }
 
     if (locId.startsWith('folder-')) {
-      const existing = files.find((f) => f.id === locId);
+      const actualId = defaultFolderIdMap[locId.replace('folder-', '')] || locId;
+      const existing = files.find((f) => f.id === actualId);
       if (!existing) {
         const name = getFolderLabel(locId);
         const newFolder: FileItem = {
-          id: locId,
+          id: actualId,
           name,
           type: 'folder',
           parentId: null,
@@ -875,6 +990,8 @@ export default function FileManager() {
         };
         setFiles([...files, newFolder]);
       }
+      navigateToFolder(actualId);
+      return;
     }
 
     navigateToFolder(locId);
@@ -910,7 +1027,12 @@ export default function FileManager() {
     if (item.type === 'folder') {
       navigateToFolder(item.id);
     } else {
-      setActivePreviewItem(item);
+      const appId = getAppForFile(item.name, item.category === 'documents' ? 'text/plain' : 'application/octet-stream');
+      if (appId) {
+        handleOpenWithApp(appId, item);
+      } else {
+        setActivePreviewItem(item);
+      }
     }
   };
 
@@ -1121,7 +1243,7 @@ export default function FileManager() {
   // Open Selected App via OpenWith Modal
   const handleOpenWithApp = (appKey: string, item: FileItem) => {
     if (appKey === 'text-editor') {
-      openTextFileInEditor(item.id, item.name, item.content || '');
+      openTextFileInEditor(item.id, item.name, item.content || '', currentFolderId);
     } else if (appKey === 'image-viewer' || appKey === 'audio-player' || appKey === 'video-player' || appKey === 'code-viewer') {
       setActivePreviewItem(item);
     } else if (appKey === 'properties') {
@@ -1709,7 +1831,7 @@ export default function FileManager() {
               {sortedItems.map((item) => {
                 const isSelected = selectedFileIds.includes(item.id);
                 const isBeingRenamed = renamingId === item.id;
-                const isClipboardCut = clipboard?.id === item.id && clipboard.action === 'cut';
+                const isClipboardCut = clipboard && clipboard.id === item.id && clipboard.action === 'cut';
 
                 return (
                   <div
@@ -1834,7 +1956,7 @@ export default function FileManager() {
                   {sortedItems.map((item) => {
                     const isSelected = selectedFileIds.includes(item.id);
                     const isBeingRenamed = renamingId === item.id;
-                    const isClipboardCut = clipboard?.id === item.id && clipboard.action === 'cut';
+                const isClipboardCut = clipboard && clipboard.id === item.id && clipboard.action === 'cut';
 
                     return (
                       <tr
@@ -2039,13 +2161,21 @@ export default function FileManager() {
         allFiles={files}
         isOpen={!!activeMoveItem}
         onClose={() => setActiveMoveItem(null)}
-        onConfirmMove={(targetFolderId) => {
+        onConfirmMove={async (targetFolderId) => {
           if (!activeMoveItem) return;
           const updated = files.map((f) =>
             f.id === activeMoveItem.id ? { ...f, parentId: targetFolderId } : f
           );
           setFiles(updated);
           setActiveMoveItem(null);
+
+          if (currentUser) {
+            try {
+              await FileService.moveFile(activeMoveItem.id, targetFolderId);
+            } catch (error) {
+              console.warn('Failed to move file on backend:', error);
+            }
+          }
         }}
       />
 

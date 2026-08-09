@@ -60,6 +60,8 @@ import {
   MoreVertical
 } from 'lucide-react';
 import { useSystemStore } from '../../systemStore';
+import AppShell from '../../components/common/AppShell';
+import { ApiService } from '../../services/ApiService';
 import { Email, FolderType, CustomFolder, Contact, EmailRule, EmailAttachment } from './types';
 import { INITIAL_EMAILS, INITIAL_CUSTOM_FOLDERS, INITIAL_CONTACTS, INITIAL_RULES } from './data/mockEmails';
 import { DrivePickerModal } from './components/DrivePickerModal';
@@ -102,16 +104,65 @@ export default function MailApp() {
 
   const isCompact = containerWidth < 600;
 
-  // Core Data States
-  const [emails, setEmails] = useState<Email[]>(INITIAL_EMAILS);
+  const [emails, setEmails] = useState<Email[]>([]);
   const [customFolders, setCustomFolders] = useState<CustomFolder[]>(INITIAL_CUSTOM_FOLDERS);
   const [contacts, setContacts] = useState<Contact[]>(INITIAL_CONTACTS);
   const [rules, setRules] = useState<EmailRule[]>(INITIAL_RULES);
   const [blockedEmails, setBlockedEmails] = useState<string[]>(['spammer@fakedeals.xyz']);
+  const [isLoadingEmails, setIsLoadingEmails] = useState<boolean>(false);
+  const [emailsLoadError, setEmailsLoadError] = useState<string | null>(null);
+
+  const loadEmails = async () => {
+    if (!currentUser) return;
+    setIsLoadingEmails(true);
+    setEmailsLoadError(null);
+    try {
+      const inbox = await ApiService.getInbox();
+      const sent = await ApiService.getSent();
+      const starred = await ApiService.getStarred();
+      const allEmails = [...inbox, ...sent, ...starred];
+      if (allEmails.length > 0) {
+        const mapped: Email[] = allEmails.map((e: any) => ({
+          id: e._id || e.id,
+          senderName: e.from?.split('<')[0]?.trim() || e.from || 'Unknown',
+          senderEmail: e.from?.replace(/<.*>/g, '').trim() || e.from || 'unknown@example.com',
+          recipientEmail: e.to || '',
+          subject: e.subject || '(No Subject)',
+          preview: (e.body || '').slice(0, 120) || 'No preview',
+          body: e.body || '',
+          timestamp: e.timestamp || new Date(e.createdAt).toLocaleString(),
+          dateISO: e.dateISO || e.createdAt || new Date().toISOString(),
+          folder: e.folder || 'inbox',
+          isUnread: e.isUnread ?? true,
+          isStarred: e.isStarred ?? false,
+          isPinned: e.isPinned ?? false,
+          isImportant: e.isImportant ?? false,
+          labels: e.labels || [],
+          attachments: e.attachments || [],
+        }));
+        setEmails(mapped);
+        setSelectedEmailId(mapped[0]?.id || null);
+      } else {
+        setEmails([]);
+        setSelectedEmailId(null);
+      }
+    } catch (error) {
+      console.warn('Failed to load emails from API:', error);
+      setEmails([]);
+      setSelectedEmailId(null);
+      setEmailsLoadError('Unable to load emails. Please check your connection and try again.');
+    } finally {
+      setIsLoadingEmails(false);
+    }
+  };
+
+  useEffect(() => {
+    loadEmails();
+  }, [currentUser]);
 
   // Navigation States
   const [activeFolder, setActiveFolder] = useState<FolderType>('inbox');
-  const [selectedEmailId, setSelectedEmailId] = useState<string | null>('mail-1');
+  const [selectedEmailId, setSelectedEmailId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [filterTab, setFilterTab] = useState<'all' | 'unread' | 'starred' | 'attachments'>('all');
   const [activeLabel, setActiveLabel] = useState<string | null>(null);
@@ -336,7 +387,7 @@ export default function MailApp() {
     showToast('Email summary copied to clipboard!');
   };
 
-  const handleSendQuickReply = () => {
+  const handleSendQuickReply = async () => {
     if (!quickReplyText.trim() || !selectedEmail) return;
 
     const newSentEmail: Email = {
@@ -354,6 +405,18 @@ export default function MailApp() {
       isStarred: false,
       labels: selectedEmail.labels,
     };
+
+    if (currentUser) {
+      try {
+        await ApiService.sendMail({
+          to: selectedEmail.senderEmail,
+          subject: newSentEmail.subject,
+          body: quickReplyText
+        });
+      } catch (error) {
+        console.warn('Failed to send quick reply via API:', error);
+      }
+    }
 
     setEmails((prev) => [newSentEmail, ...prev]);
     setQuickReplyText('');
@@ -474,7 +537,7 @@ export default function MailApp() {
     showToast('Saved to Drafts');
   };
 
-  const handleSendNewCompose = () => {
+  const handleSendNewCompose = async () => {
     if (!composeTo.trim() || !composeSubject.trim()) {
       alert('Please enter recipient email and subject.');
       return;
@@ -503,6 +566,22 @@ export default function MailApp() {
       isImportant: priority === 'high',
       attachments: attachments.length > 0 ? attachments : undefined,
     };
+
+    if (currentUser) {
+      try {
+        await ApiService.sendMail({
+          to: composeTo,
+          subject: composeSubject,
+          body: finalBody,
+          cc: composeCc,
+          bcc: composeBcc,
+          priority,
+          attachments
+        });
+      } catch (error) {
+        console.warn('Failed to send email via API:', error);
+      }
+    }
 
     setEmails((prev) => [newSentEmail, ...prev]);
     setIsComposing(false);
@@ -780,10 +859,27 @@ export default function MailApp() {
 
       {/* Email Item List */}
       <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-white/5 pb-16">
-        {filteredEmails.length === 0 ? (
+        {isLoadingEmails ? (
+          <div className="p-8 text-center flex flex-col items-center justify-center text-slate-400 gap-3">
+            <div className="w-5 h-5 border-2 border-blue-500/30 border-t-blue-600 rounded-full animate-spin" />
+            <span className="text-xs font-semibold">Loading emails...</span>
+          </div>
+        ) : emailsLoadError ? (
+          <div className="p-8 text-center flex flex-col items-center justify-center text-slate-400 gap-3">
+            <AlertCircle size={32} strokeWidth={1.5} className="opacity-40 text-rose-400" />
+            <span className="text-xs font-semibold text-rose-300">{emailsLoadError}</span>
+            <button
+              onClick={loadEmails}
+              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold cursor-pointer"
+            >
+              Retry
+            </button>
+          </div>
+        ) : filteredEmails.length === 0 ? (
           <div className="p-8 text-center flex flex-col items-center justify-center text-slate-400 gap-2">
             <Mail size={32} strokeWidth={1.5} className="opacity-40" />
-            <span className="text-xs font-semibold">No emails match this filter.</span>
+            <span className="text-xs font-semibold">No emails yet.</span>
+            <span className="text-[10px] text-slate-500">Sent mail will appear here, or compose a new message.</span>
           </div>
         ) : (
           filteredEmails.map((email) => {
@@ -1332,8 +1428,10 @@ export default function MailApp() {
   );
 
   return (
-    <div ref={containerRef} className={`w-full h-full flex flex-col select-none relative ${isLight ? 'bg-slate-100 text-slate-800' : 'bg-[#18181b] text-white/90'}`}>
-
+    <AppShell
+      ref={containerRef}
+      className={`${isLight ? 'bg-slate-100 text-slate-800' : 'bg-[#18181b] text-white/90'}`}
+    >
       {/* System Toast Notification */}
       {toastMessage && (
         <div className="absolute top-3 right-3 z-50 px-3.5 py-2 rounded-xl bg-blue-600 text-white text-xs font-bold shadow-xl animate-in fade-in slide-in-from-top-2 duration-150 flex items-center gap-2">
@@ -1341,6 +1439,128 @@ export default function MailApp() {
           <span>{toastMessage}</span>
         </div>
       )}
+
+      {/* ==================== TOP APPLICATION TOOLBAR ==================== */}
+      <div
+        className={`h-11 px-3 border-b shrink-0 flex items-center justify-between gap-2 z-20 select-none ${
+          isLight ? 'bg-[#ebebee] border-slate-300/80 text-slate-700' : 'bg-[#26252a] border-white/10 text-white/90'
+        }`}
+      >
+        {/* Left: Sidebar toggle, New Mail button, Refresh */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setIsSidebarOpen((prev) => !prev)}
+            className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+              isSidebarOpen
+                ? isLight ? 'bg-slate-200 text-slate-800' : 'bg-white/20 text-white'
+                : isLight ? 'hover:bg-slate-200 text-slate-600' : 'hover:bg-white/10 text-white/70'
+            }`}
+            title="Toggle Sidebar"
+          >
+            {isSidebarOpen ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
+          </button>
+          
+          <button
+            onClick={handleStartCompose}
+            className="px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-2xs transition-transform active:scale-95 cursor-pointer"
+          >
+            <Plus size={14} />
+            <span>New Mail</span>
+          </button>
+
+          <button
+            onClick={loadEmails}
+            disabled={isLoadingEmails}
+            className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+              isLight ? 'hover:bg-slate-200 text-slate-600' : 'hover:bg-white/10 text-white/70'
+            }`}
+            title="Refresh Inbox"
+          >
+            <RefreshCw size={14} className={isLoadingEmails ? 'animate-spin' : ''} />
+          </button>
+        </div>
+
+        {/* Center: Search & Filter Pills */}
+        <div className="flex-1 max-w-md mx-2 flex items-center gap-2">
+          <div className="relative flex-1">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 opacity-40" size={13} />
+            <input
+              type="text"
+              placeholder="Search mails, senders, subjects..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className={`w-full pl-8 pr-7 py-1 text-xs rounded-lg border outline-none focus:ring-1 focus:ring-blue-500 ${
+                isLight ? 'bg-white border-slate-300 text-slate-800' : 'bg-black/30 border-white/15 text-white'
+              }`}
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                className="absolute right-2 top-1/2 -translate-y-1/2 opacity-40 hover:opacity-100"
+              >
+                <X size={12} />
+              </button>
+            )}
+          </div>
+
+          <div
+            className={`hidden sm:flex items-center p-0.5 rounded-lg border ${
+              isLight ? 'bg-slate-200/70 border-slate-300/60' : 'bg-black/30 border-white/10'
+            }`}
+          >
+            {(['all', 'unread', 'starred', 'attachments'] as const).map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setFilterTab(tab)}
+                className={`px-2 py-0.5 rounded-md text-[11px] font-semibold capitalize transition-all cursor-pointer ${
+                  filterTab === tab
+                    ? 'bg-white text-slate-900 shadow-2xs dark:bg-white/20 dark:text-white'
+                    : isLight
+                    ? 'text-slate-600 hover:text-slate-900'
+                    : 'text-white/60 hover:text-white'
+                }`}
+              >
+                {tab}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Right: Modals / Management Actions */}
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => setIsContactsModalOpen(true)}
+            className={`p-1.5 rounded-lg transition-colors cursor-pointer flex items-center gap-1 px-2 text-xs font-medium ${
+              isLight ? 'hover:bg-slate-200 text-slate-700' : 'hover:bg-white/10 text-white/80'
+            }`}
+            title="Contacts"
+          >
+            <User size={14} />
+            <span className="hidden md:inline">Contacts</span>
+          </button>
+
+          <button
+            onClick={() => setIsRulesModalOpen(true)}
+            className={`p-1.5 rounded-lg transition-colors cursor-pointer flex items-center gap-1 px-2 text-xs font-medium ${
+              isLight ? 'hover:bg-slate-200 text-slate-700' : 'hover:bg-white/10 text-white/80'
+            }`}
+            title="Email Rules & Filters"
+          >
+            <Filter size={14} />
+            <span className="hidden md:inline">Rules</span>
+          </button>
+
+          <button
+            onClick={() => setIsCustomFolderModalOpen(true)}
+            className={`p-1.5 rounded-lg transition-colors cursor-pointer flex items-center gap-1 px-2 text-xs font-medium ${
+              isLight ? 'hover:bg-slate-200 text-slate-700' : 'hover:bg-white/10 text-white/80'
+            }`}
+            title="New Folder"
+          >
+            <FolderPlus size={14} />
+          </button>
+        </div>
+      </div>
 
       {/* Main Layout Container */}
       <div className="flex-1 flex min-h-0 divide-x divide-slate-200/80 dark:divide-white/10 overflow-hidden relative">
@@ -1465,6 +1685,6 @@ export default function MailApp() {
         isLight={isLight}
       />
 
-    </div>
+    </AppShell>
   );
 }

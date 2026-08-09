@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import AppShell from '../../components/common/AppShell';
 import {
   Video,
   VideoOff,
@@ -48,6 +49,7 @@ import {
   Filter,
 } from 'lucide-react';
 import { useSystemStore } from '../../systemStore';
+import { MeetingService } from '../../services/MeetingService';
 import { Participant, ChatMessage, Poll, MeetingSecuritySettings, WaitingParticipant } from './types';
 import WhiteboardModal from './components/WhiteboardModal';
 import PollsDrawer from './components/PollsDrawer';
@@ -55,8 +57,8 @@ import BreakoutRoomsModal from './components/BreakoutRoomsModal';
 import SecurityModal from './components/SecurityModal';
 import InviteModal from './components/InviteModal';
 
-// Canvas component for animated Virtual Studio Camera
-function VirtualCameraCanvas({ name = 'You (Virtual Cam)' }: { name?: string }) {
+// Canvas component for Virtual Studio Camera or live webcam feed
+function VirtualCameraCanvas({ name = 'You (Virtual Cam)', stream, mirrored = true }: { name?: string; stream?: MediaStream | null; mirrored?: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
@@ -67,6 +69,40 @@ function VirtualCameraCanvas({ name = 'You (Virtual Cam)' }: { name?: string }) 
 
     let animationFrameId: number;
     let t = 0;
+
+    if (stream) {
+      const video = document.createElement('video');
+      video.srcObject = stream;
+      video.muted = true;
+      video.playsInline = true;
+      video.play().catch(() => {});
+
+      const render = () => {
+        const w = canvas.width;
+        const h = canvas.height;
+        ctx.clearRect(0, 0, w, h);
+        if (video.readyState >= 2) {
+          ctx.save();
+          if (mirrored) {
+            ctx.translate(w, 0);
+            ctx.scale(-1, 1);
+          }
+          ctx.drawImage(video, 0, 0, w, h);
+          ctx.restore();
+        }
+        animationFrameId = requestAnimationFrame(render);
+      };
+
+      video.onloadedmetadata = () => {
+        render();
+      };
+
+      return () => {
+        cancelAnimationFrame(animationFrameId);
+        video.pause();
+        video.srcObject = null;
+      };
+    }
 
     const render = () => {
       t += 0.04;
@@ -176,7 +212,7 @@ function VirtualCameraCanvas({ name = 'You (Virtual Cam)' }: { name?: string }) 
     return () => {
       cancelAnimationFrame(animationFrameId);
     };
-  }, []);
+  }, [stream, mirrored]);
 
   return (
     <div className="w-full h-full relative flex items-center justify-center bg-slate-900 overflow-hidden">
@@ -294,6 +330,7 @@ export default function MeetingApp() {
   const calendarEvents = useSystemStore((state) => state.calendarEvents);
   const addCalendarEvent = useSystemStore((state) => state.addCalendarEvent);
   const setFiles = useSystemStore((state) => state.setFiles);
+  const resolveDefaultFolderId = useSystemStore((state) => state.resolveDefaultFolderId);
 
   // Container width state for responsive layout inside windows / mobile
   const containerRef = useRef<HTMLDivElement>(null);
@@ -315,8 +352,8 @@ export default function MeetingApp() {
   const isCompact = containerWidth < 680;
   const isVeryCompact = containerWidth < 480;
 
-  // App View State: 'lobby' | 'in-call'
-  const [activeTab, setActiveTab] = useState<'lobby' | 'in-call'>('lobby');
+  // App View State: 'lobby' | 'pre-meeting' | 'in-call'
+  const [activeTab, setActiveTab] = useState<'lobby' | 'pre-meeting' | 'in-call'>('lobby');
 
   // Call Settings & Passcode
   const [meetingCode, setMeetingCode] = useState('');
@@ -338,20 +375,14 @@ export default function MeetingApp() {
   });
 
   // Waiting Room Queue
-  const [waitingQueue, setWaitingQueue] = useState<WaitingParticipant[]>([
-    {
-      id: 'w1',
-      name: 'Jordan Lee',
-      avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80',
-      joinedAt: '10:04 AM',
-    },
-  ]);
+  const [waitingQueue, setWaitingQueue] = useState<WaitingParticipant[]>([]);
 
   // Local Media State
   const [isMicOn, setIsMicOn] = useState(true);
   const [isVideoOn, setIsVideoOn] = useState(true);
   const [isNoiseSuppressionOn, setIsNoiseSuppressionOn] = useState(true);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
   const [screenShareMode, setScreenShareMode] = useState<'entire' | 'window' | 'tab'>('entire');
   const [showScreenShareMenu, setShowScreenShareMenu] = useState(false);
   const [isHandRaised, setIsHandRaised] = useState(false);
@@ -415,7 +446,7 @@ export default function MeetingApp() {
         name: fileName,
         type: 'file',
         content: `🎥 OSX Meet Recorded Video Stream (${formatRecordingTime(recordingSeconds)})\nMeeting ID: ${currentMeetingId}\nDate: ${new Date().toLocaleString()}\nParticipants: ${participants.map((p) => p.name).join(', ')}`,
-        parentId: 'folder-videos',
+        parentId: resolveDefaultFolderId('Videos') || null,
         createdAt: new Date().toLocaleDateString(),
       },
     ]);
@@ -424,34 +455,106 @@ export default function MeetingApp() {
 
   // Webcam stream state & permission handling
   const [webcamStream, setWebcamStream] = useState<MediaStream | null>(null);
+  const [audioStream, setAudioStream] = useState<MediaStream | null>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [isRequestingCamera, setIsRequestingCamera] = useState(false);
-  const [useVirtualCam, setUseVirtualCam] = useState(true);
+  const [useVirtualCam, setUseVirtualCam] = useState(false);
   const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
-  const [permissionStatus, setPermissionStatus] = useState<'prompt' | 'granted' | 'denied'>('granted');
+  const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedVideoDeviceId, setSelectedVideoDeviceId] = useState<string>('');
+  const [selectedAudioDeviceId, setSelectedAudioDeviceId] = useState<string>('');
+  const [permissionStatus, setPermissionStatus] = useState<'prompt' | 'granted' | 'denied'>('prompt');
+  const [micLevel, setMicLevel] = useState(0);
+  const [audioContext, setAudioContext] = useState<AudioContext | null>(null);
 
   useEffect(() => {
     let isCancelled = false;
-    if (navigator?.permissions?.query) {
-      navigator.permissions
-        .query({ name: 'camera' as PermissionName })
-        .then((status) => {
-          if (isCancelled) return;
-          setPermissionStatus(status.state as any);
-          status.onchange = () => {
-            if (isCancelled) return;
-            setPermissionStatus(status.state as any);
-          };
-        })
-        .catch(() => {});
-    }
+    const checkPermissions = async () => {
+      try {
+        if (navigator?.permissions?.query) {
+          const cameraStatus = await navigator.permissions.query({ name: 'camera' as PermissionName });
+          const micStatus = await navigator.permissions.query({ name: 'microphone' as PermissionName });
+
+          if (!isCancelled) {
+            setPermissionStatus(cameraStatus.state === 'granted' && micStatus.state === 'granted' ? 'granted' : cameraStatus.state === 'denied' ? 'denied' : 'prompt');
+
+            cameraStatus.onchange = () => {
+              if (!isCancelled) {
+                setPermissionStatus(cameraStatus.state === 'granted' && micStatus.state === 'granted' ? 'granted' : cameraStatus.state === 'denied' ? 'denied' : 'prompt');
+              }
+            };
+            micStatus.onchange = () => {
+              if (!isCancelled) {
+                setPermissionStatus(cameraStatus.state === 'granted' && micStatus.state === 'granted' ? 'granted' : cameraStatus.state === 'denied' ? 'denied' : 'prompt');
+              }
+            };
+          }
+        }
+
+        if (!isCancelled) {
+          await enumerateDevices();
+        }
+      } catch {
+        if (!isCancelled) {
+          setPermissionStatus('prompt');
+        }
+      }
+    };
+
+    checkPermissions();
     return () => {
       isCancelled = true;
     };
   }, []);
 
-  const [micLevel, setMicLevel] = useState(65);
+  const enumerateDevices = async () => {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoInputs = devices.filter((d) => d.kind === 'videoinput');
+      const audioInputs = devices.filter((d) => d.kind === 'audioinput');
+      setVideoDevices(videoInputs);
+      setAudioDevices(audioInputs);
+      if (videoInputs.length > 0 && !selectedVideoDeviceId) {
+        setSelectedVideoDeviceId(videoInputs[0].deviceId);
+      }
+      if (audioInputs.length > 0 && !selectedAudioDeviceId) {
+        setSelectedAudioDeviceId(audioInputs[0].deviceId);
+      }
+    } catch {
+      // Permission not granted yet, devices not available
+    }
+  };
+
+  const setupAudioLevelMeter = (stream: MediaStream) => {
+    if (!stream.getAudioTracks().length) return;
+
+    try {
+      if (audioContext) {
+        audioContext.close();
+      }
+
+      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const analyser = ctx.createAnalyser();
+      const source = ctx.createMediaStreamSource(stream);
+      source.connect(analyser);
+      analyser.fftSize = 256;
+
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+      const updateLevel = () => {
+        if (!audioStream || !audioStream.active) return;
+        analyser.getByteFrequencyData(dataArray);
+        const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+        setMicLevel(Math.min(100, Math.round((average / 128) * 100)));
+        requestAnimationFrame(updateLevel);
+      };
+
+      updateLevel();
+      setAudioContext(ctx);
+    } catch {
+      setMicLevel(65);
+    }
+  };
 
   // Reaction animations
   const [activeReactions, setActiveReactions] = useState<{ id: string; emoji: string; x: number }[]>([]);
@@ -459,25 +562,10 @@ export default function MeetingApp() {
 
   // Chat State & File Upload
   const [chatInput, setChatInput] = useState('');
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
-    { id: '1', sender: 'Sarah Miller', time: '10:02 AM', text: 'Hey everyone! Glad we could jump on.', isMe: false },
-    { id: '2', sender: 'Alex Rivera', time: '10:03 AM', text: 'Can everyone see my shared doc when ready?', isMe: false },
-  ]);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
   // Polls State
-  const [polls, setPolls] = useState<Poll[]>([
-    {
-      id: 'poll-1',
-      question: 'Should we schedule our weekly sync for Mondays or Tuesdays?',
-      options: [
-        { id: 'o1', text: 'Monday 10 AM', votes: 2 },
-        { id: 'o2', text: 'Tuesday 2 PM', votes: 1 },
-      ],
-      isActive: true,
-      creator: 'Sarah Miller',
-      totalVotes: 3,
-    },
-  ]);
+  const [polls, setPolls] = useState<Poll[]>([]);
 
   // Participants State
   const [participants, setParticipants] = useState<Participant[]>([
@@ -485,45 +573,12 @@ export default function MeetingApp() {
       id: 'me',
       name: 'You (Host)',
       role: 'Host',
-      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=150&q=80',
-      isMuted: false,
-      isVideoOn: true,
-      isHandRaised: false,
-      isSpeaking: false,
-      bgGradient: 'from-blue-600 to-indigo-700',
-    },
-    {
-      id: 'p1',
-      name: 'Sarah Miller',
-      role: 'Product Lead',
-      avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=150&q=80',
-      isMuted: false,
-      isVideoOn: true,
-      isHandRaised: false,
-      isSpeaking: true,
-      bgGradient: 'from-purple-600 to-pink-600',
-    },
-    {
-      id: 'p2',
-      name: 'Alex Rivera',
-      role: 'UX Designer',
-      avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80',
-      isMuted: true,
-      isVideoOn: true,
-      isHandRaised: false,
-      isSpeaking: false,
-      bgGradient: 'from-emerald-600 to-teal-700',
-    },
-    {
-      id: 'p3',
-      name: 'David Chen',
-      role: 'Software Engineer',
-      avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=150&q=80',
+      avatar: '',
       isMuted: false,
       isVideoOn: false,
       isHandRaised: false,
       isSpeaking: false,
-      bgGradient: 'from-amber-600 to-orange-700',
+      bgGradient: 'from-blue-600 to-indigo-700',
     },
   ]);
 
@@ -534,6 +589,8 @@ export default function MeetingApp() {
   const [schedCategory, setSchedCategory] = useState<'Work' | 'Personal'>('Work');
   const [schedPasscode, setSchedPasscode] = useState('');
   const [schedWaitingRoom, setSchedWaitingRoom] = useState(true);
+  const [todayMeetings, setTodayMeetings] = useState<any[]>([]);
+  const [isLoadingMeetings, setIsLoadingMeetings] = useState(false);
 
   // Request Physical Camera Access
   const requestCameraAccess = async (deviceId?: string) => {
@@ -564,16 +621,19 @@ export default function MeetingApp() {
       }
 
       setWebcamStream(stream);
+      setAudioStream(stream);
       setPermissionStatus('granted');
       setUseVirtualCam(false);
       setCameraError(null);
+
+      setupAudioLevelMeter(stream);
 
       try {
         const devices = await navigator.mediaDevices.enumerateDevices();
         const videoInputs = devices.filter((d) => d.kind === 'videoinput');
         setVideoDevices(videoInputs);
-        if (videoInputs.length > 0 && !selectedDeviceId) {
-          setSelectedDeviceId(videoInputs[0].deviceId);
+        if (videoInputs.length > 0 && !selectedVideoDeviceId) {
+          setSelectedVideoDeviceId(videoInputs[0].deviceId);
         }
       } catch {}
     } catch (err: any) {
@@ -598,7 +658,7 @@ export default function MeetingApp() {
 
   useEffect(() => {
     if (isVideoOn && !useVirtualCam) {
-      requestCameraAccess(selectedDeviceId || undefined);
+      requestCameraAccess(selectedVideoDeviceId || undefined);
     } else {
       if (webcamStream) {
         webcamStream.getTracks().forEach((t) => t.stop());
@@ -609,19 +669,28 @@ export default function MeetingApp() {
       if (webcamStream) {
         webcamStream.getTracks().forEach((t) => t.stop());
       }
+      if (audioStream && audioStream !== webcamStream) {
+        audioStream.getTracks().forEach((t) => t.stop());
+      }
+      if (audioContext) {
+        audioContext.close();
+      }
     };
-  }, [isVideoOn, useVirtualCam]);
+  }, [isVideoOn, useVirtualCam, selectedVideoDeviceId]);
 
   useEffect(() => {
     if (!isMicOn) {
       setMicLevel(0);
       return;
     }
+    if (audioStream && audioStream.getAudioTracks().length > 0) {
+      return;
+    }
     const interval = setInterval(() => {
       setMicLevel(Math.floor(30 + Math.random() * 55));
     }, 200);
     return () => clearInterval(interval);
-  }, [isMicOn]);
+  }, [isMicOn, audioStream]);
 
   useEffect(() => {
     if (activeTab !== 'in-call') return;
@@ -637,16 +706,34 @@ export default function MeetingApp() {
     return () => clearInterval(interval);
   }, [activeTab]);
 
+  useEffect(() => {
+    if (activeTab !== 'pre-meeting') return;
+    if (!isVideoOn || useVirtualCam) return;
+    if (permissionStatus === 'denied') return;
+
+    requestCameraAccess(selectedVideoDeviceId || undefined);
+  }, [activeTab, isVideoOn, useVirtualCam, permissionStatus, selectedVideoDeviceId]);
+
   // Start instant meeting
-  const handleStartInstantMeeting = (title = 'Instant Sync') => {
+  const handleStartInstantMeeting = async (title = 'Instant Sync') => {
     const code = `meet-${Math.floor(1000 + Math.random() * 9000)}-${Math.random().toString(36).substring(2, 5)}`;
     setCurrentMeetingId(code);
     setMeetingTitle(title);
-    setActiveTab('in-call');
+    setActiveTab('pre-meeting');
+
+    try {
+      const meeting = await MeetingService.createMeeting({ title });
+      if (meeting) {
+        setCurrentMeetingId(meeting.meetingCode || meeting._id || code);
+        setMeetingTitle(meeting.title || title);
+      }
+    } catch (error) {
+      console.warn('Failed to create meeting:', error);
+    }
   };
 
   // Join meeting via code / link
-  const handleJoinByCode = () => {
+  const handleJoinByCode = async () => {
     let cleanCode = meetingCode.trim();
     if (cleanCode.includes('/')) {
       const parts = cleanCode.split('/');
@@ -654,27 +741,46 @@ export default function MeetingApp() {
     }
     if (!cleanCode) return;
 
-    if (securitySettings.isLocked) {
-      setJoinError('This meeting is locked by the host.');
-      return;
-    }
-
-    if (securitySettings.passcode && inputPasscode !== securitySettings.passcode) {
-      setJoinError('Incorrect meeting passcode.');
-      return;
-    }
-
     setJoinError(null);
-    setCurrentMeetingId(cleanCode);
-    setMeetingTitle(`Meeting (${cleanCode})`);
-    setActiveTab('in-call');
+    setActiveTab('pre-meeting');
+
+    try {
+      const meeting = await MeetingService.joinMeeting(cleanCode, inputPasscode);
+      if (meeting) {
+        setCurrentMeetingId(meeting._id || cleanCode);
+        setMeetingTitle(meeting.title || `Meeting (${cleanCode})`);
+        if (meeting.passcode) {
+          setSecuritySettings((prev) => ({ ...prev, passcode: meeting.passcode }));
+        }
+      }
+    } catch (error: any) {
+      setJoinError(error.message || 'Failed to join meeting');
+      setActiveTab('lobby');
+    }
   };
 
-  const handleEndCall = () => {
+  const handleEndCall = async () => {
+    if (currentMeetingId) {
+      try {
+        await MeetingService.leaveMeeting(currentMeetingId);
+      } catch (error) {
+        console.warn('Failed to leave meeting:', error);
+      }
+    }
+    if (webcamStream) {
+      webcamStream.getTracks().forEach((t) => t.stop());
+      setWebcamStream(null);
+    }
+    if (audioContext) {
+      audioContext.close();
+    }
     setActiveTab('lobby');
     setActiveSideDrawer(null);
     setIsRecording(false);
     setIsScreenSharing(false);
+    setParticipants([]);
+    setChatMessages([]);
+    setWaitingQueue([]);
   };
 
   const handleCopyLink = () => {
@@ -684,8 +790,34 @@ export default function MeetingApp() {
     setTimeout(() => setIsCopied(false), 2000);
   };
 
+  // Screen Sharing
+  const toggleScreenShare = async () => {
+    if (!isScreenSharing) {
+      try {
+        const stream = await navigator.mediaDevices.getDisplayMedia({
+          video: { width: { ideal: 1920 }, height: { ideal: 1080 } } as any,
+          audio: false,
+        });
+        setScreenStream(stream);
+        setIsScreenSharing(true);
+        stream.getVideoTracks()[0].onended = () => {
+          setScreenStream(null);
+          setIsScreenSharing(false);
+        };
+      } catch (error) {
+        console.warn('Screen share denied:', error);
+      }
+    } else {
+      if (screenStream) {
+        screenStream.getTracks().forEach((t) => t.stop());
+        setScreenStream(null);
+      }
+      setIsScreenSharing(false);
+    }
+  };
+
   // Chat message & attachment
-  const handleSendMessage = (fileAttachment?: ChatMessage['attachment']) => {
+  const handleSendMessage = async (fileAttachment?: ChatMessage['attachment']) => {
     if (!chatInput.trim() && !fileAttachment) return;
     const myMsg: ChatMessage = {
       id: Date.now().toString(),
@@ -698,16 +830,13 @@ export default function MeetingApp() {
     setChatMessages((prev) => [...prev, myMsg]);
     setChatInput('');
 
-    setTimeout(() => {
-      const replyMsg: ChatMessage = {
-        id: (Date.now() + 1).toString(),
-        sender: 'Sarah Miller',
-        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        text: fileAttachment ? 'Thanks for sharing the attachment!' : 'Got it, thanks for sharing!',
-        isMe: false,
-      };
-      setChatMessages((prev) => [...prev, replyMsg]);
-    }, 1800);
+    if (currentMeetingId) {
+      try {
+        await MeetingService.sendChatMessage(currentMeetingId, chatInput.trim());
+      } catch (error) {
+        console.warn('Failed to send chat message:', error);
+      }
+    }
   };
 
   const handleAttachSampleFile = () => {
@@ -812,10 +941,11 @@ export default function MeetingApp() {
   };
 
   // Schedule Meeting
-  const handleSaveSchedule = () => {
+  const handleSaveSchedule = async () => {
     if (!schedTitle.trim()) return;
     const todayISO = new Date().toISOString().split('T')[0];
     const meetingCodeGenerated = `meet-${Math.floor(1000 + Math.random() * 9000)}`;
+
     addCalendarEvent({
       title: `🎥 ${schedTitle.trim()}`,
       date: todayISO,
@@ -825,6 +955,19 @@ export default function MeetingApp() {
         schedPasscode ? ` | Passcode: ${schedPasscode}` : ''
       }`,
     });
+
+    try {
+      await MeetingService.createMeeting({
+        title: schedTitle.trim(),
+        description: `Scheduled meeting`,
+        startTime: new Date().toISOString(),
+        passcode: schedPasscode,
+        waitingRoomEnabled: schedWaitingRoom,
+      });
+    } catch (error) {
+      console.warn('Failed to save scheduled meeting:', error);
+    }
+
     if (schedPasscode) {
       setSecuritySettings((prev) => ({ ...prev, passcode: schedPasscode, waitingRoomEnabled: schedWaitingRoom }));
     }
@@ -833,17 +976,33 @@ export default function MeetingApp() {
     alert(`📅 Meeting scheduled and added to DriveOSX Calendar!`);
   };
 
-  const todayISO = new Date().toISOString().split('T')[0];
-  const todayMeetings = calendarEvents.filter(
-    (e) => e.date === todayISO && (e.title.includes('Meeting') || e.title.includes('Sync') || e.title.includes('🎥'))
-  );
+  useEffect(() => {
+    let cancelled = false;
+    const loadMeetings = async () => {
+      setIsLoadingMeetings(true);
+      try {
+        const meetings = await MeetingService.getTodayMeetings();
+        if (!cancelled) {
+          setTodayMeetings(meetings);
+        }
+      } catch (error) {
+        console.warn('Failed to load meetings:', error);
+      } finally {
+        if (!cancelled) {
+          setIsLoadingMeetings(false);
+        }
+      }
+    };
+    loadMeetings();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
-    <div
+    <AppShell
       ref={containerRef}
-      className={`w-full h-full flex flex-col font-sans select-none overflow-hidden ${
-        isLight ? 'bg-[#f4f4f7] text-slate-800' : 'bg-[#18181c] text-white'
-      }`}
+      className={`font-sans ${isLight ? 'bg-[#f4f4f7] text-slate-800' : 'bg-[#18181c] text-white'}`}
     >
       {/* =========================================================
           VIEW 1: LOBBY / DASHBOARD VIEW WITH CAMERA PREVIEW
@@ -867,141 +1026,163 @@ export default function MeetingApp() {
               </div>
             </div>
 
-            {/* Camera & Audio Check Box */}
-            <div
-              className={`p-3.5 sm:p-4 rounded-2xl border flex ${
-                containerWidth >= 560 ? 'flex-row items-start' : 'flex-col items-center'
-              } gap-4 ${
-                isLight ? 'bg-white border-slate-200/90 shadow-sm' : 'bg-[#24232a] border-white/10'
-              }`}
-            >
-              {/* Preview Window */}
-              <div className={`${
-                containerWidth >= 560 ? 'w-52 h-36' : 'w-full h-44'
-              } rounded-xl overflow-hidden bg-black relative border border-white/10 flex items-center justify-center shrink-0`}>
-                {isVideoOn && webcamStream ? (
-                  <video
-                    ref={(el) => {
-                      if (el) {
-                        if (el.srcObject !== webcamStream) {
-                          el.srcObject = webcamStream;
-                        }
-                        el.play().catch(() => {});
-                      }
-                    }}
-                    autoPlay
-                    playsInline
-                    muted
-                    className="w-full h-full object-cover transform -scale-x-100"
-                  />
-                ) : isVideoOn && useVirtualCam ? (
-                  <VirtualCameraCanvas name="You (Virtual Cam)" />
-                ) : (
-                  <div className="flex flex-col items-center justify-center p-3 text-center gap-1 text-slate-400">
-                    <VideoOff size={24} className="opacity-60" />
-                    <span className="text-[11px] font-medium">Camera is Off</span>
-                  </div>
-                )}
-
-                {/* Status Overlay Badge */}
-                <div className="absolute top-2 left-2 px-2 py-0.5 rounded-full bg-black/70 backdrop-blur-md text-[10px] font-bold text-white flex items-center gap-1 border border-white/10 z-10">
-                  {webcamStream ? (
-                    <>
-                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                      <span>Webcam Live</span>
-                    </>
-                  ) : useVirtualCam ? (
-                    <>
-                      <Sparkles size={10} className="text-indigo-400" />
-                      <span>Virtual Studio Cam</span>
-                    </>
+             {/* Camera & Audio Check Box */}
+             <div
+               className={`p-3.5 sm:p-4 rounded-2xl border flex flex-col gap-3 ${
+                 isLight ? 'bg-white border-slate-200/90 shadow-sm' : 'bg-[#24232a] border-white/10'
+               }`}
+             >
+               {/* Preview Window */}
+               <div className={`rounded-xl overflow-hidden bg-black relative border border-white/10 flex items-center justify-center shrink-0 ${containerWidth >= 560 ? 'h-44' : 'h-40'}`}>
+                  {isVideoOn ? (
+                    <VirtualCameraCanvas stream={webcamStream} name={webcamStream ? "You" : "You (Virtual Cam)"} />
                   ) : (
-                    <>
-                      <span className="w-2 h-2 rounded-full bg-zinc-500" />
-                      <span>Camera Off</span>
-                    </>
-                  )}
-                </div>
-              </div>
-
-              {/* Controls & Device Selection */}
-              <div className="flex-1 flex flex-col justify-between gap-2.5 w-full min-w-0">
-                <div className="flex flex-col gap-0.5">
-                  <span className={`text-xs font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>
-                    Camera & Audio Check
-                  </span>
-                  <p className={`text-[11px] leading-tight ${isLight ? 'text-slate-500' : 'text-white/50'}`}>
-                    Test your camera feed, noise suppression and microphone input.
-                  </p>
-                </div>
-
-                {/* Mic Volume Level Bar */}
-                {isMicOn && (
-                  <div className="flex items-center gap-2">
-                    <Mic size={12} className="text-emerald-400 shrink-0" />
-                    <div className="flex-1 h-1.5 rounded-full bg-zinc-700/50 overflow-hidden">
-                      <div
-                        className="h-full bg-gradient-to-r from-emerald-500 to-teal-400 transition-all duration-150"
-                        style={{ width: `${micLevel}%` }}
-                      />
+                    <div className="flex flex-col items-center justify-center p-3 text-center gap-1 text-slate-400">
+                      <VideoOff size={24} className="opacity-60" />
+                      <span className="text-[11px] font-medium">Camera is Off</span>
                     </div>
-                  </div>
-                )}
+                  )}
+                 </div>
 
-                {/* Camera & Noise Suppression Toggles */}
-                <div className="flex flex-wrap items-center gap-2 pt-0.5">
-                  <button
-                    onClick={() => {
-                      setIsVideoOn(!isVideoOn);
-                      if (!isVideoOn) {
-                        setUseVirtualCam(false);
-                        requestCameraAccess(selectedDeviceId || undefined);
-                      }
-                    }}
-                    className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap ${
-                      isVideoOn
-                        ? 'bg-blue-600 hover:bg-blue-500 text-white'
-                        : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300'
-                    }`}
-                  >
-                    {isVideoOn ? <Video size={13} /> : <VideoOff size={13} />}
-                    <span>{isVideoOn ? 'Camera On' : 'Turn Camera On'}</span>
-                  </button>
+                  {/* Status Overlay Badge */}
+                 <div className="absolute top-2 left-2 px-2 py-0.5 rounded-full bg-black/70 backdrop-blur-md text-[10px] font-bold text-white flex items-center gap-1 border border-white/10 z-10">
+                   {webcamStream ? (
+                     <>
+                       <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                       <span>Webcam Live</span>
+                     </>
+                   ) : useVirtualCam ? (
+                     <>
+                       <Sparkles size={10} className="text-indigo-400" />
+                       <span>Virtual Studio Cam</span>
+                     </>
+                   ) : (
+                     <>
+                       <span className="w-2 h-2 rounded-full bg-zinc-500" />
+                       <span>Camera Off</span>
+                     </>
+                   )}
+                 </div>
+               </div>
 
-                  <button
-                    onClick={() => {
-                      setIsVideoOn(true);
-                      setUseVirtualCam(!useVirtualCam);
-                    }}
-                    className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap ${
-                      useVirtualCam
-                        ? 'bg-indigo-600 hover:bg-indigo-500 text-white'
-                        : isLight
-                        ? 'bg-slate-100 hover:bg-slate-200 text-slate-700'
-                        : 'bg-white/10 hover:bg-white/15 text-white'
-                    }`}
-                  >
-                    <Sparkles size={13} />
-                    <span>{useVirtualCam ? 'Virtual Cam Active' : 'Use Virtual Cam'}</span>
-                  </button>
+               {(permissionStatus === 'prompt' || permissionStatus === 'denied') && (
+                 <div className={`p-3 rounded-xl border flex flex-col gap-2 ${
+                   permissionStatus === 'denied'
+                     ? 'bg-red-500/10 border-red-500/30'
+                     : isLight ? 'bg-amber-50 border-amber-200' : 'bg-amber-500/10 border-amber-500/30'
+                 }`}>
+                   <div className="flex items-center gap-2">
+                     <ShieldCheck size={14} className={permissionStatus === 'denied' ? 'text-red-400' : 'text-amber-500'} />
+                     <span className={`text-[11px] font-bold ${permissionStatus === 'denied' ? 'text-red-300' : 'text-amber-600 dark:text-amber-400'}`}>
+                       {permissionStatus === 'denied' ? 'Camera & Microphone Blocked' : 'Permission Required'}
+                     </span>
+                   </div>
+                   <p className={`text-[10px] leading-relaxed ${permissionStatus === 'denied' ? 'text-red-200/80' : 'text-amber-700/80 dark:text-amber-300/80'}`}>
+                     {permissionStatus === 'denied'
+                       ? 'Camera and microphone access was blocked. Please enable it in your browser settings.'
+                       : 'Grant camera and microphone access to use video calls.'}
+                   </p>
+                   <button
+                     onClick={() => requestCameraAccess(selectedVideoDeviceId || undefined)}
+                     disabled={isRequestingCamera}
+                     className={`px-3 py-1.5 rounded-lg text-[11px] font-bold cursor-pointer transition-colors flex items-center justify-center gap-1.5 ${
+                       permissionStatus === 'denied'
+                         ? 'bg-red-600 hover:bg-red-500 text-white'
+                         : 'bg-blue-600 hover:bg-blue-500 text-white'
+                     } disabled:opacity-50`}
+                   >
+                     {isRequestingCamera ? (
+                       <>
+                         <RefreshCw size={11} className="animate-spin" />
+                         Requesting...
+                       </>
+                     ) : (
+                       <>
+                         <Video size={11} />
+                         {permissionStatus === 'denied' ? 'Try Again' : 'Enable Camera & Mic'}
+                       </>
+                     )}
+                   </button>
+                 </div>
+               )}
 
-                  <button
-                    onClick={() => setIsNoiseSuppressionOn(!isNoiseSuppressionOn)}
-                    className={`px-2.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1 cursor-pointer transition-colors ${
-                      isNoiseSuppressionOn
-                        ? 'bg-emerald-600 text-white'
-                        : 'bg-zinc-800 text-zinc-400'
-                    }`}
-                    title="Toggle Noise Suppression"
-                  >
-                    <Filter size={12} />
-                    <span className="hidden sm:inline">Noise Filter: {isNoiseSuppressionOn ? 'ON' : 'OFF'}</span>
-                  </button>
-                </div>
-              </div>
-            </div>
+               {/* Controls & Device Selection */}
+               <div className="flex flex-col justify-between gap-2.5 w-full min-w-0">
+                 <div className="flex flex-col gap-0.5">
+                   <span className={`text-xs font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                     Camera & Audio Check
+                   </span>
+                   <p className={`text-[11px] leading-tight ${isLight ? 'text-slate-500' : 'text-white/50'}`}>
+                     Test your camera feed, noise suppression and microphone input.
+                   </p>
+                 </div>
 
-            {/* Quick Actions Card Grid */}
+                 {/* Mic Volume Level Bar */}
+                 {isMicOn && (
+                   <div className="flex items-center gap-2">
+                     <Mic size={12} className="text-emerald-400 shrink-0" />
+                     <div className="flex-1 h-1.5 rounded-full bg-zinc-700/50 overflow-hidden">
+                       <div
+                         className="h-full bg-gradient-to-r from-emerald-500 to-teal-400 transition-all duration-150"
+                         style={{ width: `${micLevel}%` }}
+                       />
+                     </div>
+                   </div>
+                 )}
+
+                 {/* Camera & Noise Suppression Toggles */}
+                 <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                   <button
+                     onClick={() => {
+                       setIsVideoOn(!isVideoOn);
+                       if (!isVideoOn) {
+                         setUseVirtualCam(false);
+                         requestCameraAccess(selectedVideoDeviceId || undefined);
+                       }
+                     }}
+                     className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap ${
+                       isVideoOn
+                         ? 'bg-blue-600 hover:bg-blue-500 text-white'
+                         : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300'
+                     }`}
+                   >
+                     {isVideoOn ? <Video size={13} /> : <VideoOff size={13} />}
+                     <span>{isVideoOn ? 'Camera On' : 'Turn Camera On'}</span>
+                   </button>
+
+                   <button
+                     onClick={() => {
+                       setIsVideoOn(true);
+                       setUseVirtualCam(!useVirtualCam);
+                     }}
+                     className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap ${
+                       useVirtualCam
+                         ? 'bg-indigo-600 hover:bg-indigo-500 text-white'
+                         : isLight
+                         ? 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                         : 'bg-white/10 hover:bg-white/15 text-white'
+                     }`}
+                   >
+                     <Sparkles size={13} />
+                     <span>{useVirtualCam ? 'Virtual Cam Active' : 'Use Virtual Cam'}</span>
+                   </button>
+
+                   <button
+                     onClick={() => setIsNoiseSuppressionOn(!isNoiseSuppressionOn)}
+                     className={`px-2.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1 cursor-pointer transition-colors ${
+                       isNoiseSuppressionOn
+                         ? 'bg-emerald-600 text-white'
+                         : 'bg-zinc-800 text-zinc-400'
+                     }`}
+                     title="Toggle Noise Suppression"
+                   >
+                     <Filter size={12} />
+                     <span className="hidden sm:inline">Noise Filter: {isNoiseSuppressionOn ? 'ON' : 'OFF'}</span>
+                   </button>
+                 </div>
+               </div>
+
+              {/* Quick Actions Card Grid */}
             <div className={`grid gap-3.5 ${containerWidth >= 480 ? 'grid-cols-2' : 'grid-cols-1'}`}>
               {/* Action 1: Instant Meeting */}
               <button
@@ -1120,78 +1301,251 @@ export default function MeetingApp() {
 
               {/* List of Meetings */}
               <div className="flex flex-col gap-2 overflow-y-auto max-h-[300px] pr-1">
-                <div
-                  className={`p-3 rounded-xl border flex items-center justify-between gap-2 ${
-                    isLight ? 'bg-slate-50 border-slate-200/80' : 'bg-white/5 border-white/10'
-                  }`}
-                >
-                  <div className="flex flex-col gap-0.5 min-w-0">
-                    <span className="text-xs font-bold truncate">Sprint Retrospective</span>
-                    <div className="flex items-center gap-1 text-[11px] text-slate-400">
-                      <Clock size={11} />
-                      <span>10:00 AM - 11:00 AM</span>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => handleStartInstantMeeting('Sprint Retrospective')}
-                    className="px-3 py-1 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white cursor-pointer transition-colors shrink-0"
-                  >
-                    Join
-                  </button>
-                </div>
-
-                <div
-                  className={`p-3 rounded-xl border flex items-center justify-between gap-2 ${
-                    isLight ? 'bg-slate-50 border-slate-200/80' : 'bg-white/5 border-white/10'
-                  }`}
-                >
-                  <div className="flex flex-col gap-0.5 min-w-0">
-                    <span className="text-xs font-bold truncate">UX Design Review</span>
-                    <div className="flex items-center gap-1 text-[11px] text-slate-400">
-                      <Clock size={11} />
-                      <span>02:30 PM - 03:15 PM</span>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => handleStartInstantMeeting('UX Design Review')}
-                    className="px-3 py-1 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white cursor-pointer transition-colors shrink-0"
-                  >
-                    Join
-                  </button>
-                </div>
-
-                {todayMeetings.map((evt) => (
-                  <div
-                    key={evt.id}
-                    className={`p-3 rounded-xl border flex items-center justify-between gap-2 ${
-                      isLight ? 'bg-slate-50 border-slate-200/80' : 'bg-white/5 border-white/10'
-                    }`}
-                  >
-                    <div className="flex flex-col gap-0.5 min-w-0">
-                      <span className="text-xs font-bold truncate">{evt.title}</span>
-                      <div className="flex items-center gap-1 text-[11px] text-slate-400">
-                        <Clock size={11} />
-                        <span>{evt.time || 'All day'}</span>
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => handleStartInstantMeeting(evt.title)}
-                      className="px-3 py-1 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white cursor-pointer transition-colors shrink-0"
+                {isLoadingMeetings ? (
+                  <div className="p-3 text-center text-xs text-zinc-400">Loading meetings...</div>
+                ) : todayMeetings.length === 0 ? (
+                  <div className="p-3 text-center text-xs text-zinc-400">No meetings scheduled for today.</div>
+                ) : (
+                  todayMeetings.map((evt) => (
+                    <div
+                      key={evt._id || evt.id}
+                      className={`p-3 rounded-xl border flex items-center justify-between gap-2 ${
+                        isLight ? 'bg-slate-50 border-slate-200/80' : 'bg-white/5 border-white/10'
+                      }`}
                     >
-                      Join
-                    </button>
-                  </div>
-                ))}
+                      <div className="flex flex-col gap-0.5 min-w-0">
+                        <span className="text-xs font-bold truncate">{evt.title}</span>
+                        <div className="flex items-center gap-1 text-[11px] text-zinc-400">
+                          <Clock size={11} />
+                          <span>{new Date(evt.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => handleStartInstantMeeting(evt.title)}
+                        className="px-3 py-1 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white cursor-pointer transition-colors shrink-0"
+                      >
+                        Join
+                      </button>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
           </div>
-        </div>
-      )}
+         </div>
+       )}
 
-      {/* =========================================================
-          VIEW 2: IN-CALL MEETING ROOM VIEW
-         ========================================================= */}
-      {activeTab === 'in-call' && (
+       {/* =========================================================
+           VIEW 1.5: PRE-MEETING SCREEN
+          ========================================================= */}
+       {activeTab === 'pre-meeting' && (
+         <div className="flex-1 flex flex-col items-center justify-center p-4 sm:p-6 gap-4 sm:gap-6 overflow-y-auto">
+           <div className="w-full max-w-2xl flex flex-col gap-4 sm:gap-5">
+             <div className="flex items-center gap-3">
+               <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center text-white shadow-lg shadow-blue-500/20 shrink-0">
+                 <Video size={20} />
+               </div>
+               <div className="min-w-0">
+                 <h2 className="text-base sm:text-lg font-extrabold tracking-tight truncate">Ready to join?</h2>
+                 <p className={`text-[11px] sm:text-xs ${isLight ? 'text-slate-500' : 'text-white/50'} truncate`}>
+                   Check your camera and microphone before joining.
+                 </p>
+               </div>
+              </div>
+
+              {(permissionStatus === 'prompt' || permissionStatus === 'denied') && (
+                <div className={`p-4 rounded-2xl border flex flex-col gap-3 ${
+                  permissionStatus === 'denied'
+                    ? 'bg-red-500/10 border-red-500/30'
+                    : isLight ? 'bg-amber-50 border-amber-200' : 'bg-amber-500/10 border-amber-500/30'
+                }`}>
+                  <div className="flex items-center gap-2">
+                    <ShieldCheck size={18} className={permissionStatus === 'denied' ? 'text-red-400' : 'text-amber-500'} />
+                    <span className={`text-xs font-bold ${permissionStatus === 'denied' ? 'text-red-300' : 'text-amber-600 dark:text-amber-400'}`}>
+                      {permissionStatus === 'denied' ? 'Camera & Microphone Access Blocked' : 'Camera & Microphone Access Required'}
+                    </span>
+                  </div>
+                  <p className={`text-[11px] leading-relaxed ${permissionStatus === 'denied' ? 'text-red-200/80' : 'text-amber-700/80 dark:text-amber-300/80'}`}>
+                    {permissionStatus === 'denied'
+                      ? 'OSX Meet needs access to your camera and microphone to join video meetings. Please enable camera and microphone access in your browser or system settings, then try again.'
+                      : 'OSX Meet needs access to your camera and microphone to join video meetings. Click below to grant permission.'}
+                  </p>
+                  <button
+                    onClick={() => requestCameraAccess(selectedVideoDeviceId || undefined)}
+                    disabled={isRequestingCamera}
+                    className={`px-4 py-2 rounded-xl text-xs font-bold cursor-pointer transition-colors flex items-center justify-center gap-2 ${
+                      permissionStatus === 'denied'
+                        ? 'bg-red-600 hover:bg-red-500 text-white'
+                        : 'bg-blue-600 hover:bg-blue-500 text-white'
+                    } disabled:opacity-50`}
+                  >
+                    {isRequestingCamera ? (
+                      <>
+                        <RefreshCw size={13} className="animate-spin" />
+                        Requesting...
+                      </>
+                    ) : (
+                      <>
+                        <Video size={13} />
+                        {permissionStatus === 'denied' ? 'Try Again' : 'Allow Camera & Microphone'}
+                      </>
+                    )}
+                  </button>
+                </div>
+              )}
+
+               <div className={`p-4 sm:p-5 rounded-2xl border flex flex-col gap-4 ${
+                 isLight ? 'bg-white border-slate-200/90 shadow-sm' : 'bg-[#24232a] border-white/10'
+               }`}>
+                <div className={`rounded-xl overflow-hidden bg-black relative border border-white/10 flex items-center justify-center shrink-0 ${containerWidth >= 560 ? 'h-44' : 'h-40'}`}>
+                  {isVideoOn ? (
+                    <VirtualCameraCanvas stream={webcamStream} name={webcamStream ? "You" : "You (Virtual Cam)"} />
+                  ) : (
+                    <div className="flex flex-col items-center justify-center p-3 text-center gap-1 text-slate-400">
+                      <VideoOff size={24} className="opacity-60" />
+                      <span className="text-[11px] font-medium">Camera is Off</span>
+                    </div>
+                  )}
+                </div>
+
+               <div className="flex flex-col gap-3">
+                 <div className="flex flex-wrap items-center gap-2">
+                   <button
+                     onClick={() => setIsMicOn(!isMicOn)}
+                     className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors ${
+                       isMicOn
+                         ? 'bg-zinc-800 hover:bg-zinc-700 text-white'
+                         : 'bg-red-500 hover:bg-red-600 text-white'
+                     }`}
+                   >
+                     {isMicOn ? <Mic size={13} /> : <MicOff size={13} />}
+                     <span>{isMicOn ? 'Microphone On' : 'Microphone Off'}</span>
+                   </button>
+
+                   <button
+                     onClick={() => {
+                       setIsVideoOn(!isVideoOn);
+                       if (!isVideoOn) setUseVirtualCam(false);
+                     }}
+                     className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors ${
+                       isVideoOn
+                         ? 'bg-zinc-800 hover:bg-zinc-700 text-white'
+                         : 'bg-red-500 hover:bg-red-600 text-white'
+                     }`}
+                   >
+                     {isVideoOn ? <Video size={13} /> : <VideoOff size={13} />}
+                     <span>{isVideoOn ? 'Camera On' : 'Camera Off'}</span>
+                   </button>
+
+                   <button
+                     onClick={() => {
+                       setIsVideoOn(true);
+                       setUseVirtualCam(!useVirtualCam);
+                     }}
+                     className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors ${
+                       useVirtualCam
+                         ? 'bg-indigo-600 hover:bg-indigo-500 text-white'
+                         : isLight
+                         ? 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                         : 'bg-white/10 hover:bg-white/15 text-white'
+                     }`}
+                   >
+                     <Sparkles size={13} />
+                     <span>{useVirtualCam ? 'Virtual Cam Active' : 'Virtual Cam'}</span>
+                   </button>
+                 </div>
+
+                 <div className="flex flex-col gap-1.5">
+                   <span className="text-[11px] font-bold text-zinc-400 uppercase tracking-wide">Camera</span>
+                   <select
+                     value={selectedVideoDeviceId}
+                     onChange={(e) => setSelectedVideoDeviceId(e.target.value)}
+                     className={`text-xs px-3 py-2 rounded-xl border focus:outline-none ${
+                       isLight ? 'bg-slate-100 border-slate-300 text-slate-900' : 'bg-black/30 border-white/15 text-white'
+                     }`}
+                   >
+                     {videoDevices.map((d) => (
+                       <option key={d.deviceId} value={d.deviceId}>{d.label || 'Camera'}</option>
+                     ))}
+                   </select>
+                 </div>
+
+                 <div className="flex flex-col gap-1.5">
+                   <span className="text-[11px] font-bold text-zinc-400 uppercase tracking-wide">Microphone</span>
+                   <select
+                     value={selectedAudioDeviceId}
+                     onChange={(e) => setSelectedAudioDeviceId(e.target.value)}
+                     className={`text-xs px-3 py-2 rounded-xl border focus:outline-none ${
+                       isLight ? 'bg-slate-100 border-slate-300 text-slate-900' : 'bg-black/30 border-white/15 text-white'
+                     }`}
+                   >
+                     {audioDevices.map((d) => (
+                       <option key={d.deviceId} value={d.deviceId}>{d.label || 'Microphone'}</option>
+                     ))}
+                   </select>
+                 </div>
+
+                 <div className="flex items-center gap-2">
+                   <Mic size={12} className={isMicOn ? 'text-emerald-400' : 'text-red-400'} />
+                   <div className="flex-1 h-1.5 rounded-full bg-zinc-700/50 overflow-hidden">
+                     <div
+                       className={`h-full transition-all duration-150 ${isMicOn ? 'bg-gradient-to-r from-emerald-500 to-teal-400' : 'bg-red-500'}`}
+                       style={{ width: `${isMicOn ? micLevel : 0}%` }}
+                     />
+                   </div>
+                 </div>
+               </div>
+
+               {cameraError && (
+                 <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/30 text-xs text-red-300 flex items-start gap-2">
+                   <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+                   <span>{cameraError}</span>
+                 </div>
+               )}
+             </div>
+
+             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3">
+               <button
+                 onClick={async () => {
+                   await MeetingService.startMeeting(currentMeetingId);
+                   setActiveTab('in-call');
+                 }}
+                 className="flex-1 px-4 py-3 rounded-xl text-sm font-bold bg-blue-600 hover:bg-blue-500 text-white cursor-pointer transition-colors shadow-md shadow-blue-500/20 flex items-center justify-center gap-2"
+               >
+                 <Video size={16} />
+                 Join Meeting
+               </button>
+               <button
+                 onClick={handleCopyLink}
+                 className="px-4 py-3 rounded-xl text-sm font-bold bg-zinc-800 hover:bg-zinc-700 text-white cursor-pointer transition-colors flex items-center justify-center gap-2"
+               >
+                 {isCopied ? <Check size={16} className="text-emerald-400" /> : <Copy size={16} />}
+                 {isCopied ? 'Copied' : 'Copy Link'}
+               </button>
+               <button
+                 onClick={() => {
+                   if (webcamStream) {
+                     webcamStream.getTracks().forEach((t) => t.stop());
+                     setWebcamStream(null);
+                   }
+                   if (audioContext) {
+                     audioContext.close();
+                   }
+                   setActiveTab('lobby');
+                 }}
+                 className="px-4 py-3 rounded-xl text-sm font-bold bg-zinc-800 hover:bg-zinc-700 text-zinc-300 cursor-pointer transition-colors"
+               >
+                 Back
+               </button>
+             </div>
+           </div>
+         </div>
+       )}
+
+       {/* =========================================================
+           VIEW 2: IN-CALL MEETING ROOM VIEW
+          ========================================================= */}
+       {activeTab === 'in-call' && (
         <div className="flex-1 flex flex-col min-h-0 relative overflow-hidden bg-zinc-950 text-white">
           {/* Top Bar: Title & Code & Link Copy & Security/Rec Status */}
           <div className="h-12 px-3 sm:px-4 flex items-center justify-between bg-zinc-900/90 border-b border-zinc-800 shrink-0 z-10 gap-2">
@@ -1255,7 +1609,25 @@ export default function MeetingApp() {
             <div className="flex-1 p-2 sm:p-3 flex flex-col min-h-0 relative overflow-hidden">
               {isScreenSharing ? (
                 <div className="flex-1 rounded-2xl overflow-hidden border border-emerald-500/50 relative shadow-2xl">
-                  <ScreenShareCanvas />
+                  {screenStream ? (
+                    <video
+                      autoPlay
+                      playsInline
+                      muted
+                      className="w-full h-full object-contain"
+                      ref={(el) => {
+                        if (el && el.srcObject !== screenStream) {
+                          el.srcObject = screenStream;
+                        }
+                      }}
+                    />
+                  ) : (
+                    <ScreenShareCanvas />
+                  )}
+                  <div className="absolute top-3 left-3 px-2.5 py-1 rounded-lg bg-emerald-500/90 text-white text-[10px] font-bold flex items-center gap-1.5 shadow-md">
+                    <Monitor size={12} />
+                    <span>You are sharing your screen</span>
+                  </div>
                 </div>
               ) : (
                 <div className={`flex-1 grid gap-2 sm:gap-3 min-h-0 overflow-y-auto ${
@@ -1277,24 +1649,9 @@ export default function MeetingApp() {
                               : 'border-zinc-800'
                           }`}
                         >
-                          {isMe && showVideo && webcamStream ? (
-                            <video
-                              ref={(el) => {
-                                if (el) {
-                                  if (el.srcObject !== webcamStream) {
-                                    el.srcObject = webcamStream;
-                                  }
-                                  el.play().catch(() => {});
-                                }
-                              }}
-                              autoPlay
-                              playsInline
-                              muted
-                              className="w-full h-full object-cover transform -scale-x-100"
-                            />
-                          ) : isMe && showVideo ? (
-                            <VirtualCameraCanvas name="You (Virtual Studio)" />
-                          ) : showVideo ? (
+                           {isMe && showVideo ? (
+                             <VirtualCameraCanvas stream={webcamStream} name="You (Virtual Studio)" mirrored />
+                           ) : showVideo ? (
                             <div className="relative w-full h-full flex items-center justify-center overflow-hidden">
                               <img
                                 src={p.avatar}
@@ -1648,7 +2005,7 @@ export default function MeetingApp() {
               {/* Screen Share Dropdown */}
               <div className="relative">
                 <button
-                  onClick={() => setIsScreenSharing(!isScreenSharing)}
+                  onClick={toggleScreenShare}
                   className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl transition-all cursor-pointer ${
                     isScreenSharing
                       ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20'
@@ -1882,6 +2239,6 @@ export default function MeetingApp() {
         passcode={securitySettings.passcode}
         isLight={isLight}
       />
-    </div>
+    </AppShell>
   );
 }

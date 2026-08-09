@@ -4,25 +4,12 @@ import { WindowState, FileItem, ChatMessage, SystemSettings, User, WorldCity, DE
 import { AppRegistry } from './core/AppRegistry';
 import { StorageService } from './services/StorageService';
 import { ApiService } from './services/ApiService';
+import { FileService } from './services/FileService';
 
 const defaultNotifications: SystemNotification[] = [
   { id: 'n1', text: 'System optimization complete. Operating in local mode.', sender: 'System Terminal', time: 'Just now', type: 'info' },
   { id: 'n2', text: 'Drive OSX Offline Engine ready. Offline mode enabled.', sender: 'Network Manager', time: '2m ago', type: 'info' },
   { id: 'n3', text: 'Virtual workspace filesystem synchronized locally.', sender: 'Storage Manager', time: '5m ago', type: 'info' }
-];
-
-const defaultFiles: FileItem[] = [
-  { id: 'folder-documents', name: 'Documents', type: 'folder', parentId: null, createdAt: '10.07.2023' },
-  { id: 'folder-downloads', name: 'Downloads', type: 'folder', parentId: null, createdAt: '10.07.2023' },
-  { id: 'folder-projects', name: 'Projects', type: 'folder', parentId: null, createdAt: '10.07.2023' },
-  { id: 'folder-pictures', name: 'Pictures', type: 'folder', parentId: null, createdAt: '10.07.2023' },
-  { id: 'folder-videos', name: 'Videos', type: 'folder', parentId: null, createdAt: '10.07.2023' },
-  { id: 'folder-music', name: 'Music', type: 'folder', parentId: null, createdAt: '10.07.2023' },
-  { id: 'folder-system', name: 'System', type: 'folder', parentId: null, createdAt: '10.07.2023' },
-  { id: 'file-readme', name: 'readme.txt', type: 'file', content: 'Welcome to Drive OSX v1.0!\n\nThis operating system is built entirely with React, Tailwind CSS, and Motion.\n\nDouble-click text files to open them in the Text Editor. Click and drag windows to reposition, or use corners to resize!\n\nTry writing files and saving them back to the disk.', parentId: 'folder-documents', createdAt: '10.07.2023' },
-  { id: 'file-todo', name: 'todo.txt', type: 'file', content: '==== TODO LIST ====\n- Learn React 19 typing specifications\n- Change system wallpaper to Sunset Glow\n- Empty the trash bin\n- Export a beautiful drawing from Paint App', parentId: 'folder-documents', createdAt: '10.07.2023' },
-  { id: 'file-wallpaper', name: 'retro_wallpaper.png', type: 'file', content: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800', parentId: 'folder-pictures', createdAt: '10.07.2023' },
-  { id: 'file-system-log', name: 'system.log', type: 'file', content: 'SYSTEM_BOOT: SUCCESS\nMEM_CHECK: OK\nNETWORK_INIT: CONNECTED\nTHEME_LOAD: WAVY_DEFAULT', parentId: 'folder-system', createdAt: '10.07.2023' },
 ];
 
 export const getAppIcon = (id: string, className = "w-full h-full") => {
@@ -40,6 +27,7 @@ interface SystemState {
   editorFileId: string | null;
   editorFileName: string | null;
   editorFileContent: string;
+  editorCurrentFolderId: string | null;
   messages: ChatMessage[];
   
   // Auth state & actions
@@ -88,11 +76,14 @@ interface SystemState {
   handleMaximizeWindow: (id: string) => void;
   handleMoveWindow: (id: string, x: number, y: number) => void;
   handleResizeWindow: (id: string, w: number, h: number) => void;
-  openTextFileInEditor: (fileId: string, name: string, content: string) => void;
-  handleSaveTextFile: (fileId: string, updatedContent: string) => void;
-  handleDeleteFile: (deletedItem: FileItem) => void;
-  handleRestoreFile: (file: FileItem) => void;
-  handleEmptyTrash: () => void;
+  openTextFileInEditor: (fileId: string, name: string, content: string, folderId?: string | null) => void;
+  setEditorCurrentFolderId: (folderId: string | null) => void;
+  resolveDefaultFolderId: (folderName: string) => string | null;
+  handleSaveTextFile: (fileId: string, updatedContent: string) => Promise<void>;
+  handleDeleteFile: (deletedItem: FileItem) => Promise<void>;
+  handleRestoreFile: (file: FileItem) => Promise<void>;
+  handleEmptyTrash: () => Promise<void>;
+  syncFilesFromBackend: () => Promise<void>;
   setMessages: (updater: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[])) => void;
   setFiles: (updater: FileItem[] | ((prev: FileItem[]) => FileItem[])) => void;
   playClickSound: () => void;
@@ -153,6 +144,7 @@ export const useSystemStore = create<SystemState>((set, get) => ({
   editorFileId: null,
   editorFileName: null,
   editorFileContent: '',
+  editorCurrentFolderId: null,
   messages: [
     {
       id: 'msg-init',
@@ -187,6 +179,8 @@ export const useSystemStore = create<SystemState>((set, get) => ({
 
       StorageService.set('webos-current-user', user);
       set({ currentUser: user, isAuthenticated: true });
+
+      get().syncFilesFromBackend();
 
       // Update assistant's greeting to personalize it
       set({
@@ -440,20 +434,20 @@ export const useSystemStore = create<SystemState>((set, get) => ({
     set((state) => {
       const nextSettings = savedSettings ? { ...state.settings, ...savedSettings } : state.settings;
       const cleanedSavedFiles = savedFiles ? savedFiles.filter((f) => f.id !== 'volume-511gb' && f.id !== 'data-disk' && !f.name.includes('511 GB') && !f.name.includes('Data Disk')) : null;
-      const nextFiles = cleanedSavedFiles ? cleanedSavedFiles : defaultFiles;
+      const nextFiles = cleanedSavedFiles ? cleanedSavedFiles : [];
       const nextTrash = savedTrash ? savedTrash : [];
       const hasAuthToken = !!ApiService.getToken();
       const isAuthenticated = hasAuthToken && !!savedCurrentUser;
       const currentUser = isAuthenticated ? savedCurrentUser : null;
 
+      if (!savedFiles) {
+        StorageService.set('webos-files', []);
+      }
+
       const rawWorldCities = savedWorldCities && savedWorldCities.length > 0 ? savedWorldCities : DEFAULT_WORLD_CITIES;
       const nextWorldCities = rawWorldCities.filter(
         (c) => !c.isCurrentLocation && c.desc !== 'Current location' && c.id !== 'delhi'
       );
-
-      if (!savedFiles) {
-        StorageService.set('webos-files', defaultFiles);
-      }
 
       const finalMessages: ChatMessage[] = [
         {
@@ -758,59 +752,134 @@ export const useSystemStore = create<SystemState>((set, get) => ({
     });
   },
 
-  openTextFileInEditor: (fileId, name, content) => {
+  openTextFileInEditor: (fileId, name, content, folderId) => {
     set({
       editorFileId: fileId,
       editorFileName: name,
       editorFileContent: content,
+      editorCurrentFolderId: folderId || null,
     });
     get().openAppWindow('editor');
   },
 
-  handleSaveTextFile: (fileId, updatedContent) => {
+  setEditorCurrentFolderId: (folderId) => {
+    set({ editorCurrentFolderId: folderId });
+  },
+
+  resolveDefaultFolderId: (folderName: string): string | null => {
+    const state = get();
+    const folder = state.files.find((f) => f.type === 'folder' && f.name.toLowerCase() === folderName.toLowerCase());
+    return folder?.id || null;
+  },
+
+  handleSaveTextFile: async (fileId, updatedContent) => {
     set((state) => {
       const updatedFiles = state.files.map(f => f.id === fileId ? { ...f, content: updatedContent } : f);
-      localStorage.setItem('webos-files', JSON.stringify(updatedFiles));
+      StorageService.set('webos-files', JSON.stringify(updatedFiles));
       return {
         files: updatedFiles,
         editorFileContent: updatedContent
       };
     });
+
+    const { currentUser } = get();
+    if (currentUser) {
+      try {
+        await FileService.updateFile(fileId, { content: updatedContent });
+      } catch (error) {
+        console.warn('Failed to sync file update to backend:', error);
+      }
+    }
   },
 
-  handleDeleteFile: (deletedItem) => {
+  handleDeleteFile: async (deletedItem) => {
     set((state) => {
       const remaining = state.files.filter(f => f.id !== deletedItem.id);
       const updatedTrash = [...state.deletedFiles, deletedItem];
-      localStorage.setItem('webos-files', JSON.stringify(remaining));
-      localStorage.setItem('webos-trash', JSON.stringify(updatedTrash));
+      StorageService.set('webos-files', JSON.stringify(remaining));
+      StorageService.set('webos-trash', JSON.stringify(updatedTrash));
       return {
         files: remaining,
         deletedFiles: updatedTrash
       };
     });
+
+    const { currentUser } = get();
+    if (currentUser) {
+      try {
+        await FileService.deleteFile(deletedItem.id);
+      } catch (error) {
+        console.warn('Failed to delete file on backend:', error);
+      }
+    }
   },
 
-  handleRestoreFile: (file) => {
+  handleRestoreFile: async (file) => {
     get().playClickSound();
     set((state) => {
       const remainingTrash = state.deletedFiles.filter(f => f.id !== file.id);
       const restoredFiles = [...state.files, file];
-      localStorage.setItem('webos-files', JSON.stringify(restoredFiles));
-      localStorage.setItem('webos-trash', JSON.stringify(remainingTrash));
+      StorageService.set('webos-files', JSON.stringify(restoredFiles));
+      StorageService.set('webos-trash', JSON.stringify(remainingTrash));
       return {
         files: restoredFiles,
         deletedFiles: remainingTrash
       };
     });
+
+    const { currentUser } = get();
+    if (currentUser) {
+      try {
+        await FileService.restoreFile(file.id);
+      } catch (error) {
+        console.warn('Failed to restore file on backend:', error);
+      }
+    }
   },
 
-  handleEmptyTrash: () => {
+  handleEmptyTrash: async () => {
     get().playClickSound();
     if (confirm('Permanently erase all files inside the Trash? This cannot be undone.')) {
-      localStorage.removeItem('webos-trash');
+      const { deletedFiles, currentUser } = get();
+      const trashIds = deletedFiles.map(f => f.id);
+      StorageService.remove('webos-trash');
       set({ deletedFiles: [] });
-      alert('🗑️ Trash Bin emptied completely!');
+
+      if (currentUser && trashIds.length > 0) {
+        try {
+          await Promise.allSettled(
+            trashIds.map(id => FileService.permanentDeleteFile(id))
+          );
+        } catch (error) {
+          console.warn('Failed to empty trash on backend:', error);
+        }
+      }
+    }
+  },
+
+  syncFilesFromBackend: async () => {
+    const { currentUser } = get();
+    if (!currentUser) return;
+    try {
+      const files = await FileService.listChildren(null);
+      const mappedFiles: FileItem[] = files.map((f: any) => ({
+        id: f._id,
+        name: f.name,
+        type: f.type,
+        content: f.content || '',
+        parentId: f.parentId,
+        createdAt: f.createdAt,
+        starred: f.starred || false,
+        category: f.mimeType?.split('/')[0] as any,
+        sharedWith: [],
+        publicLink: undefined,
+        activityHistory: [],
+        originalParentId: null,
+      }));
+      StorageService.set('webos-files', mappedFiles);
+      set({ files: mappedFiles });
+    } catch (error) {
+      console.warn('Failed to sync files from backend:', error);
     }
   },
 
@@ -824,7 +893,7 @@ export const useSystemStore = create<SystemState>((set, get) => ({
   setFiles: (updater) => {
     set((state) => {
       const nextFiles = typeof updater === 'function' ? updater(state.files) : updater;
-      localStorage.setItem('webos-files', JSON.stringify(nextFiles));
+      StorageService.set('webos-files', JSON.stringify(nextFiles));
       return { files: nextFiles };
     });
   }

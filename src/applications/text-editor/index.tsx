@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Save, Download, Trash, Type, ZoomIn, ZoomOut, FileText, Check } from 'lucide-react';
 import { useSystemStore } from '../../systemStore';
 import { useContextMenuStore, ContextMenuItem } from '../../services/contextMenuStore';
+import { FileService } from '../../services/FileService';
+import { StorageService } from '../../services/StorageService';
 import WindowStatusBar from '../../components/WindowStatusBar';
 
 import Toolbar from './components/Toolbar';
@@ -16,13 +18,15 @@ import CommentsDrawer from './components/CommentsDrawer';
 import { DocumentVersion, DocumentComment, EditorMode } from './types';
 
 export default function TextEditor() {
-  // Central System Store state
   const activeFileId = useSystemStore((state) => state.editorFileId);
   const activeFileName = useSystemStore((state) => state.editorFileName);
   const activeFileContent = useSystemStore((state) => state.editorFileContent);
   const saveTextFile = useSystemStore((state) => state.handleSaveTextFile);
   const setFiles = useSystemStore((state) => state.setFiles);
   const allFiles = useSystemStore((state) => state.files);
+  const editorCurrentFolderId = useSystemStore((state) => state.editorCurrentFolderId);
+  const setEditorCurrentFolderId = useSystemStore((state) => state.setEditorCurrentFolderId);
+  const resolveDefaultFolderId = useSystemStore((state) => state.resolveDefaultFolderId);
   const settings = useSystemStore((state) => state.settings);
   const openAppWindow = useSystemStore((state) => state.openAppWindow);
   const openContextMenu = useContextMenuStore((state) => state.openContextMenu);
@@ -123,28 +127,50 @@ export default function TextEditor() {
   }, [docContent, autoSave, autoSaveStatus]);
 
   // Save Document
-  const handleSave = (isAutoSave = false) => {
+  const handleSave = async (isAutoSave = false) => {
     if (currentLinkedId) {
-      saveTextFile(currentLinkedId, docContent);
+      await saveTextFile(currentLinkedId, docContent);
+      if (!isAutoSave) {
+        alert(`💾 Document "${docName}" saved successfully!`);
+      }
     } else {
-      // Create a new file item in system store
-      const newFileId = `file-${Date.now()}`;
-      setFiles((prev) => [
-        ...prev,
-        {
-          id: newFileId,
+      try {
+        const parentId = editorCurrentFolderId || resolveDefaultFolderId('Documents') || null;
+        const created = await FileService.createFile({
           name: docName,
           type: 'file',
+          parentId,
           content: docContent,
-          parentId: 'folder-documents',
-          createdAt: new Date().toLocaleDateString(),
-        },
-      ]);
-      setCurrentLinkedId(newFileId);
+          mimeType: 'text/plain',
+        });
+
+        setCurrentLinkedId(created._id);
+      setFiles((prev) => {
+        const next = [
+          ...prev,
+          {
+            id: created._id,
+            name: created.name,
+            type: 'file' as const,
+            content: docContent,
+            parentId: created.parentId,
+            createdAt: created.createdAt,
+          },
+        ];
+        StorageService.set('webos-files', JSON.stringify(next));
+        return next;
+      });
+
+        if (!isAutoSave) {
+          alert(`💾 Document "${docName}" saved successfully!`);
+        }
+      } catch (error) {
+        console.error('Failed to save file:', error);
+        alert('Failed to save file. Please try again.');
+      }
     }
 
     const words = docContent.trim() === '' ? 0 : docContent.trim().split(/\s+/).length;
-    // Add version snapshot
     setVersions((prev) => [
       {
         id: `ver-${Date.now()}`,
@@ -158,31 +184,46 @@ export default function TextEditor() {
     ]);
 
     setAutoSaveStatus('All changes saved');
-    if (!isAutoSave) {
-      alert(`💾 Document "${docName}" saved successfully!`);
-    }
   };
 
   // Save As
-  const handleSaveAs = () => {
+  const handleSaveAs = async () => {
     const newName = prompt('Enter new document name:', docName);
     if (!newName) return;
     setDocName(newName);
-    const newFileId = `file-${Date.now()}`;
-    setFiles((prev) => [
-      ...prev,
-      {
-        id: newFileId,
+    try {
+      const parentId = editorCurrentFolderId || resolveDefaultFolderId('Documents') || null;
+      const created = await FileService.createFile({
         name: newName,
         type: 'file',
+        parentId,
         content: docContent,
-        parentId: 'folder-documents',
-        createdAt: new Date().toLocaleDateString(),
-      },
-    ]);
-    setCurrentLinkedId(newFileId);
-    setAutoSaveStatus('All changes saved');
-    alert(`📄 Document saved as "${newName}"`);
+        mimeType: 'text/plain',
+      });
+
+      setCurrentLinkedId(created._id);
+      setFiles((prev) => {
+        const next = [
+          ...prev,
+          {
+            id: created._id,
+            name: created.name,
+            type: 'file' as const,
+            content: docContent,
+            parentId: created.parentId,
+            createdAt: created.createdAt,
+          },
+        ];
+        StorageService.set('webos-files', JSON.stringify(next));
+        return next;
+      });
+
+      setAutoSaveStatus('All changes saved');
+      alert(`📄 Document saved as "${newName}"`);
+    } catch (error) {
+      console.error('Failed to save file:', error);
+      alert('Failed to save file. Please try again.');
+    }
   };
 
   // New Document

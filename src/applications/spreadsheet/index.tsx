@@ -145,6 +145,7 @@ export default function SpreadsheetApp() {
 
   // System Save helper
   const setFiles = useSystemStore((state) => state.setFiles);
+  const resolveDefaultFolderId = useSystemStore((state) => state.resolveDefaultFolderId);
 
   // Update active sheet data helper
   const updateActiveSheetData = useCallback(
@@ -424,11 +425,11 @@ export default function SpreadsheetApp() {
         name: workbookTitle,
         type: 'file',
         content: snapshotContent,
-        parentId: 'folder-documents',
+        parentId: resolveDefaultFolderId('Documents') || null,
         createdAt: new Date().toLocaleDateString(),
       },
     ]);
-    alert(`💾 Saved "${workbookTitle}" to system Documents folder!`);
+    alert(`💾 Saved "${workbookTitle}" to Documents folder!`);
   };
 
   // Import / Open XLSX File

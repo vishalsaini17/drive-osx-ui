@@ -335,7 +335,7 @@ function DesktopLayout() {
             app={app}
             minW={app.minW}
             minH={app.minH}
-            showStatusBar={!['fileManager', 'editor', 'trash', 'launcher', 'calendar', 'meeting', 'mail'].includes(app.id)}
+            showStatusBar={app.id !== 'launcher'}
           >
             {/* Render app dynamically using ApplicationRenderer */}
             <ApplicationRenderer appId={app.id} />

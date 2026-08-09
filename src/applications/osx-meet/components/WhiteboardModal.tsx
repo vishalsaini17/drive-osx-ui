@@ -32,6 +32,7 @@ export default function WhiteboardModal({ isOpen, onClose, isLight }: Whiteboard
   const [savedSuccess, setSavedSuccess] = useState(false);
 
   const setFiles = useSystemStore((state) => state.setFiles);
+  const resolveDefaultFolderId = useSystemStore((state) => state.resolveDefaultFolderId);
 
   // Canvas history for undo
   const [history, setHistory] = useState<ImageData[]>([]);
@@ -201,7 +202,7 @@ export default function WhiteboardModal({ isOpen, onClose, isLight }: Whiteboard
         name: fileName,
         type: 'file',
         content: dataUrl,
-        parentId: 'folder-pictures',
+        parentId: resolveDefaultFolderId('Pictures') || null,
         createdAt: new Date().toLocaleDateString(),
       },
     ]);
