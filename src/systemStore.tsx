@@ -34,6 +34,7 @@ interface SystemState {
   currentUser: User | null;
   usersList: User[];
   isAuthenticated: boolean;
+  isInitializing: boolean;
   updateCurrentUser: (updatedUser: Partial<User>) => void;
   login: (username: string, passwordHash: string) => Promise<{ success: boolean; message?: string }>;
   signup: (payload: { username: string; firstName: string; lastName: string; passwordHash: string; recoveryEmail?: string; mobile?: string }) => Promise<{ success: boolean; message: string }>;
@@ -157,6 +158,7 @@ export const useSystemStore = create<SystemState>((set, get) => ({
   currentUser: null,
   usersList: [],
   isAuthenticated: false,
+  isInitializing: true,
 
   login: async (username, passwordHash) => {
     const { playClickSound } = get();
@@ -465,6 +467,7 @@ export const useSystemStore = create<SystemState>((set, get) => ({
         currentUser: currentUser,
         usersList: savedUsersList || [],
         isAuthenticated: isAuthenticated,
+        isInitializing: false,
         messages: finalMessages,
         worldCities: nextWorldCities,
         calendarEvents: finalEvents,
@@ -683,6 +686,27 @@ export const useSystemStore = create<SystemState>((set, get) => ({
   openAppWindow: (id) => {
     set((state) => {
       const manifest = AppRegistry.getAppManifest(id);
+      const existing = state.windows.find(w => w.id === id);
+
+      if (!existing && manifest) {
+        const newWindow = {
+          id: manifest.id,
+          title: manifest.title,
+          iconName: manifest.iconName,
+          isOpen: true,
+          isMinimized: false,
+          isMaximized: false,
+          x: manifest.defaultWindow.x,
+          y: manifest.defaultWindow.y,
+          w: manifest.defaultWindow.w,
+          h: manifest.defaultWindow.h,
+          minW: manifest.defaultWindow.minW,
+          minH: manifest.defaultWindow.minH,
+          zIndex: state.maxZIndex + 1,
+        };
+        return { windows: [...state.windows, newWindow] };
+      }
+
       const updated = state.windows.map(w => {
         if (w.id === id) {
           const reqMinW = manifest?.defaultWindow.minW ?? w.minW;
@@ -695,9 +719,9 @@ export const useSystemStore = create<SystemState>((set, get) => ({
           const finalW = Math.max(w.w, reqW, finalMinW);
           const finalH = Math.max(w.h, reqH, finalMinH);
 
-          return { 
-            ...w, 
-            isOpen: true, 
+          return {
+            ...w,
+            isOpen: true,
             isMinimized: false,
             minW: finalMinW,
             minH: finalMinH,

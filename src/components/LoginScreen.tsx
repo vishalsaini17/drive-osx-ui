@@ -1,14 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { 
-  Lock, 
-  Unlock, 
-  User, 
-  UserPlus, 
-  Eye, 
-  EyeOff, 
-  AlertCircle, 
-  ArrowRight, 
+import {
+  Lock,
+  Unlock,
+  User,
+  UserPlus,
+  Eye,
+  EyeOff,
+  AlertCircle,
+  ArrowRight,
   HelpCircle,
   Key,
   Mail,
@@ -52,12 +52,12 @@ export default function LoginScreen() {
       setIsSignUp(false);
     }
   }, [location.pathname]);
-  
+
   // Login fields
   const [loginUser, setLoginUser] = useState<string>('');
   const [loginPass, setLoginPass] = useState<string>('');
   const [showLoginPass, setShowLoginPass] = useState<boolean>(false);
-  
+
   // Signup fields
   const [signupUser, setSignupUser] = useState<string>('');
   const [signupFirstName, setSignupFirstName] = useState<string>('');
@@ -67,7 +67,7 @@ export default function LoginScreen() {
   const [signupMobile, setSignupMobile] = useState<string>('');
   const [signupAvatar, setSignupAvatar] = useState<number>(0);
   const [showSignupPass, setShowSignupPass] = useState<boolean>(false);
-  
+
   // UI States
   const [errorMsg, setErrorMsg] = useState<string>('');
   const [successMsg, setSuccessMsg] = useState<string>('');
@@ -185,7 +185,7 @@ export default function LoginScreen() {
     <div id="login-signup-viewport" className="relative w-screen h-screen overflow-hidden select-none z-[99999]">
       {/* Dynamic Wallpaper background */}
       <Wallpaper settings={settings} />
-      
+
       {/* Heavy Frosty Backdrop Overlay */}
       <div className="absolute inset-0 bg-[#06060c]/55 backdrop-blur-md transition-all duration-700 z-[1]" />
 
@@ -204,7 +204,7 @@ export default function LoginScreen() {
             className="absolute inset-0 flex flex-col justify-between items-center py-20 px-8 cursor-pointer z-10"
           >
             {/* Top Security Indicator */}
-            <motion.div 
+            <motion.div
               initial={{ y: -20, opacity: 0 }}
               animate={{ y: 0, opacity: 1 }}
               transition={{ delay: 0.2 }}
@@ -216,7 +216,7 @@ export default function LoginScreen() {
 
             {/* Middle Time & Date Display */}
             <div className="text-center select-none flex flex-col items-center">
-              <motion.h1 
+              <motion.h1
                 initial={{ scale: 0.9, opacity: 0 }}
                 animate={{ scale: 1, opacity: 1 }}
                 transition={{ delay: 0.3, type: 'spring', stiffness: 100 }}
@@ -224,7 +224,7 @@ export default function LoginScreen() {
               >
                 {timeStr}
               </motion.h1>
-              <motion.p 
+              <motion.p
                 initial={{ y: 15, opacity: 0 }}
                 animate={{ y: 0, opacity: 1 }}
                 transition={{ delay: 0.4 }}
@@ -235,10 +235,10 @@ export default function LoginScreen() {
             </div>
 
             {/* Bottom Unlock Cue */}
-            <motion.div 
+            <motion.div
               initial={{ y: 20, opacity: 0 }}
               animate={{ y: 0, opacity: 1 }}
-              transition={{ 
+              transition={{
                 delay: 0.5,
                 repeat: Infinity,
                 repeatType: 'reverse',
@@ -264,7 +264,7 @@ export default function LoginScreen() {
           >
             {/* Elegant glass card wrapper */}
             <div className="relative w-full max-w-[500px] bg-white/[0.04] border border-white/10 shadow-[0_24px_60px_rgba(0,0,0,0.55)] backdrop-blur-2xl rounded-[28px] p-6 sm:p-8 overflow-hidden my-auto">
-              
+
               {/* Soft decorative background glows inside the card */}
               <div className="absolute -top-24 -left-24 w-48 h-48 rounded-full bg-pink-500/10 blur-[60px] pointer-events-none" />
               <div className="absolute -bottom-24 -right-24 w-48 h-48 rounded-full bg-violet-600/10 blur-[60px] pointer-events-none" />
@@ -280,8 +280,8 @@ export default function LoginScreen() {
                   {isSignUp ? 'Create New Account' : 'Welcome to Drive OSX'}
                 </h2>
                 <p className="text-xs text-white/50 mt-1 font-medium">
-                  {isSignUp 
-                    ? 'Register a personal user account to log in' 
+                  {isSignUp
+                    ? 'Register a personal user account to log in'
                     : 'Enter password or sign in with a guest account'}
                 </p>
               </div>
@@ -473,32 +473,32 @@ export default function LoginScreen() {
                     </div>
 
                     <div>
-                        <label className="block text-[10px] font-bold uppercase tracking-wider text-white/40 mb-1 ml-1">Password *</label>
-                        <div className="relative">
-                          <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-white/30">
-                            <Key size={13} />
-                          </span>
-                          <input
-                            type={showSignupPass ? 'text' : 'password'}
-                            value={signupPass}
-                            onChange={(e) => setSignupPass(e.target.value)}
-                            placeholder="••••••••"
-                            disabled={isLoading}
-                            className="w-full bg-white/[0.03] border border-white/10 rounded-xl py-2 pl-8.5 pr-8.5 text-xs font-medium text-white placeholder-white/20 focus:outline-none focus:border-pink-500/50 focus:bg-white/[0.05] transition-all"
-                            required
-                          />
-                          <button
-                            type="button"
-                            onClick={() => {
-                              playClickSound();
-                              setShowSignupPass(!showSignupPass);
-                            }}
-                            className="absolute inset-y-0 right-0 flex items-center pr-2.5 text-white/40 hover:text-white transition-colors"
-                          >
-                            {showSignupPass ? <EyeOff size={13} /> : <Eye size={13} />}
-                          </button>
-                        </div>
+                      <label className="block text-[10px] font-bold uppercase tracking-wider text-white/40 mb-1 ml-1">Password *</label>
+                      <div className="relative">
+                        <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-white/30">
+                          <Key size={13} />
+                        </span>
+                        <input
+                          type={showSignupPass ? 'text' : 'password'}
+                          value={signupPass}
+                          onChange={(e) => setSignupPass(e.target.value)}
+                          placeholder="••••••••"
+                          disabled={isLoading}
+                          className="w-full bg-white/[0.03] border border-white/10 rounded-xl py-2 pl-8.5 pr-8.5 text-xs font-medium text-white placeholder-white/20 focus:outline-none focus:border-pink-500/50 focus:bg-white/[0.05] transition-all"
+                          required
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            playClickSound();
+                            setShowSignupPass(!showSignupPass);
+                          }}
+                          className="absolute inset-y-0 right-0 flex items-center pr-2.5 text-white/40 hover:text-white transition-colors"
+                        >
+                          {showSignupPass ? <EyeOff size={13} /> : <Eye size={13} />}
+                        </button>
                       </div>
+                    </div>
 
                     <div className="grid grid-cols-2 gap-3">
                       <div>
@@ -548,11 +548,10 @@ export default function LoginScreen() {
                               playClickSound();
                               setSignupAvatar(idx);
                             }}
-                            className={`relative aspect-square rounded-lg flex items-center justify-center text-sm bg-gradient-to-br ${preset.bg} cursor-pointer transition-all ${
-                              signupAvatar === idx 
-                                ? 'ring-2 ring-pink-400 scale-105 shadow-md shadow-pink-500/20' 
+                            className={`relative aspect-square rounded-lg flex items-center justify-center text-sm bg-gradient-to-br ${preset.bg} cursor-pointer transition-all ${signupAvatar === idx
+                                ? 'ring-2 ring-pink-400 scale-105 shadow-md shadow-pink-500/20'
                                 : 'opacity-60 hover:opacity-100 hover:scale-[1.03]'
-                            }`}
+                              }`}
                             title={preset.name}
                           >
                             <span>{preset.emoji}</span>

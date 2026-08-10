@@ -25,6 +25,7 @@ export default function App() {
   const initializeStore = useSystemStore((state) => state.initializeStore);
   const settings = useSystemStore((state) => state.settings);
   const isAuthenticated = useSystemStore((state) => state.isAuthenticated);
+  const isInitializing = useSystemStore((state) => state.isInitializing);
   const addNotification = useSystemStore((state) => state.addNotification);
   const setOfflineMode = useSystemStore((state) => state.setOfflineMode);
 
@@ -64,6 +65,10 @@ export default function App() {
 
   // Handle global auth-based redirects
   useEffect(() => {
+    if (isInitializing) {
+      return;
+    }
+
     if (!isAuthenticated) {
       if (
         location.pathname !== '/login' &&
@@ -78,7 +83,7 @@ export default function App() {
         navigate('/');
       }
     }
-  }, [isAuthenticated, location.pathname, navigate]);
+  }, [isAuthenticated, isInitializing, location.pathname, navigate]);
 
   return (
     <main 

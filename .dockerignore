@@ -1,5 +1,12 @@
 node_modules
 dist
 .git
-.env*
+.env
+.env.*
 npm-debug.log*
+coverage
+.cache
+build
+.DS_Store
+Thumbs.db
+*.log

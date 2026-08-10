@@ -152,41 +152,16 @@ class ApiServiceClass {
         data,
       };
     } catch (error: any) {
-      console.warn('Registration API unreachable — using local offline registration:', error);
+      console.warn('Registration API unreachable:', error);
 
       notifyApiFailure(
         'Authentication Service',
-        `API endpoint ${API_BASE_URL}/register unreachable. Account created in local offline mode.`
+        `API endpoint ${API_BASE_URL}/register unreachable.`
       );
 
-      // Save user to local user registry in StorageService
-      const savedUsers = StorageService.get<any[]>('webos-users-list', []);
-      const newUser = {
-        id: `offline-${Date.now()}`,
-        username: payload.username,
-        firstName: payload.firstName,
-        lastName: payload.lastName,
-        fullName: `${payload.firstName} ${payload.lastName}`.trim(),
-        email: `${payload.username.toLowerCase()}@diveosx.com`,
-        recoveryEmail: payload.recoveryEmail,
-        mobile: payload.mobile,
-        avatarUrl: '👤',
-        passwordHash: payload.passwordHash,
-      };
-
-      const existingIndex = savedUsers.findIndex((u: any) => u.username.toLowerCase() === payload.username.toLowerCase());
-      if (existingIndex >= 0) {
-        savedUsers[existingIndex] = newUser;
-      } else {
-        savedUsers.push(newUser);
-      }
-      StorageService.set('webos-users-list', savedUsers);
-      this.setToken(OFFLINE_TEST_TOKEN);
-
       return {
-        success: true,
-        message: 'Backend API unreachable. Account registered in offline mode.',
-        data: { user: newUser, token: OFFLINE_TEST_TOKEN },
+        success: false,
+        message: 'Registration failed. Please check your connection and try again.',
       };
     }
   }
@@ -226,32 +201,16 @@ class ApiServiceClass {
         user: data.user || data.data?.user || null,
       };
     } catch (error: unknown) {
-      console.warn('Login API unreachable — using local offline authentication:', error);
+      console.warn('Login API unreachable:', error);
 
       notifyApiFailure(
         'Authentication Service',
-        `API endpoint ${API_BASE_URL}/login is not working / unreachable. Switched to offline mode.`
+        `API endpoint ${API_BASE_URL}/login is not working / unreachable.`
       );
-
-      // Offline login fallback for any account!
-      const savedUsers = StorageService.get<any[]>('webos-users-list', []);
-      const matchedUser = savedUsers.find(
-        (u: any) => u.username.toLowerCase() === payload.username.trim().toLowerCase()
-      );
-
-      this.setToken(OFFLINE_TEST_TOKEN);
-
-      const offlineUser = matchedUser || {
-        ...OFFLINE_TEST_USER,
-        username: payload.username,
-        fullName: payload.username,
-      };
 
       return {
-        success: true,
-        message: 'Offline mode active: logged in with local profile.',
-        token: OFFLINE_TEST_TOKEN,
-        user: offlineUser,
+        success: false,
+        message: 'Login failed. Please check your connection and try again.',
       };
     }
   }
@@ -277,7 +236,7 @@ class ApiServiceClass {
       return data.user || data.data || data;
     } catch (error) {
       notifyApiFailure('Profile Service', 'Failed to fetch user profile from API. Using local session data.');
-      return StorageService.get<any | null>('webos-current-user', OFFLINE_TEST_USER);
+      return StorageService.get<any | null>('webos-current-user', null);
     }
   }
 
@@ -300,7 +259,7 @@ class ApiServiceClass {
       return { success: true, message: data.message || 'Password reset link sent' };
     } catch (error: any) {
       notifyApiFailure('Password Recovery API', 'API server unreachable. Password reset simulated offline.');
-      return { success: true, message: 'Offline mode: Password reset email request logged locally.' };
+      return { success: false, message: 'Password reset failed. Server is unreachable.' };
     }
   }
 
@@ -322,8 +281,8 @@ class ApiServiceClass {
       }
       return { success: true, message: data.message || 'Password reset successful' };
     } catch (error: any) {
-      notifyApiFailure('Password Reset API', 'API server unreachable. Password reset completed in offline mode.');
-      return { success: true, message: 'Password reset completed in offline mode.' };
+      notifyApiFailure('Password Reset API', 'API server unreachable. Password reset failed.');
+      return { success: false, message: 'Password reset failed. Server is unreachable.' };
     }
   }
 

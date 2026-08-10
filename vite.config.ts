@@ -18,6 +18,12 @@ export default defineConfig(() => {
       // Disable HMR and file watching when requested by the environment.
       hmr: process.env.DISABLE_HMR !== 'true',
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      proxy: {
+        '/api/v1': {
+          target: 'http://drive-osx-api:7000',
+          changeOrigin: true,
+        },
+      },
     },
   };
 });
