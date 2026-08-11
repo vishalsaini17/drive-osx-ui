@@ -301,9 +301,9 @@ function DesktopLayout() {
         }
       } else if (currentPath !== '/') {
         navigate('/', { replace: true });
-        focusWindow(null);
+        focusWindow('');
       } else if (currentActiveWindow !== null) {
-        focusWindow(null);
+        focusWindow('');
       }
     } 
     // 2. Handle internal OS state changes (opening, closing, or switching app windows)
@@ -326,7 +326,7 @@ function DesktopLayout() {
   return (
     <div 
       className="relative w-full h-full overflow-hidden select-none"
-      onClick={() => focusWindow(null)}
+      onClick={() => focusWindow('')}
       onContextMenu={handleDesktopContextMenu}
     >
       {/* 1. LAYERED VECTOR WAVES DESKTOP WALLPAPER */}

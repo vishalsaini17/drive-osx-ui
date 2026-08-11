@@ -1,23 +1,23 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Search, 
-  Home, 
-  ChevronRight, 
+import {
+  Search,
+  Home,
+  ChevronRight,
   ChevronLeft,
-  User as UserIcon, 
-  Palette, 
-  Layout, 
-  AppWindow, 
-  Bell, 
-  Volume2, 
-  Wifi, 
-  Monitor, 
-  Shield, 
+  User as UserIcon,
+  Palette,
+  Layout,
+  AppWindow,
+  Bell,
+  Volume2,
+  Wifi,
+  Monitor,
+  Shield,
   ShieldCheck,
-  Key, 
-  RefreshCw, 
-  Check, 
-  Sparkles, 
+  Key,
+  RefreshCw,
+  Check,
+  Sparkles,
   Image as ImageIcon,
   Lock,
   Mail,
@@ -278,10 +278,10 @@ export default function Settings() {
 
   return (
     <div className={`h-full flex text-sm select-none bg-transparent ${ts.text}`}>
-      
+
       {/* 1. SETTINGS CATEGORIES SIDEBAR */}
       <div className={`w-56 p-3 flex flex-col shrink-0 ${ts.sidebar}`}>
-        
+
         {/* Sidebar Search section */}
         <div className="flex items-center gap-1.5 mb-3 px-1">
           <div className="relative flex-1">
@@ -294,9 +294,9 @@ export default function Settings() {
               className={`w-full text-xs rounded-lg pl-8 pr-2.5 py-1.5 outline-none border focus:bg-white/10 ${ts.input}`}
             />
           </div>
-          
-          <button 
-            onClick={() => setActiveCategory('Account')} 
+
+          <button
+            onClick={() => setActiveCategory('Account')}
             className={`p-1.5 rounded-lg hover:bg-black/5 opacity-85 cursor-pointer`}
             title="Account Settings"
           >
@@ -306,7 +306,7 @@ export default function Settings() {
 
         {/* User Quick Card in Sidebar */}
         {currentUser && (
-          <div 
+          <div
             onClick={() => setActiveCategory('Account')}
             className={`mb-3 p-2 rounded-xl border ${ts.border} bg-white/5 flex items-center gap-2.5 cursor-pointer hover:opacity-90 transition-opacity`}
           >
@@ -334,9 +334,8 @@ export default function Settings() {
               <div key={cat.id} className="space-y-0.5">
                 <button
                   onClick={() => setActiveCategory(cat.id)}
-                  className={`w-full text-left px-2.5 py-1.5 rounded-lg transition-all flex items-center justify-between cursor-pointer ${
-                    isActive ? ts.categoryActive : ts.categoryItem
-                  }`}
+                  className={`w-full text-left px-2.5 py-1.5 rounded-lg transition-all flex items-center justify-between cursor-pointer ${isActive ? ts.categoryActive : ts.categoryItem
+                    }`}
                 >
                   <div className="flex items-center gap-2 truncate">
                     <IconComp className="w-3.5 h-3.5 shrink-0 opacity-70" />
@@ -352,11 +351,10 @@ export default function Settings() {
                       <button
                         key={sub}
                         onClick={() => setActiveSubTab(sub)}
-                        className={`w-full text-left px-2 py-1 rounded text-[11px] truncate cursor-pointer transition-colors ${
-                          activeSubTab === sub 
-                            ? 'font-semibold text-purple-600 dark:text-purple-400 bg-purple-500/10' 
-                            : 'opacity-70 hover:opacity-100'
-                        }`}
+                        className={`w-full text-left px-2 py-1 rounded text-[11px] truncate cursor-pointer transition-colors ${activeSubTab === sub
+                          ? 'font-semibold text-purple-600 dark:text-purple-400 bg-purple-500/10'
+                          : 'opacity-70 hover:opacity-100'
+                          }`}
                       >
                         • {sub}
                       </button>
@@ -371,7 +369,7 @@ export default function Settings() {
 
       {/* 2. SETTINGS MAIN VIEW AREA */}
       <div className="flex-1 p-6 overflow-y-auto bg-transparent custom-scrollbar">
-        
+
         {/* Toast Alert Banner */}
         {toastMsg && (
           <div className="mb-4 p-3 rounded-xl bg-purple-500/20 border border-purple-500/40 text-purple-300 text-xs font-medium flex items-center justify-between animate-fade-in">
@@ -399,11 +397,10 @@ export default function Settings() {
                 <button
                   key={sub}
                   onClick={() => setActiveSubTab(sub)}
-                  className={`px-3 py-1 rounded-full text-xs font-medium cursor-pointer transition-all shrink-0 ${
-                    activeSubTab === sub
-                      ? 'bg-purple-600 text-white shadow-xs font-semibold'
-                      : 'bg-black/5 dark:bg-white/5 opacity-70 hover:opacity-100'
-                  }`}
+                  className={`px-3 py-1 rounded-full text-xs font-medium cursor-pointer transition-all shrink-0 ${activeSubTab === sub
+                    ? 'bg-purple-600 text-white shadow-xs font-semibold'
+                    : 'bg-black/5 dark:bg-white/5 opacity-70 hover:opacity-100'
+                    }`}
                 >
                   {sub}
                 </button>
@@ -417,7 +414,7 @@ export default function Settings() {
         {/* ---------------------------------------------------------------------------------- */}
         {activeCategory === 'Account' && (
           <div className="space-y-6 max-w-2xl">
-            
+
             {/* Account - Profile */}
             {(activeSubTab === 'Profile' || !activeSubTab) && (
               <form onSubmit={handleSaveProfile} className="space-y-6">
@@ -440,9 +437,8 @@ export default function Settings() {
                             type="button"
                             key={e}
                             onClick={() => setAvatarUrl(e)}
-                            className={`w-7 h-7 rounded-lg text-sm flex items-center justify-center transition-all border cursor-pointer ${
-                              avatarUrl === e ? 'bg-purple-500 text-white border-purple-500 scale-105' : 'bg-white/10 border-black/10 hover:bg-white/20'
-                            }`}
+                            className={`w-7 h-7 rounded-lg text-sm flex items-center justify-center transition-all border cursor-pointer ${avatarUrl === e ? 'bg-purple-500 text-white border-purple-500 scale-105' : 'bg-white/10 border-black/10 hover:bg-white/20'
+                              }`}
                           >
                             {e}
                           </button>
@@ -605,8 +601,8 @@ export default function Settings() {
                         </span>
                       </div>
                       <div className="w-full bg-black/20 h-1.5 rounded-full overflow-hidden">
-                        <div 
-                          className={`h-full transition-all ${newPassword.length >= 12 ? 'bg-emerald-500 w-full' : newPassword.length >= 8 ? 'bg-amber-500 w-2/3' : 'bg-rose-500 w-1/3'}`} 
+                        <div
+                          className={`h-full transition-all ${newPassword.length >= 12 ? 'bg-emerald-500 w-full' : newPassword.length >= 8 ? 'bg-amber-500 w-2/3' : 'bg-rose-500 w-1/3'}`}
                         />
                       </div>
                     </div>
@@ -739,13 +735,11 @@ export default function Settings() {
                       setSettings(prev => ({ ...prev, twoFactorEnabled: nextVal }));
                       showToast(`Two-factor authentication ${nextVal ? 'Enabled' : 'Disabled'}.`);
                     }}
-                    className={`w-12 h-6 rounded-full p-1 transition-colors cursor-pointer ${
-                      settings.twoFactorEnabled ? 'bg-purple-600' : 'bg-black/20 border border-white/10'
-                    }`}
+                    className={`w-12 h-6 rounded-full p-1 transition-colors cursor-pointer ${settings.twoFactorEnabled ? 'bg-purple-600' : 'bg-black/20 border border-white/10'
+                      }`}
                   >
-                    <div className={`w-4 h-4 rounded-full bg-white transition-transform ${
-                      settings.twoFactorEnabled ? 'translate-x-6' : 'translate-x-0'
-                    }`} />
+                    <div className={`w-4 h-4 rounded-full bg-white transition-transform ${settings.twoFactorEnabled ? 'translate-x-6' : 'translate-x-0'
+                      }`} />
                   </button>
                 </div>
 
@@ -820,7 +814,7 @@ export default function Settings() {
         {/* ---------------------------------------------------------------------------------- */}
         {activeCategory === 'Appearance' && (
           <div className="space-y-6 max-w-2xl">
-            
+
             {/* Theme */}
             {(activeSubTab === 'Theme' || !activeSubTab) && (
               <div className={`border ${ts.card} space-y-4`}>
@@ -830,9 +824,8 @@ export default function Settings() {
                   <div className="flex flex-col gap-2">
                     <button
                       onClick={() => setSettings(prev => ({ ...prev, wallpaper: 'wave-default', theme: 'classic-light' }))}
-                      className={`w-full h-24 rounded-xl overflow-hidden border-2 relative transition-all shadow-sm cursor-pointer ${
-                        settings.theme === 'classic-light' ? 'border-purple-500 scale-[1.02] ring-2 ring-purple-500/20' : 'border-black/10'
-                      }`}
+                      className={`w-full h-24 rounded-xl overflow-hidden border-2 relative transition-all shadow-sm cursor-pointer ${settings.theme === 'classic-light' ? 'border-purple-500 scale-[1.02] ring-2 ring-purple-500/20' : 'border-black/10'
+                        }`}
                     >
                       <div className="absolute inset-0 bg-gradient-to-tr from-indigo-900 via-[#bd2c8e] to-[#ec4899]" />
                       <div className="absolute inset-x-0 bottom-0 bg-black/60 p-2 flex items-center justify-between">
@@ -847,9 +840,8 @@ export default function Settings() {
                   <div className="flex flex-col gap-2">
                     <button
                       onClick={() => setSettings(prev => ({ ...prev, wallpaper: 'deep-space', theme: 'modern-dark' }))}
-                      className={`w-full h-24 rounded-xl overflow-hidden border-2 relative transition-all shadow-sm cursor-pointer ${
-                        settings.theme === 'modern-dark' ? 'border-purple-500 scale-[1.02] ring-2 ring-purple-500/20' : 'border-black/10'
-                      }`}
+                      className={`w-full h-24 rounded-xl overflow-hidden border-2 relative transition-all shadow-sm cursor-pointer ${settings.theme === 'modern-dark' ? 'border-purple-500 scale-[1.02] ring-2 ring-purple-500/20' : 'border-black/10'
+                        }`}
                     >
                       <div className="absolute inset-0 bg-[#0c0a15] bg-gradient-to-tr from-[#130d22] to-[#40305a]" />
                       <div className="absolute inset-x-0 bottom-0 bg-black/60 p-2 flex items-center justify-between">
@@ -864,9 +856,8 @@ export default function Settings() {
                   <div className="flex flex-col gap-2">
                     <button
                       onClick={() => setSettings(prev => ({ ...prev, wallpaper: 'matrix-green', theme: 'retro-terminal' }))}
-                      className={`w-full h-24 rounded-xl overflow-hidden border-2 relative transition-all shadow-sm cursor-pointer ${
-                        settings.theme === 'retro-terminal' ? 'border-green-500 scale-[1.02] ring-2 ring-green-500/20' : 'border-black/10'
-                      }`}
+                      className={`w-full h-24 rounded-xl overflow-hidden border-2 relative transition-all shadow-sm cursor-pointer ${settings.theme === 'retro-terminal' ? 'border-green-500 scale-[1.02] ring-2 ring-green-500/20' : 'border-black/10'
+                        }`}
                     >
                       <div className="absolute inset-0 bg-black p-2 font-mono text-[8px] text-green-500 overflow-hidden">
                         &gt; SYSTEM_BOOT_OK
@@ -897,9 +888,8 @@ export default function Settings() {
                           setSettings(prev => ({ ...prev, accentColor: color.hex }));
                           showToast(`Updated accent color to ${color.name}`);
                         }}
-                        className={`flex items-center gap-2.5 px-3 py-2 rounded-xl border transition-all cursor-pointer ${
-                          isSelected ? 'border-purple-500 ring-2 ring-purple-500/30 font-bold bg-white/10' : 'border-black/10 hover:bg-white/5'
-                        }`}
+                        className={`flex items-center gap-2.5 px-3 py-2 rounded-xl border transition-all cursor-pointer ${isSelected ? 'border-purple-500 ring-2 ring-purple-500/30 font-bold bg-white/10' : 'border-black/10 hover:bg-white/5'
+                          }`}
                       >
                         <div className={`w-5 h-5 rounded-full ${color.bgClass} shadow-xs border border-white/20 flex items-center justify-center`}>
                           {isSelected && <Check className="w-3 h-3 text-white" />}
@@ -926,9 +916,8 @@ export default function Settings() {
                     <button
                       key={wp.id}
                       onClick={() => setSettings(prev => ({ ...prev, wallpaper: wp.id as any }))}
-                      className={`h-20 rounded-xl overflow-hidden border-2 relative transition-all shadow-xs cursor-pointer ${
-                        settings.wallpaper === wp.id ? 'border-purple-500 scale-[1.02]' : 'border-black/10 hover:border-black/30'
-                      }`}
+                      className={`h-20 rounded-xl overflow-hidden border-2 relative transition-all shadow-xs cursor-pointer ${settings.wallpaper === wp.id ? 'border-purple-500 scale-[1.02]' : 'border-black/10 hover:border-black/30'
+                        }`}
                     >
                       <div className={`absolute inset-0 ${wp.previewBg}`} />
                       <div className="absolute inset-x-0 bottom-0 bg-black/50 p-1 text-center">
@@ -983,9 +972,8 @@ export default function Settings() {
                         showToast(`Updated font to ${font.label}`);
                       }}
                       style={{ fontFamily: font.id }}
-                      className={`p-2.5 rounded-xl border text-left text-xs transition-all cursor-pointer flex items-center justify-between ${
-                        selectedFont === font.id ? ts.interactiveBtnActive : ts.interactiveBtn
-                      }`}
+                      className={`p-2.5 rounded-xl border text-left text-xs transition-all cursor-pointer flex items-center justify-between ${selectedFont === font.id ? ts.interactiveBtnActive : ts.interactiveBtn
+                        }`}
                     >
                       <span className="font-semibold">{font.label}</span>
                       {selectedFont === font.id && <Check className="w-3.5 h-3.5" />}
@@ -1011,9 +999,8 @@ export default function Settings() {
                         setSettings(prev => ({ ...prev, iconSize: sz.id as any }));
                         showToast(`Icon size set to ${sz.label}`);
                       }}
-                      className={`flex-1 p-3 rounded-xl border text-left cursor-pointer transition-all ${
-                        (settings.iconSize || 'md') === sz.id ? ts.interactiveBtnActive : ts.interactiveBtn
-                      }`}
+                      className={`flex-1 p-3 rounded-xl border text-left cursor-pointer transition-all ${(settings.iconSize || 'md') === sz.id ? ts.interactiveBtnActive : ts.interactiveBtn
+                        }`}
                     >
                       <span className="text-xs font-bold block">{sz.label}</span>
                       <span className="text-[10px] opacity-70 block mt-0.5">{sz.desc}</span>
@@ -1030,7 +1017,7 @@ export default function Settings() {
         {/* ---------------------------------------------------------------------------------- */}
         {activeCategory === 'Desktop' && (
           <div className="space-y-6 max-w-2xl">
-            
+
             {/* Desktop icons */}
             {(activeSubTab === 'Desktop icons' || !activeSubTab) && (
               <div className={`border ${ts.card} space-y-4`}>
@@ -1056,13 +1043,11 @@ export default function Settings() {
                             setSettings(prev => ({ ...prev, desktopIcons: updated }));
                             showToast(`${ic.label} ${!isShown ? 'Visible' : 'Hidden'}`);
                           }}
-                          className={`w-10 h-5 rounded-full p-0.5 transition-colors cursor-pointer ${
-                            isShown ? 'bg-purple-600' : 'bg-black/20 border border-white/10'
-                          }`}
+                          className={`w-10 h-5 rounded-full p-0.5 transition-colors cursor-pointer ${isShown ? 'bg-purple-600' : 'bg-black/20 border border-white/10'
+                            }`}
                         >
-                          <div className={`w-4 h-4 rounded-full bg-white transition-transform ${
-                            isShown ? 'translate-x-5' : 'translate-x-0'
-                          }`} />
+                          <div className={`w-4 h-4 rounded-full bg-white transition-transform ${isShown ? 'translate-x-5' : 'translate-x-0'
+                            }`} />
                         </button>
                       </div>
                     );
@@ -1075,7 +1060,7 @@ export default function Settings() {
             {activeSubTab === 'Dock settings' && (
               <div className={`border ${ts.card} space-y-5`}>
                 <h3 className={ts.sectionHeader}>Dock Layout & Behavior</h3>
-                
+
                 <div>
                   <label className={`text-xs font-semibold block mb-2 ${ts.subText}`}>Dock Position</label>
                   <div className="flex gap-2">
@@ -1086,9 +1071,8 @@ export default function Settings() {
                           setSettings(prev => ({ ...prev, dockPosition: pos }));
                           showToast(`Dock position changed to ${pos}`);
                         }}
-                        className={`flex-1 py-2 rounded-xl border text-xs font-semibold uppercase tracking-wider transition-all cursor-pointer ${
-                          (settings.dockPosition || 'bottom') === pos ? ts.interactiveBtnActive : ts.interactiveBtn
-                        }`}
+                        className={`flex-1 py-2 rounded-xl border text-xs font-semibold uppercase tracking-wider transition-all cursor-pointer ${(settings.dockPosition || 'bottom') === pos ? ts.interactiveBtnActive : ts.interactiveBtn
+                          }`}
                       >
                         {pos}
                       </button>
@@ -1103,9 +1087,8 @@ export default function Settings() {
                       <button
                         key={size}
                         onClick={() => setSettings(prev => ({ ...prev, dockSize: size }))}
-                        className={`flex-1 py-2 rounded-xl border text-xs font-semibold uppercase tracking-wider transition-all cursor-pointer ${
-                          settings.dockSize === size ? ts.interactiveBtnActive : ts.interactiveBtn
-                        }`}
+                        className={`flex-1 py-2 rounded-xl border text-xs font-semibold uppercase tracking-wider transition-all cursor-pointer ${settings.dockSize === size ? ts.interactiveBtnActive : ts.interactiveBtn
+                          }`}
                       >
                         {size === 'sm' ? 'Small (44px)' : size === 'md' ? 'Medium (54px)' : 'Large (64px)'}
                       </button>
@@ -1125,13 +1108,11 @@ export default function Settings() {
                         setSettings(prev => ({ ...prev, dockAutohide: nextVal }));
                         showToast(`Dock Auto-Hide ${nextVal ? 'Enabled' : 'Disabled'}`);
                       }}
-                      className={`w-10 h-5 rounded-full p-0.5 transition-colors cursor-pointer ${
-                        settings.dockAutohide ? 'bg-purple-600' : 'bg-black/20 border border-white/10'
-                      }`}
+                      className={`w-10 h-5 rounded-full p-0.5 transition-colors cursor-pointer ${settings.dockAutohide ? 'bg-purple-600' : 'bg-black/20 border border-white/10'
+                        }`}
                     >
-                      <div className={`w-4 h-4 rounded-full bg-white transition-transform ${
-                        settings.dockAutohide ? 'translate-x-5' : 'translate-x-0'
-                      }`} />
+                      <div className={`w-4 h-4 rounded-full bg-white transition-transform ${settings.dockAutohide ? 'translate-x-5' : 'translate-x-0'
+                        }`} />
                     </button>
                   </div>
 
@@ -1146,13 +1127,11 @@ export default function Settings() {
                         setSettings(prev => ({ ...prev, dockMagnification: nextVal }));
                         showToast(`Dock Magnification ${nextVal ? 'Enabled' : 'Disabled'}`);
                       }}
-                      className={`w-10 h-5 rounded-full p-0.5 transition-colors cursor-pointer ${
-                        settings.dockMagnification !== false ? 'bg-purple-600' : 'bg-black/20 border border-white/10'
-                      }`}
+                      className={`w-10 h-5 rounded-full p-0.5 transition-colors cursor-pointer ${settings.dockMagnification !== false ? 'bg-purple-600' : 'bg-black/20 border border-white/10'
+                        }`}
                     >
-                      <div className={`w-4 h-4 rounded-full bg-white transition-transform ${
-                        settings.dockMagnification !== false ? 'translate-x-5' : 'translate-x-0'
-                      }`} />
+                      <div className={`w-4 h-4 rounded-full bg-white transition-transform ${settings.dockMagnification !== false ? 'translate-x-5' : 'translate-x-0'
+                        }`} />
                     </button>
                   </div>
                 </div>
@@ -1177,9 +1156,8 @@ export default function Settings() {
                           setSettings(prev => ({ ...prev, clockFormat: clk.id as any }));
                           showToast(`Clock format updated to ${clk.label}`);
                         }}
-                        className={`flex-1 py-2 rounded-xl border text-xs font-semibold transition-all cursor-pointer ${
-                          (settings.clockFormat || '12h') === clk.id ? ts.interactiveBtnActive : ts.interactiveBtn
-                        }`}
+                        className={`flex-1 py-2 rounded-xl border text-xs font-semibold transition-all cursor-pointer ${(settings.clockFormat || '12h') === clk.id ? ts.interactiveBtnActive : ts.interactiveBtn
+                          }`}
                       >
                         {clk.label}
                       </button>
@@ -1196,13 +1174,11 @@ export default function Settings() {
                         setSettings(prev => ({ ...prev, showBattery: nextVal }));
                         showToast(`Battery status display ${nextVal ? 'Enabled' : 'Disabled'}`);
                       }}
-                      className={`w-10 h-5 rounded-full p-0.5 transition-colors cursor-pointer ${
-                        settings.showBattery !== false ? 'bg-purple-600' : 'bg-black/20 border border-white/10'
-                      }`}
+                      className={`w-10 h-5 rounded-full p-0.5 transition-colors cursor-pointer ${settings.showBattery !== false ? 'bg-purple-600' : 'bg-black/20 border border-white/10'
+                        }`}
                     >
-                      <div className={`w-4 h-4 rounded-full bg-white transition-transform ${
-                        settings.showBattery !== false ? 'translate-x-5' : 'translate-x-0'
-                      }`} />
+                      <div className={`w-4 h-4 rounded-full bg-white transition-transform ${settings.showBattery !== false ? 'translate-x-5' : 'translate-x-0'
+                        }`} />
                     </button>
                   </div>
 
@@ -1214,13 +1190,11 @@ export default function Settings() {
                         setSettings(prev => ({ ...prev, showWifiInTaskbar: nextVal }));
                         showToast(`Wi-Fi status display ${nextVal ? 'Enabled' : 'Disabled'}`);
                       }}
-                      className={`w-10 h-5 rounded-full p-0.5 transition-colors cursor-pointer ${
-                        settings.showWifiInTaskbar !== false ? 'bg-purple-600' : 'bg-black/20 border border-white/10'
-                      }`}
+                      className={`w-10 h-5 rounded-full p-0.5 transition-colors cursor-pointer ${settings.showWifiInTaskbar !== false ? 'bg-purple-600' : 'bg-black/20 border border-white/10'
+                        }`}
                     >
-                      <div className={`w-4 h-4 rounded-full bg-white transition-transform ${
-                        settings.showWifiInTaskbar !== false ? 'translate-x-5' : 'translate-x-0'
-                      }`} />
+                      <div className={`w-4 h-4 rounded-full bg-white transition-transform ${settings.showWifiInTaskbar !== false ? 'translate-x-5' : 'translate-x-0'
+                        }`} />
                     </button>
                   </div>
                 </div>
@@ -1234,7 +1208,7 @@ export default function Settings() {
         {/* ---------------------------------------------------------------------------------- */}
         {activeCategory === 'Notifications' && (
           <div className="space-y-6 max-w-2xl">
-            
+
             {/* Enable/disable notifications */}
             {(activeSubTab === 'Enable/disable notifications' || !activeSubTab) && (
               <div className={`border ${ts.card} space-y-4`}>
@@ -1251,13 +1225,11 @@ export default function Settings() {
                       setSettings(prev => ({ ...prev, notificationsEnabled: nextVal }));
                       showToast(`Notifications ${nextVal ? 'Enabled' : 'Disabled'}`);
                     }}
-                    className={`w-11 h-6 rounded-full p-1 transition-colors cursor-pointer ${
-                      settings.notificationsEnabled !== false ? 'bg-purple-600' : 'bg-black/20'
-                    }`}
+                    className={`w-11 h-6 rounded-full p-1 transition-colors cursor-pointer ${settings.notificationsEnabled !== false ? 'bg-purple-600' : 'bg-black/20'
+                      }`}
                   >
-                    <div className={`w-4 h-4 rounded-full bg-white transition-transform ${
-                      settings.notificationsEnabled !== false ? 'translate-x-5' : 'translate-x-0'
-                    }`} />
+                    <div className={`w-4 h-4 rounded-full bg-white transition-transform ${settings.notificationsEnabled !== false ? 'translate-x-5' : 'translate-x-0'
+                      }`} />
                   </button>
                 </div>
 
@@ -1272,13 +1244,11 @@ export default function Settings() {
                       setSettings(prev => ({ ...prev, dndEnabled: nextVal }));
                       showToast(`Do Not Disturb ${nextVal ? 'Enabled' : 'Disabled'}`);
                     }}
-                    className={`w-11 h-6 rounded-full p-1 transition-colors cursor-pointer ${
-                      settings.dndEnabled ? 'bg-purple-600' : 'bg-black/20'
-                    }`}
+                    className={`w-11 h-6 rounded-full p-1 transition-colors cursor-pointer ${settings.dndEnabled ? 'bg-purple-600' : 'bg-black/20'
+                      }`}
                   >
-                    <div className={`w-4 h-4 rounded-full bg-white transition-transform ${
-                      settings.dndEnabled ? 'translate-x-5' : 'translate-x-0'
-                    }`} />
+                    <div className={`w-4 h-4 rounded-full bg-white transition-transform ${settings.dndEnabled ? 'translate-x-5' : 'translate-x-0'
+                      }`} />
                   </button>
                 </div>
               </div>
@@ -1312,9 +1282,8 @@ export default function Settings() {
                           setSettings(prev => ({ ...prev, notificationSound: snd }));
                           showToast(`Selected notification sound: ${snd}`);
                         }}
-                        className={`p-2 rounded-xl border text-xs font-medium cursor-pointer transition-all ${
-                          (settings.notificationSound || 'Chime') === snd ? ts.interactiveBtnActive : ts.interactiveBtn
-                        }`}
+                        className={`p-2 rounded-xl border text-xs font-medium cursor-pointer transition-all ${(settings.notificationSound || 'Chime') === snd ? ts.interactiveBtnActive : ts.interactiveBtn
+                          }`}
                       >
                         🔔 {snd}
                       </button>
@@ -1340,9 +1309,8 @@ export default function Settings() {
                         setSettings(prev => ({ ...prev, notificationPriority: p.id as any }));
                         showToast(`Notification priority set to ${p.title}`);
                       }}
-                      className={`w-full text-left p-3 rounded-xl border transition-all cursor-pointer ${
-                        (settings.notificationPriority || 'all') === p.id ? ts.interactiveBtnActive : ts.interactiveBtn
-                      }`}
+                      className={`w-full text-left p-3 rounded-xl border transition-all cursor-pointer ${(settings.notificationPriority || 'all') === p.id ? ts.interactiveBtnActive : ts.interactiveBtn
+                        }`}
                     >
                       <span className="text-xs font-bold block">{p.title}</span>
                       <span className="text-[11px] opacity-70 block mt-0.5">{p.desc}</span>
@@ -1359,7 +1327,7 @@ export default function Settings() {
         {/* ---------------------------------------------------------------------------------- */}
         {activeCategory === 'Storage' && (
           <div className="space-y-6 max-w-2xl">
-            
+
             {/* Used storage */}
             {(activeSubTab === 'Used storage' || !activeSubTab) && (
               <div className={`border ${ts.card} space-y-4`}>
@@ -1402,9 +1370,8 @@ export default function Settings() {
                         setSettings(prev => ({ ...prev, storageLimitGB: gb }));
                         showToast(`Storage limit updated to ${gb} GB`);
                       }}
-                      className={`p-3 rounded-xl border text-xs font-bold text-center cursor-pointer transition-all ${
-                        (settings.storageLimitGB || 16) === gb ? ts.interactiveBtnActive : ts.interactiveBtn
-                      }`}
+                      className={`p-3 rounded-xl border text-xs font-bold text-center cursor-pointer transition-all ${(settings.storageLimitGB || 16) === gb ? ts.interactiveBtnActive : ts.interactiveBtn
+                        }`}
                     >
                       {gb} GB
                     </button>
@@ -1417,7 +1384,7 @@ export default function Settings() {
             {activeSubTab === 'Cleanup' && (
               <div className={`border ${ts.card} space-y-4`}>
                 <h3 className={ts.sectionHeader}>Disk Cleanup & Space Recovery</h3>
-                
+
                 {isCleaning && (
                   <div className="p-3 bg-purple-500/20 border border-purple-500/40 rounded-xl space-y-2">
                     <div className="flex justify-between text-xs font-bold">
@@ -1472,7 +1439,7 @@ export default function Settings() {
         {/* ---------------------------------------------------------------------------------- */}
         {activeCategory === 'Applications' && (
           <div className="space-y-6 max-w-2xl">
-            
+
             {/* Installed apps */}
             {(activeSubTab === 'Installed apps' || !activeSubTab) && (
               <div className="space-y-4">
@@ -1583,7 +1550,7 @@ export default function Settings() {
         {/* ---------------------------------------------------------------------------------- */}
         {activeCategory === 'Accessibility' && (
           <div className="space-y-6 max-w-2xl">
-            
+
             {/* Zoom */}
             {(activeSubTab === 'Zoom' || !activeSubTab) && (
               <div className={`border ${ts.card} space-y-4`}>
@@ -1598,9 +1565,8 @@ export default function Settings() {
                         setSettings(prev => ({ ...prev, zoomLevel: z }));
                         showToast(`Desktop Zoom set to ${z}%`);
                       }}
-                      className={`p-3 rounded-xl border text-xs font-bold text-center cursor-pointer transition-all ${
-                        (settings.zoomLevel || 100) === z ? ts.interactiveBtnActive : ts.interactiveBtn
-                      }`}
+                      className={`p-3 rounded-xl border text-xs font-bold text-center cursor-pointer transition-all ${(settings.zoomLevel || 100) === z ? ts.interactiveBtnActive : ts.interactiveBtn
+                        }`}
                     >
                       {z}%
                     </button>
@@ -1628,9 +1594,8 @@ export default function Settings() {
                         setSettings(prev => ({ ...prev, fontScaling: f.val }));
                         showToast(`Font scaling set to ${f.label}`);
                       }}
-                      className={`p-3 rounded-xl border text-xs font-bold text-center cursor-pointer transition-all ${
-                        (settings.fontScaling || 100) === f.val ? ts.interactiveBtnActive : ts.interactiveBtn
-                      }`}
+                      className={`p-3 rounded-xl border text-xs font-bold text-center cursor-pointer transition-all ${(settings.fontScaling || 100) === f.val ? ts.interactiveBtnActive : ts.interactiveBtn
+                        }`}
                     >
                       {f.label}
                     </button>
