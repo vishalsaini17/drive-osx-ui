@@ -2,7 +2,9 @@
 import { StorageService } from './StorageService';
 import { useSystemStore } from '../systemStore';
 
-export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '/api/v1').replace(/\/$/, '');
+// export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '/api/v1').replace(/\/$/, '');
+export const API_BASE_URL = `${import.meta.env.VITE_API_BASE_URL}/api/v1`
+console.log("api base url ui--->",API_BASE_URL )
 
 export interface RegisterPayload {
   username: string;
