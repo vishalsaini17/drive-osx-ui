@@ -1,10 +1,11 @@
 /// <reference types="vite/client" />
 import { StorageService } from './StorageService';
 import { useSystemStore } from '../systemStore';
+import { request } from '../utils/request';
 
 // export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '/api/v1').replace(/\/$/, '');
 export const API_BASE_URL = `${import.meta.env.VITE_API_BASE_URL}/api/v1`
-console.log("api base url ui--->",API_BASE_URL )
+console.log("api base url ui--->", API_BASE_URL)
 
 export interface RegisterPayload {
   username: string;
@@ -431,6 +432,35 @@ class ApiServiceClass {
     } catch (error) {
       return 0;
     }
+  }
+
+  // ============================================================================================
+  // async updateUser(id: string, data: any) {
+  //   try {
+  //     const response = await request({
+  //       method: 'PUT',
+  //       url: `/user/${id}`,
+  //       data:  data 
+  //     });
+
+  //     console.log("updated user---->", response)
+
+  //   } catch (error: any) {
+  //     console.error("Error occur while updating user", error)
+  //     notifyApiFailure("User Update", "Failed to update user")
+  //     return {
+  //       success: false,
+  //       message: "Failed to update user!"
+  //     }
+  //   }
+  // }
+
+  async updateUser(id: string, data: Record<string, any>) {
+    return request({
+      method: 'PUT',
+      url: `/user/${id}`,
+      data: { data },
+    });
   }
 }
 

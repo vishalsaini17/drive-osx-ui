@@ -48,6 +48,7 @@ import {
 } from 'lucide-react';
 import { useSystemStore } from '../../systemStore';
 import { AppRegistry } from '../../core/AppRegistry';
+import { ApiService } from '@/src/services/ApiService';
 
 export default function Settings() {
   const settings = useSystemStore((state) => state.settings);
@@ -83,6 +84,7 @@ export default function Settings() {
   const [selectedAppId, setSelectedAppId] = useState<string | null>(null);
 
   // Profile & Password State
+  const [id,] = useState(currentUser?.id);
   const [fullName, setFullName] = useState(currentUser?.fullName || '');
   const [email, setEmail] = useState(currentUser?.email || 'admin@driveosx.local');
   const [recoveryEmail, setRecoveryEmail] = useState(currentUser?.recoveryEmail || '');
@@ -221,16 +223,27 @@ export default function Settings() {
     { name: 'Indigo', hex: '#6366f1', bgClass: 'bg-indigo-500' },
   ];
 
-  const handleSaveProfile = (e: React.FormEvent) => {
+  console.log("updated user id---->",currentUser?.id)
+
+  const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
-    updateCurrentUser({
-      fullName,
-      email,
-      recoveryEmail,
-      mobile,
-      avatarUrl,
-    });
-    showToast('✔ Profile updated successfully!');
+
+    try {
+      const response = await ApiService.updateUser(currentUser?.id as string, {
+        fullName,
+        email,
+        recoveryEmail,
+        mobile,
+        avatarUrl,
+      });
+
+      if (!response.success) throw new Error(response.message);
+
+      updateCurrentUser(response.data);
+      showToast('Profile updated successfully!');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Failed to update profile.');
+    }
   };
 
   const handleChangePassword = (e: React.FormEvent) => {

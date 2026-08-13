@@ -29,7 +29,7 @@ interface SystemState {
   editorFileContent: string;
   editorCurrentFolderId: string | null;
   messages: ChatMessage[];
-  
+
   // Auth state & actions
   currentUser: User | null;
   usersList: User[];
@@ -39,7 +39,7 @@ interface SystemState {
   login: (username: string, passwordHash: string) => Promise<{ success: boolean; message?: string }>;
   signup: (payload: { username: string; firstName: string; lastName: string; passwordHash: string; recoveryEmail?: string; mobile?: string }) => Promise<{ success: boolean; message: string }>;
   logout: () => void;
-  
+
   // World Clocks state & actions
   worldCities: WorldCity[];
   addWorldCity: (city: WorldCity) => void;
@@ -170,6 +170,7 @@ export const useSystemStore = create<SystemState>((set, get) => ({
       // Fetch profile details or construct from API response
       const profile = await ApiService.getProfile();
       const user: User = {
+        id : profile?.id || apiResult.user?.id ,
         username: profile?.username || apiResult.user?.username || username,
         fullName: profile?.fullName || apiResult.user?.fullName || username,
         passwordHash,
