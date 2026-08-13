@@ -22,7 +22,11 @@ import {
   Code
 } from 'lucide-react';
 import { useSystemStore } from '../../shell/state/systemStore';
+import { THEMES, themesByFamily } from '../../platform/theme/themes';
+import { WALLPAPERS, wallpapersByGroup } from '../../platform/theme/wallpapers';
 import { AppRegistry } from '../../platform/registry/AppRegistry';
+import { useAppMenu } from '../../platform/menus/AppMenuContext';
+import { separator } from '../../platform/menus/types';
 
 export interface LogLine {
   text: string;
@@ -956,27 +960,36 @@ export default function Terminal() {
         const val = args[1]?.toLowerCase();
 
         if (sub === 'theme') {
-          const validThemes = ['classic-light', 'modern-dark', 'retro-terminal'] as const;
-          const matched = validThemes.find((t) => t === val);
+          // Read from the catalogue, so a new theme is usable here the moment
+          // it is added rather than needing this list updated too.
+          const matched = THEMES.find((t) => t.id === val);
           if (matched) {
-            setSettings((prev) => ({ ...prev, theme: matched }));
-            output = [{ text: `✔ Updated system theme to '${matched}'`, type: 'success' }];
+            setSettings((prev) => ({ ...prev, theme: matched.id }));
+            output = [{ text: `✔ Updated system theme to '${matched.id}'`, type: 'success' }];
           } else {
             output = [
               { text: `Current System Theme: ${settings.theme}`, type: 'info' },
-              { text: 'Usage: settings theme <classic-light|modern-dark|retro-terminal>', type: 'output' },
+              { text: 'Usage: settings theme <name>', type: 'output' },
+              ...themesByFamily().map(({ label, themes }) => ({
+                text: `  ${label.padEnd(9)} ${themes.map((t) => t.id).join(', ')}`,
+                type: 'output' as const,
+              })),
             ];
           }
         } else if (sub === 'wallpaper') {
-          const validWallpapers = ['wave-default', 'sunset', 'deep-space', 'matrix-green', 'custom'] as const;
-          const matched = validWallpapers.find((w) => w === val);
-          if (matched) {
-            setSettings((prev) => ({ ...prev, wallpaper: matched }));
-            output = [{ text: `✔ Updated wallpaper preset to '${matched}'`, type: 'success' }];
+          const matched = WALLPAPERS.find((w) => w.id === val);
+          if (matched || val === 'custom') {
+            const id = matched ? matched.id : ('custom' as const);
+            setSettings((prev) => ({ ...prev, wallpaper: id }));
+            output = [{ text: `✔ Updated wallpaper preset to '${id}'`, type: 'success' }];
           } else {
             output = [
               { text: `Current Wallpaper: ${settings.wallpaper}`, type: 'info' },
-              { text: 'Usage: settings wallpaper <wave-default|sunset|deep-space|matrix-green>', type: 'output' },
+              { text: 'Usage: settings wallpaper <name>', type: 'output' },
+              ...wallpapersByGroup().map(({ label, wallpapers }) => ({
+                text: `  ${label.padEnd(10)} ${wallpapers.map((w) => w.id).join(', ')}`,
+                type: 'output' as const,
+              })),
             ];
           }
         } else if (sub === 'wifi') {
@@ -1340,6 +1353,49 @@ export default function Terminal() {
     updateAppPreference('terminal', 'theme', tId);
   };
 
+
+  useAppMenu('terminal', [
+    {
+      id: 'shell',
+      label: 'Shell',
+      items: [
+        { id: 'new-tab', label: 'New Tab', shortcut: 'Ctrl+T', onSelect: () => createNewTab() },
+        { id: 'close-tab', label: 'Close Tab', shortcut: 'Ctrl+W', disabled: tabs.length <= 1, onSelect: () => closeTab(activeTabId) },
+        separator(),
+        { id: 'clear', label: 'Clear Screen', shortcut: 'Ctrl+L', onSelect: () =>
+            setTabs((prev) => prev.map((tab) => (tab.id === activeTabId ? { ...tab, lines: [] } : tab))) },
+      ],
+    },
+    {
+      id: 'view',
+      label: 'View',
+      items: [
+        {
+          kind: 'submenu', id: 'theme', label: 'Colour Scheme',
+          items: TERMINAL_THEMES.map((theme) => ({
+            id: `theme-${theme.id}`, label: theme.name, selected: themeId === theme.id,
+            onSelect: () => setThemeId(theme.id),
+          })),
+        },
+        {
+          kind: 'submenu', id: 'font', label: 'Font Size',
+          items: ['11px', '12px', '13px', '14px', '16px', '18px'].map((size) => ({
+            id: `font-${size}`, label: size, selected: fontSize === size,
+            onSelect: () => setFontSize(size),
+          })),
+        },
+        separator(),
+        { id: 'matrix', label: 'Matrix Mode', checked: isMatrixMode, onSelect: () => setIsMatrixMode((prev) => !prev) },
+      ],
+    },
+    {
+      id: 'commands',
+      label: 'Commands',
+      items: [
+        { id: 'cmd-help', label: 'Command Reference…', onSelect: () => setShowHelpModal(true) },
+      ],
+    },
+  ]);
   return (
     <div
       onClick={handleContainerClick}

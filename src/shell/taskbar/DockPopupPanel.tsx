@@ -1,6 +1,22 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { useSystemStore } from '../state/systemStore';
+import { useShellTheme } from '../../platform/theme/useShellTheme';
+
+/**
+ * The shared surface for everything that opens out of the dock.
+ *
+ * These panels are visually anchored to the dock pill they emerge from, so they
+ * use the same material: `shell.panel`. That is the whole point of the surface
+ * tokens — the dock, its panels, the application menu and the notification
+ * centre are one system, and none of them can drift on its own any more. This
+ * component previously hardcoded a violet tint, which was correct only while
+ * the dock happened to be violet.
+ *
+ * Radii are concentric — a nested corner only looks right when the outer radius
+ * equals the inner radius plus the padding between them. The dock pill is 20px,
+ * so cards inside a panel use 16px and the panel adds 12px of padding to reach
+ * 28px. Change one of the three and the other two have to move with it.
+ */
 
 interface DockPopupPanelProps {
   id: string;
@@ -19,8 +35,7 @@ export function DockPopupPanel({
   widthClass = 'w-[335px]',
   className = '',
 }: DockPopupPanelProps) {
-  const theme = useSystemStore((state) => state.settings.theme);
-  const isLight = theme === 'classic-light';
+  const shell = useShellTheme();
 
   const positionClass =
     position === 'left'
@@ -35,18 +50,13 @@ export function DockPopupPanel({
         onClick={onClose}
       />
 
-      {/* Reusable Popup Panel Container */}
       <motion.div
         id={id}
         initial={{ opacity: 0, y: 20, scale: 0.94 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={{ opacity: 0, y: 20, scale: 0.94 }}
         transition={{ type: 'spring', damping: 25, stiffness: 280 }}
-        className={`absolute bottom-[76px] sm:bottom-[86px] ${positionClass} ${widthClass} max-w-[calc(100vw-1.5rem)] max-h-[calc(100vh-95px)] overflow-y-auto rounded-[22px] sm:rounded-[26px] p-3 sm:p-4 flex flex-col gap-2.5 sm:gap-3 z-[999] pointer-events-auto select-none font-sans ${
-          isLight
-            ? 'bg-[#f2f2f6]/95 backdrop-blur-2xl text-slate-800 border border-slate-300/80 shadow-[0_20px_50px_rgba(0,0,0,0.18)]'
-            : 'bg-[#2d2c30] backdrop-blur-2xl text-white border border-white/10 shadow-[0_20px_50px_rgba(0,0,0,0.6)]'
-        } ${className}`}
+        className={`absolute bottom-[76px] sm:bottom-[86px] ${positionClass} ${widthClass} max-w-[calc(100vw-1.5rem)] max-h-[calc(100vh-95px)] overflow-y-auto rounded-[28px] p-3 flex flex-col gap-2.5 z-[999] pointer-events-auto select-none font-sans ${shell.panel} ${shell.text} ${className}`}
       >
         {children}
       </motion.div>
@@ -59,17 +69,39 @@ interface DockPopupCardProps {
   className?: string;
 }
 
+/**
+ * A section inside a panel. Sits one step above the panel surface so sections
+ * separate without needing heavy borders between them.
+ */
 export function DockPopupCard({ children, className = '' }: DockPopupCardProps) {
-  const theme = useSystemStore((state) => state.settings.theme);
-  const isLight = theme === 'classic-light';
+  const shell = useShellTheme();
 
   return (
-    <div
-      className={`rounded-[16px] sm:rounded-[20px] p-2.5 sm:p-3.5 flex flex-col gap-2 sm:gap-2.5 shadow-xs border ${
-        isLight ? 'bg-white border-slate-200/80 text-slate-800' : 'bg-[#3c3b40] border-white/5 text-white'
-      } ${className}`}
-    >
+    // 16px — the dock pill's radius less the panel padding. See the note above.
+    <div className={`rounded-2xl p-3 flex flex-col gap-2.5 ${shell.card} ${shell.text} ${className}`}>
       {children}
     </div>
+  );
+}
+
+/**
+ * The small uppercase label that titles a section. Extracted because the two
+ * panels had drifted to different sizes and weights for the same role.
+ */
+export function DockPopupSectionLabel({
+  children,
+  className = '',
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
+  const shell = useShellTheme();
+
+  return (
+    <span
+      className={`text-[10px] font-bold tracking-wider uppercase select-none ${shell.textSubtle} ${className}`}
+    >
+      {children}
+    </span>
   );
 }

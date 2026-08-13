@@ -1,3 +1,6 @@
+import type { ThemeId } from './theme/themes';
+import type { WallpaperId } from './theme/wallpapers';
+
 export interface SystemNotification {
   id: string;
   sender: string;
@@ -132,6 +135,12 @@ export interface FileItem {
   publicLink?: PublicLinkConfig;
   activityHistory?: ActivityLogItem[];
   originalParentId?: string | null;
+  /**
+   * Size in bytes, as reported by the server. Optional because a file created
+   * locally while offline has not been measured yet — anything showing a total
+   * must treat a missing size as unknown rather than as zero.
+   */
+  size?: number;
 }
 
 export interface ChatMessage {
@@ -142,10 +151,11 @@ export interface ChatMessage {
 }
 
 export interface SystemSettings {
-  wallpaper: 'wave-default' | 'sunset' | 'deep-space' | 'matrix-green' | 'custom';
+  /** Ids come from the catalogues in `platform/theme/`, never a loose literal. */
+  wallpaper: WallpaperId;
   customWallpaperUrl: string;
   dockSize: 'sm' | 'md' | 'lg';
-  theme: 'modern-dark' | 'classic-light' | 'retro-terminal';
+  theme: ThemeId;
   soundsEnabled: boolean;
   volume: number;
   wifiStatus: 'connected' | 'disconnected';
@@ -170,4 +180,25 @@ export interface SystemSettings {
   twoFactorEnabled?: boolean;
   storageLimitGB?: number;
   appPreferences?: Record<string, Record<string, any>>;
+
+  // --- Window and appearance preferences, shared by every application ---
+  /** Follows the OS when 'system'; otherwise pins light or dark. */
+  themeMode?: 'system' | 'light' | 'dark';
+  /** How a window opens: filling the screen, or at a chosen size. */
+  defaultWindowMode?: 'maximized' | 'custom';
+  defaultWindowWidth?: number;
+  defaultWindowHeight?: number;
+  defaultWindowPlacement?: 'app-default' | 'center' | 'cascade' | 'custom';
+  defaultWindowX?: number;
+  defaultWindowY?: number;
+  /** Reopen a window where it was last left. */
+  rememberWindowGeometry?: boolean;
+  /** Confirm before closing a window with unsaved work. */
+  confirmOnClose?: boolean;
+  /** Window open/close and menu animations. */
+  reduceMotion?: boolean;
+  /** Focus a window when the pointer moves over it. */
+  focusFollowsMouse?: boolean;
+  /** Show the menu bar in window title bars. */
+  showWindowMenuBar?: boolean;
 }

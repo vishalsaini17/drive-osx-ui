@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { ArrowLeft, ArrowRight, RotateCw, Home, Search, ExternalLink, Globe, Sliders, WifiOff, AlertCircle, RefreshCw } from 'lucide-react';
 import { useSystemStore } from '../../shell/state/systemStore';
+import { useAppMenu } from '../../platform/menus/AppMenuContext';
+import { separator } from '../../platform/menus/types';
 
 interface TabState {
   url: string;
@@ -135,6 +137,44 @@ export default function WebBrowser() {
     }
   };
 
+
+  useAppMenu('browser', [
+    {
+      id: 'file',
+      label: 'File',
+      items: [
+        { id: 'home', label: 'Home Page', onSelect: () => navigateTo('https://www.google.com') },
+        separator(),
+        { id: 'copy-url', label: 'Copy Address', onSelect: () => navigator.clipboard?.writeText(browserState.url) },
+      ],
+    },
+    {
+      id: 'view',
+      label: 'View',
+      items: [
+        { id: 'reload', label: 'Reload', shortcut: 'Ctrl+R', onSelect: handleRefresh },
+      ],
+    },
+    {
+      id: 'history',
+      label: 'History',
+      items: [
+        { id: 'back', label: 'Back', shortcut: 'Alt+←', disabled: browserState.historyIndex <= 0, onSelect: handleGoBack },
+        { id: 'forward', label: 'Forward', shortcut: 'Alt+→', disabled: browserState.historyIndex >= browserState.history.length - 1, onSelect: handleGoForward },
+        separator(),
+        ...(browserState.history.length > 1
+          ? [{
+              kind: 'submenu' as const, id: 'recent', label: 'Recent Pages',
+              items: browserState.history.slice(-10).reverse().map((entry, index) => ({
+                id: `hist-${index}`,
+                label: entry.replace(/^https?:\/\//, '').slice(0, 40),
+                onSelect: () => navigateTo(entry),
+              })),
+            }]
+          : []),
+      ],
+    },
+  ]);
   return (
     <div className="h-full flex flex-col bg-zinc-950 text-zinc-100 font-sans select-text">
       {/* 1. BROWSER HEADER & URL CONTROLS */}

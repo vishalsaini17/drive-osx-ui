@@ -47,11 +47,14 @@ import {
 } from 'lucide-react';
 import { FileItem } from '../../platform/types';
 import { useSystemStore } from '../../shell/state/systemStore';
+import { useAppTheme } from '../../platform/theme/useAppTheme';
 import { useContextMenuStore, ContextMenuItem } from '../../shell/context-menu/contextMenuStore';
 import { StorageService } from '../../platform/storage/StorageService';
 import { FileService } from '../../platform/files/FileService';
 import { getAppForFile } from '../../platform/registry/EditorRegistry';
-import WindowStatusBar from '../../shell/window-manager/WindowStatusBar';
+import WindowStatus from '../../shell/window-manager/WindowStatusContext';
+import { useAppMenu } from '../../platform/menus/AppMenuContext';
+import { separator } from '../../platform/menus/types';
 
 import ShareModal from './components/ShareModal';
 import MoveModal from './components/MoveModal';
@@ -73,7 +76,7 @@ export default function FileManager() {
   const setSettings = useSystemStore((state) => state.setSettings);
   const currentUser = useSystemStore((state) => state.currentUser);
 
-  const activeTheme = settings.theme || 'classic-light';
+  const activeTheme = useAppTheme('fileManager').chromeTheme;
 
   const fmPrefs = settings.appPreferences?.fileManager;
   const prefView = fmPrefs?.defaultView?.toLowerCase() === 'list' ? 'list' : 'grid';
@@ -96,7 +99,7 @@ export default function FileManager() {
   const [activeOpenWithItem, setActiveOpenWithItem] = useState<FileItem | null>(null);
 
   // Details pane
-  const [showDetailsPane, setShowDetailsPane] = useState<boolean>(true);
+  const [showDetailsPane, setShowDetailsPane] = useState<boolean>(false);
 
   // Drag and drop state
   const [isDragOverCanvas, setIsDragOverCanvas] = useState<boolean>(false);
@@ -1382,6 +1385,92 @@ export default function FileManager() {
 
   const ts = themeStyles[activeTheme] || themeStyles['classic-light'];
 
+
+  // Menus mirror the toolbar and context menus, so every command is also
+  // reachable from the menu bar.
+  useAppMenu('fileManager', [
+    {
+      id: 'file',
+      label: 'File',
+      items: [
+        { id: 'new-folder', label: 'New Folder', shortcut: 'Ctrl+Shift+N', onSelect: handleCreateFolder },
+        { id: 'upload', label: 'Upload Files…', onSelect: handleUploadClick },
+        separator(),
+        { id: 'rename', label: 'Rename', shortcut: 'F2', disabled: !selectedItem, onSelect: () => selectedItem && handleStartRename(selectedItem) },
+        { id: 'download', label: 'Download', disabled: !selectedItem || selectedItem.type !== 'file', onSelect: () => selectedItem && handleDownloadFile(selectedItem) },
+        separator(),
+        { id: 'delete', label: isTrashFolder ? 'Delete Permanently' : 'Move to Trash', shortcut: 'Delete', danger: true, disabled: !selectedItem, onSelect: () => selectedItem && handleDeleteItem(selectedItem) },
+        { id: 'empty-trash', label: 'Empty Recycle Bin', danger: true, disabled: deletedFiles.length === 0, onSelect: () => handleEmptyTrash() },
+      ],
+    },
+    {
+      id: 'edit',
+      label: 'Edit',
+      items: [
+        { id: 'cut', label: 'Cut', shortcut: 'Ctrl+X', disabled: !selectedItem, onSelect: () => selectedItem && handleCut(selectedItem) },
+        { id: 'copy', label: 'Copy', shortcut: 'Ctrl+C', disabled: !selectedItem, onSelect: () => selectedItem && handleCopy(selectedItem) },
+        { id: 'paste', label: 'Paste', shortcut: 'Ctrl+V', disabled: !clipboard, onSelect: handlePaste },
+        separator(),
+        { id: 'select-all', label: 'Select All', shortcut: 'Ctrl+A', onSelect: () => setSelectedFileIds(sortedItems.map((item) => item.id)) },
+        { id: 'select-none', label: 'Deselect All', disabled: selectedFileIds.length === 0, onSelect: () => setSelectedFileIds([]) },
+        separator(),
+        { id: 'star', label: 'Toggle Star', disabled: !selectedItem, onSelect: () => selectedItem && handleToggleStar(selectedItem) },
+      ],
+    },
+    {
+      id: 'view',
+      label: 'View',
+      items: [
+        { id: 'view-grid', label: 'Grid', selected: viewMode === 'grid', onSelect: () => setViewMode('grid') },
+        { id: 'view-list', label: 'List', selected: viewMode === 'list', onSelect: () => setViewMode('list') },
+        separator(),
+        {
+          kind: 'submenu', id: 'sort-by', label: 'Sort By',
+          items: ([
+            ['name', 'Name'], ['type', 'Type'], ['date', 'Date Modified'], ['size', 'Size'],
+          ] as const).map(([field, label]) => ({
+            id: `sort-${field}`, label, selected: sortField === field,
+            onSelect: () => setSortField(field),
+          })),
+        },
+        {
+          kind: 'submenu', id: 'sort-order', label: 'Sort Order',
+          items: [
+            { id: 'sort-asc', label: 'Ascending', selected: sortOrder === 'asc', onSelect: () => setSortOrder('asc') },
+            { id: 'sort-desc', label: 'Descending', selected: sortOrder === 'desc', onSelect: () => setSortOrder('desc') },
+          ],
+        },
+        separator(),
+        { id: 'details-pane', label: 'Details Pane', checked: showDetailsPane, onSelect: () => setShowDetailsPane((prev) => !prev) },
+        separator(),
+        {
+          kind: 'submenu', id: 'filter-type', label: 'Filter',
+          items: ([
+            ['all', 'All Items'], ['documents', 'Documents'], ['images', 'Images'],
+            ['audio', 'Audio'], ['video', 'Video'], ['code', 'Code'], ['archives', 'Archives'],
+          ] as const).map(([value, label]) => ({
+            id: `filter-${value}`, label, selected: typeFilter === value,
+            onSelect: () => setTypeFilter(value),
+          })),
+        },
+      ],
+    },
+    {
+      id: 'go',
+      label: 'Go',
+      items: [
+        { id: 'back', label: 'Back', shortcut: 'Alt+←', disabled: historyIndex <= 0, onSelect: handleGoBack },
+        { id: 'forward', label: 'Forward', shortcut: 'Alt+→', disabled: historyIndex >= history.length - 1, onSelect: handleGoForward },
+        { id: 'up', label: 'Up One Level', shortcut: 'Alt+↑', disabled: currentFolderId === null, onSelect: handleGoUp },
+        separator(),
+        { id: 'go-home', label: 'This PC', onSelect: () => handleSidebarClick(null) },
+        { id: 'go-trash', label: 'Recycle Bin', onSelect: () => handleSidebarClick('trash') },
+        separator(),
+        { id: 'clear-search', label: 'Clear Search', disabled: !searchQuery, onSelect: () => setSearchQuery('') },
+      ],
+    },
+  ]);
+
   return (
     <div ref={containerRef} className={`h-full flex flex-col text-sm select-none ${ts.container}`}>
       {/* ==================== 1. TOP NAV & TOOLBAR RIBBON ==================== */}
@@ -2108,11 +2197,9 @@ export default function FileManager() {
         )}
       </div>
 
-      {/* ==================== 3. STATUS BAR ==================== */}
-      <WindowStatusBar
-        id="file-explorer-status-bar"
-        appId="fileManager"
-        leftInfo={
+      {/* ==================== 3. WINDOW STATUS BAR CONTENT ==================== */}
+      <WindowStatus
+        left={
           <div id="status-bar-items-count" className="flex items-center gap-1.5 shrink-0">
             <span>{currentItems.length} item{currentItems.length === 1 ? '' : 's'}</span>
             {searchQuery && (
@@ -2122,7 +2209,7 @@ export default function FileManager() {
             )}
           </div>
         }
-        centerInfo={
+        center={
           <div id="status-bar-selection-info" className="truncate text-center">
             {selectedFileIds.length > 0 ? (
               <span className="text-purple-600 font-bold">

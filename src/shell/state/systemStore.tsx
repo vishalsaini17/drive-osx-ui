@@ -5,6 +5,28 @@ import { AppRegistry } from '../../platform/registry/AppRegistry';
 import { StorageService } from '../../platform/storage/StorageService';
 import { ApiService } from '../../platform/api/ApiService';
 import { FileService } from '../../platform/files/FileService';
+import { ApiError } from '../../platform/api/http';
+
+/**
+ * Turns a file operation failure into a sentence a user can act on.
+ *
+ * These operations used to fail into `console.warn`, so the UI reported
+ * success for writes the server had rejected — the exact behaviour CLAUDE.md
+ * §20, §35.15 and §48 forbid. Being offline and being denied need different
+ * responses from the user, so they are worded differently.
+ */
+function describeFileFailure(what: string, error: unknown): string {
+  if (error instanceof ApiError && error.isOffline) {
+    return `${what}: you are offline. The change was not saved — reconnect and try again.`;
+  }
+  if (error instanceof ApiError && error.code === 'permission_error') {
+    return `${what}: you do not have permission.`;
+  }
+  if (error instanceof ApiError) {
+    return `${what}: ${error.message}`;
+  }
+  return `${what}. Please try again.`;
+}
 
 const defaultNotifications: SystemNotification[] = [
   { id: 'n1', text: 'System optimization complete. Operating in local mode.', sender: 'System Terminal', time: 'Just now', type: 'info' },
@@ -64,6 +86,20 @@ interface SystemState {
   isOfflineMode: boolean;
   setOfflineMode: (offline: boolean) => void;
 
+  /**
+   * A conversation Messenger should open as soon as it can.
+   *
+   * Set when a chat notification is clicked. It lives in the shell rather than
+   * in Messenger because the click usually happens while Messenger is closed
+   * and therefore unmounted — there is no component to tell yet. Messenger
+   * claims it on mount.
+   */
+  pendingConversationId: string | null;
+  /** Opens Messenger and asks it to show this conversation. */
+  openConversation: (conversationId: string) => void;
+  /** Reads and clears the target, so it is acted on exactly once. */
+  consumePendingConversation: () => string | null;
+
   // Actions
   initializeStore: () => void;
   setSettings: (updater: SystemSettings | ((prev: SystemSettings) => SystemSettings)) => void;
@@ -85,24 +121,29 @@ interface SystemState {
   handleRestoreFile: (file: FileItem) => Promise<void>;
   handleEmptyTrash: () => Promise<void>;
   syncFilesFromBackend: () => Promise<void>;
+  /** Refreshes the trash from the server, which owns it. */
+  syncTrashFromBackend: () => Promise<void>;
   setMessages: (updater: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[])) => void;
   setFiles: (updater: FileItem[] | ((prev: FileItem[]) => FileItem[])) => void;
   playClickSound: () => void;
   openAppWindow: (id: string) => void;
+  /** Last size and position per app, used when 'remember layout' is on. */
+  rememberedGeometry?: Record<string, { x: number; y: number; w: number; h: number }>;
+  rememberWindowGeometry: (id: string) => void;
   clampWindowsToViewport: () => void;
 }
 
 export const useSystemStore = create<SystemState>((set, get) => ({
   settings: {
-    wallpaper: 'wave-default',
+    wallpaper: 'nova-day',
     customWallpaperUrl: '',
     dockSize: 'md',
-    theme: 'classic-light', // Light theme by default as requested!
+    theme: 'nova-light',
     soundsEnabled: true,
     volume: 75,
     wifiStatus: 'connected',
     fontFamily: 'Poppins',
-    accentColor: '#8b5cf6', // Purple
+    accentColor: '#c81d8f', // Nova magenta — matches the default theme
     iconSize: 'md',
     desktopIcons: { trash: true, files: true, settings: true, terminal: true, paint: true, browser: true, calculator: true, spreadsheet: true, presentation: true, 'pdf-viewer': true, contacts: true },
     dockPosition: 'bottom',
@@ -321,6 +362,22 @@ export const useSystemStore = create<SystemState>((set, get) => ({
 
   setOfflineMode: (offline: boolean) => {
     set({ isOfflineMode: offline });
+  },
+
+  pendingConversationId: null,
+
+  openConversation: (conversationId: string) => {
+    // Order matters: the target is set before the window opens, so Messenger
+    // already has it on its first render rather than flashing the last
+    // conversation and then switching.
+    set({ pendingConversationId: conversationId });
+    get().openAppWindow('messenger');
+  },
+
+  consumePendingConversation: () => {
+    const pending = get().pendingConversationId;
+    if (pending) set({ pendingConversationId: null });
+    return pending;
   },
 
   addNotification: (notification) => {
@@ -547,6 +604,13 @@ export const useSystemStore = create<SystemState>((set, get) => ({
       set({ activeWindowId: null });
       return;
     }
+    // Focusing the window that already has focus is a no-op. Every pointer
+    // press inside a window asks for focus, so without this each one replaced
+    // the `windows` array — re-rendering every subscriber and playing the
+    // click sound again — to arrive at exactly the state it started in.
+    const current = get().windows.find((w) => w.id === id);
+    if (get().activeWindowId === id && current && !current.isMinimized) return;
+
     get().playClickSound();
     set((state) => {
       const nextZ = state.maxZIndex + 1;
@@ -607,6 +671,7 @@ export const useSystemStore = create<SystemState>((set, get) => ({
 
   handleCloseWindow: (id) => {
     get().playClickSound();
+    if (get().settings.rememberWindowGeometry) get().rememberWindowGeometry(id);
     set((state) => {
       let updated = state.windows.map(w => w.id === id ? { ...w, isOpen: false } : w);
 
@@ -683,23 +748,76 @@ export const useSystemStore = create<SystemState>((set, get) => ({
     });
   },
 
+  rememberedGeometry: {},
+
+  rememberWindowGeometry: (id) => {
+    set((state) => {
+      const win = state.windows.find((w) => w.id === id);
+      if (!win) return {};
+      return {
+        rememberedGeometry: {
+          ...state.rememberedGeometry,
+          [id]: { x: win.x, y: win.y, w: win.w, h: win.h },
+        },
+      };
+    });
+  },
+
   openAppWindow: (id) => {
     set((state) => {
       const manifest = AppRegistry.getAppManifest(id);
       const existing = state.windows.find(w => w.id === id);
 
       if (!existing && manifest) {
+        // Window preferences override the application's own defaults.
+        const prefs = state.settings;
+        const maximized = prefs.defaultWindowMode === 'maximized';
+
+        let w = manifest.defaultWindow.w;
+        let h = manifest.defaultWindow.h;
+        if (prefs.defaultWindowMode === 'custom') {
+          if (prefs.defaultWindowWidth) w = Math.max(manifest.defaultWindow.minW, prefs.defaultWindowWidth);
+          if (prefs.defaultWindowHeight) h = Math.max(manifest.defaultWindow.minH, prefs.defaultWindowHeight);
+        }
+
+        let x = manifest.defaultWindow.x;
+        let y = manifest.defaultWindow.y;
+        const placement = prefs.defaultWindowPlacement ?? 'app-default';
+        if (placement === 'center') {
+          x = Math.max(0, Math.round((window.innerWidth - w) / 2));
+          y = Math.max(0, Math.round((window.innerHeight - h - 80) / 2));
+        } else if (placement === 'cascade') {
+          // Each additional window steps down and to the right.
+          const step = state.windows.filter((win) => win.isOpen).length % 8;
+          x = 60 + step * 28;
+          y = 50 + step * 28;
+        } else if (placement === 'custom') {
+          x = prefs.defaultWindowX ?? x;
+          y = prefs.defaultWindowY ?? y;
+        }
+
+        // A remembered geometry wins over the computed placement.
+        const remembered = prefs.rememberWindowGeometry
+          ? state.rememberedGeometry?.[manifest.id]
+          : undefined;
+        if (remembered) {
+          x = remembered.x;
+          y = remembered.y;
+          w = remembered.w;
+          h = remembered.h;
+        }
+
         const newWindow = {
           id: manifest.id,
           title: manifest.title,
           iconName: manifest.iconName,
           isOpen: true,
           isMinimized: false,
-          isMaximized: false,
-          x: manifest.defaultWindow.x,
-          y: manifest.defaultWindow.y,
-          w: manifest.defaultWindow.w,
-          h: manifest.defaultWindow.h,
+          isMaximized: maximized,
+          x,
+          y,
+          w,
+          h,
           minW: manifest.defaultWindow.minW,
           minH: manifest.defaultWindow.minH,
           zIndex: state.maxZIndex + 1,
@@ -811,73 +929,152 @@ export const useSystemStore = create<SystemState>((set, get) => ({
       try {
         await FileService.updateFile(fileId, { content: updatedContent });
       } catch (error) {
-        console.warn('Failed to sync file update to backend:', error);
+        // The edit is still in local state and in the offline queue, so it is
+        // not lost — but the user must know it is not on the server yet,
+        // rather than assuming a save that has not happened.
+        get().addNotification({
+          sender: 'Files',
+          text: describeFileFailure('Your changes could not be saved to the server', error),
+          type: 'warning',
+        });
       }
     }
   },
 
   handleDeleteFile: async (deletedItem) => {
+    const previous = { files: get().files, deletedFiles: get().deletedFiles };
+
+    // Move it locally first so the UI responds immediately, then confirm with
+    // the server. The server is the source of truth: if it refuses, the local
+    // state is put back rather than left claiming a delete that did not happen.
     set((state) => {
       const remaining = state.files.filter(f => f.id !== deletedItem.id);
       const updatedTrash = [...state.deletedFiles, deletedItem];
       StorageService.set('webos-files', JSON.stringify(remaining));
       StorageService.set('webos-trash', JSON.stringify(updatedTrash));
-      return {
-        files: remaining,
-        deletedFiles: updatedTrash
-      };
+      return { files: remaining, deletedFiles: updatedTrash };
     });
 
     const { currentUser } = get();
-    if (currentUser) {
-      try {
-        await FileService.deleteFile(deletedItem.id);
-      } catch (error) {
-        console.warn('Failed to delete file on backend:', error);
-      }
+    if (!currentUser) return;
+
+    try {
+      await FileService.deleteFile(deletedItem.id);
+    } catch (error) {
+      set(previous);
+      StorageService.set('webos-files', JSON.stringify(previous.files));
+      StorageService.set('webos-trash', JSON.stringify(previous.deletedFiles));
+      get().addNotification({
+        sender: 'Files',
+        text: describeFileFailure(`"${deletedItem.name}" could not be moved to Trash`, error),
+        type: 'error',
+      });
     }
   },
 
   handleRestoreFile: async (file) => {
     get().playClickSound();
+    const previous = { files: get().files, deletedFiles: get().deletedFiles };
+
     set((state) => {
       const remainingTrash = state.deletedFiles.filter(f => f.id !== file.id);
       const restoredFiles = [...state.files, file];
       StorageService.set('webos-files', JSON.stringify(restoredFiles));
       StorageService.set('webos-trash', JSON.stringify(remainingTrash));
-      return {
-        files: restoredFiles,
-        deletedFiles: remainingTrash
-      };
+      return { files: restoredFiles, deletedFiles: remainingTrash };
     });
 
     const { currentUser } = get();
-    if (currentUser) {
-      try {
-        await FileService.restoreFile(file.id);
-      } catch (error) {
-        console.warn('Failed to restore file on backend:', error);
-      }
+    if (!currentUser) return;
+
+    try {
+      await FileService.restoreFile(file.id);
+    } catch (error) {
+      // Showing a file as restored when the server still has it in the trash
+      // is the failure this rollback prevents: the next sign-in would silently
+      // "lose" it again.
+      set(previous);
+      StorageService.set('webos-files', JSON.stringify(previous.files));
+      StorageService.set('webos-trash', JSON.stringify(previous.deletedFiles));
+      get().addNotification({
+        sender: 'Files',
+        text: describeFileFailure(`"${file.name}" could not be restored`, error),
+        type: 'error',
+      });
     }
   },
 
   handleEmptyTrash: async () => {
     get().playClickSound();
-    if (confirm('Permanently erase all files inside the Trash? This cannot be undone.')) {
-      const { deletedFiles, currentUser } = get();
-      const trashIds = deletedFiles.map(f => f.id);
+    if (!confirm('Permanently erase all files inside the Trash? This cannot be undone.')) return;
+
+    const { deletedFiles, currentUser } = get();
+    const trashIds = deletedFiles.map(f => f.id);
+
+    if (!currentUser || trashIds.length === 0) {
       StorageService.remove('webos-trash');
       set({ deletedFiles: [] });
+      return;
+    }
 
-      if (currentUser && trashIds.length > 0) {
-        try {
-          await Promise.allSettled(
-            trashIds.map(id => FileService.permanentDeleteFile(id))
-          );
-        } catch (error) {
-          console.warn('Failed to empty trash on backend:', error);
-        }
-      }
+    const results = await Promise.allSettled(
+      trashIds.map(id => FileService.permanentDeleteFile(id)),
+    );
+
+    // Only the files the server actually erased leave the local trash.
+    // Clearing the list wholesale would hide files that are still there.
+    const failedIds = new Set(
+      results.flatMap((result, index) => (result.status === 'rejected' ? [trashIds[index]] : [])),
+    );
+    const remaining = deletedFiles.filter(file => failedIds.has(file.id));
+
+    StorageService.set('webos-trash', JSON.stringify(remaining));
+    set({ deletedFiles: remaining });
+
+    if (failedIds.size > 0) {
+      get().addNotification({
+        sender: 'Files',
+        text: `${trashIds.length - failedIds.size} of ${trashIds.length} items were erased. ${failedIds.size} could not be deleted and are still in Trash.`,
+        type: 'error',
+      });
+    }
+  },
+
+  /**
+   * Loads the trash from the server, which owns it.
+   *
+   * The local list is a cache for offline use, not a second source of truth —
+   * previously the two were never reconciled, so the Trash window showed
+   * whatever this browser happened to remember.
+   */
+  syncTrashFromBackend: async () => {
+    const { currentUser } = get();
+    if (!currentUser) return;
+
+    try {
+      const trashed = await FileService.listDeleted();
+      const mapped: FileItem[] = trashed.map((file: any) => ({
+        id: file.id ?? file._id,
+        name: file.name,
+        type: file.type,
+        content: file.content || '',
+        parentId: file.parentId ?? null,
+        createdAt: file.createdAt,
+        // Real byte counts, so the reclaimable-space figure means something.
+        size: Number(file.size ?? 0),
+        category: file.mimeType?.split('/')[0] as any,
+      })) as FileItem[];
+
+      StorageService.set('webos-trash', JSON.stringify(mapped));
+      set({ deletedFiles: mapped });
+    } catch (error) {
+      // Keep the cached list and let the Trash window say it may be stale,
+      // rather than showing an empty trash that is not empty.
+      get().addNotification({
+        sender: 'Files',
+        text: describeFileFailure('Trash could not be refreshed', error),
+        type: 'warning',
+      });
     }
   },
 
@@ -903,7 +1100,13 @@ export const useSystemStore = create<SystemState>((set, get) => ({
       StorageService.set('webos-files', mappedFiles);
       set({ files: mappedFiles });
     } catch (error) {
-      console.warn('Failed to sync files from backend:', error);
+      // Keep the cached list rather than blanking the file manager, but say
+      // that what is on screen may be out of date.
+      get().addNotification({
+        sender: 'Files',
+        text: describeFileFailure('Your files could not be refreshed', error),
+        type: 'warning',
+      });
     }
   },
 

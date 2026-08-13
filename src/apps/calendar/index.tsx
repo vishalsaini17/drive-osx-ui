@@ -11,6 +11,7 @@ import {
   Mail,
 } from 'lucide-react';
 import { useSystemStore } from '../../shell/state/systemStore';
+import { useAppTheme } from '../../platform/theme/useAppTheme';
 import { CalendarEvent } from '../../platform/types';
 import { CalendarViewMode } from './types';
 import { HeaderToolbar } from './components/HeaderToolbar';
@@ -21,10 +22,11 @@ import { YearView } from './components/YearView';
 import { AgendaView } from './components/AgendaView';
 import { EventModal } from './components/EventModal';
 import { isEventOnDate } from './utils/recurrence';
+import { themeFamily } from '../../platform/theme/themes';
 
 export default function CalendarApp() {
-  const theme = useSystemStore((state) => state.settings.theme);
-  const isLight = theme === 'classic-light';
+  const theme = useAppTheme('calendar').chromeTheme;
+  const isLight = themeFamily(theme) === 'light';
 
   // System Store state
   const calendarEvents = useSystemStore((state) => state.calendarEvents);

@@ -1,8 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import Wallpaper from './shell/desktop/Wallpaper';
+import { wallpaperTone } from './platform/theme/wallpapers';
 import Dock from './shell/taskbar/Dock';
 import AppWindow from './shell/window-manager/AppWindow';
+import { AppMenuProvider } from './platform/menus/AppMenuContext';
 import GlobalContextMenu from './shell/context-menu/GlobalContextMenu';
 import { useContextMenuStore, ContextMenuItem } from './shell/context-menu/contextMenuStore';
 import { StorageService } from './platform/storage/StorageService';
@@ -18,6 +20,8 @@ import ResetPasswordScreen from './shell/auth/ResetPasswordScreen';
 import SystemToastNotifier from './shell/notifications/SystemToastNotifier';
 import SyncStatusIndicator from './shell/notifications/SyncStatusIndicator';
 import { onSessionEvent } from './platform/api/http';
+import { usePresenceHeartbeat } from './platform/contacts/usePresenceHeartbeat';
+import { useRealtimeNotifications } from './shell/notifications/useRealtimeNotifications';
 
 // Import Zustand Store
 import { useSystemStore, getAppIcon } from './shell/state/systemStore';
@@ -33,6 +37,14 @@ export default function App() {
 
   const navigate = useNavigate();
   const location = useLocation();
+
+  // Presence belongs to the session, so it is published once by the shell
+  // rather than by whichever app happens to be open.
+  usePresenceHeartbeat(isAuthenticated);
+
+  // Likewise the realtime connection: a message has to reach the user when
+  // Messenger is closed, and a closed window is an unmounted component.
+  useRealtimeNotifications(isAuthenticated);
 
   // Initialize the store from localStorage on mount
   useEffect(() => {
@@ -133,6 +145,11 @@ function DesktopLayout() {
   const openContextMenu = useContextMenuStore((state) => state.openContextMenu);
   const navigate = useNavigate();
   const location = useLocation();
+
+  // Desktop labels sit directly on the wallpaper, so their colour comes from
+  // the wallpaper rather than the theme. Every wallpaper used to be dark and
+  // the labels were hardcoded white; light wallpapers made that unreadable.
+  const desktopIsLight = wallpaperTone(settings.wallpaper) === 'light';
 
   const [desktopShortcutIds, setDesktopShortcutIds] = useState<string[]>(() => {
     return StorageService.get<string[]>('desktop-shortcuts', ['fileManager', 'paint', 'messenger']);
@@ -295,6 +312,12 @@ function DesktopLayout() {
     return () => window.removeEventListener('resize', handleResize);
   }, [clampWindowsToViewport]);
 
+  // URL routing follows which windows are open, never where they sit. The
+  // store replaces the `windows` array on every geometry change, so depending
+  // on the array itself re-ran this effect — browser navigation included — for
+  // every frame of a window drag.
+  const openWindowSignature = windows.map((w) => `${w.id}:${w.isOpen}`).join('|');
+
   useEffect(() => {
     const currentPath = location.pathname;
     const currentActiveWindow = activeWindowId;
@@ -335,7 +358,9 @@ function DesktopLayout() {
         navigate(expectedPath, { replace: true });
       }
     }
-  }, [location.pathname, activeWindowId, windows, navigate, openAppWindow, focusWindow]);
+    // `windows` is read only for `id` and `isOpen`, which the signature covers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.pathname, activeWindowId, openWindowSignature, navigate, openAppWindow, focusWindow]);
 
   return (
     <div 
@@ -348,6 +373,7 @@ function DesktopLayout() {
 
       {/* 2. WINDOW STAGE AREA */}
       <div id="desktop-window-stage" className="absolute inset-0 pointer-events-none z-[50]">
+        <AppMenuProvider>
         {windows.map(app => (
           <AppWindow
             key={app.id}
@@ -360,6 +386,7 @@ function DesktopLayout() {
             <ApplicationRenderer appId={app.id} />
           </AppWindow>
         ))}
+        </AppMenuProvider>
       </div>
 
       {/* 4. DESKTOP SHORTCUTS */}
@@ -378,12 +405,18 @@ function DesktopLayout() {
                 toggleWindow(appId);
               }}
               onContextMenu={(e) => handleShortcutContextMenu(e, appId, title)}
-              className="flex flex-col items-center justify-center w-16 h-16 rounded-xl hover:bg-white/5 active:scale-95 transition-all text-center cursor-pointer group"
+              className={`flex flex-col items-center justify-center w-16 h-16 rounded-xl active:scale-95 transition-all text-center cursor-pointer group ${
+                desktopIsLight ? 'hover:bg-black/5' : 'hover:bg-white/5'
+              }`}
             >
               <div className="w-10 h-10 filter drop-shadow-md group-hover:scale-105 transition-transform shrink-0">
                 {getAppIcon(appId, 'w-full h-full')}
               </div>
-              <span className="text-[10px] font-semibold text-white/90 tracking-wide mt-1 drop-shadow-sm select-none truncate max-w-[70px]">
+              <span
+                className={`text-[10px] font-semibold tracking-wide mt-1 drop-shadow-sm select-none truncate max-w-[70px] ${
+                  desktopIsLight ? 'text-slate-900/90' : 'text-white/90'
+                }`}
+              >
                 {title}
               </span>
             </button>

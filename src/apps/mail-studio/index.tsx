@@ -61,6 +61,7 @@ import {
   RefreshCw
 } from 'lucide-react';
 import { useSystemStore } from '../../shell/state/systemStore';
+import { useAppTheme } from '../../platform/theme/useAppTheme';
 import AppShell from '../../design-system/components/AppShell';
 import { ApiService } from '../../platform/api/ApiService';
 import { Email, FolderType, CustomFolder, Contact, EmailRule, EmailAttachment } from './types';
@@ -74,8 +75,7 @@ import { ContactsModal } from './components/ContactsModal';
 import { CustomFolderModal } from './components/CustomFolderModal';
 
 export default function MailApp() {
-  const settings = useSystemStore((state) => state.settings);
-  const isLight = settings.theme === 'classic-light';
+  const isLight = !useAppTheme('mail').isDark;
   const currentUser = useSystemStore((state) => state.currentUser);
 
   // Responsive Container Observer

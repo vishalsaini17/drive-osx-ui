@@ -154,7 +154,7 @@ const registry: Record<string, AppRegistryEntry> = {
       title: 'File Explorer',
       iconName: 'Folder',
       category: 'productivity',
-      defaultWindow: { w: 720, h: 460, minW: 550, minH: 350, x: 150, y: 120 },
+      defaultWindow: { w: 1020, h: 720, minW: 550, minH: 350, x: 150, y: 120 },
       permissions: ['filesystem'],
       settingsSchema: [
         { id: 'defaultView', label: 'Default File Layout', type: 'select', options: ['Grid', 'List'], defaultValue: 'Grid' },
@@ -219,7 +219,7 @@ const registry: Record<string, AppRegistryEntry> = {
       title: 'Messages & Chat',
       iconName: 'MessageSquare',
       category: 'entertainment',
-      defaultWindow: { w: 840, h: 560, minW: 600, minH: 420, x: 200, y: 90 },
+      defaultWindow: { w: 960, h: 620, minW: 420, minH: 380, x: 200, y: 90 },
       permissions: ['network', 'notifications'],
       settingsSchema: [
         { id: 'compactLayout', label: 'Compact Messages Layout', type: 'toggle', defaultValue: false },
@@ -299,7 +299,7 @@ const registry: Record<string, AppRegistryEntry> = {
       title: 'Paint Studio',
       iconName: 'Palette',
       category: 'entertainment',
-      defaultWindow: { w: 800, h: 520, minW: 650, minH: 450, x: 220, y: 90 },
+      defaultWindow: { w: 1240, h: 780, minW: 520, minH: 420, x: 100, y: 40 },
       permissions: ['filesystem', 'camera'],
       settingsSchema: [
         { id: 'brushSmoothing', label: 'Brush Smoothing Stabilization', type: 'toggle', defaultValue: true },
@@ -356,7 +356,7 @@ const registry: Record<string, AppRegistryEntry> = {
       title: 'OSX Meet',
       iconName: 'Video',
       category: 'productivity',
-      defaultWindow: { w: 860, h: 580, minW: 640, minH: 440, x: 190, y: 80 },
+      defaultWindow: { w: 960, h: 640, minW: 460, minH: 380, x: 190, y: 80 },
       permissions: [],
       settingsSchema: [
         { id: 'hdVideo', label: 'HD Video Resolution', type: 'toggle', defaultValue: true },
@@ -452,7 +452,7 @@ const registry: Record<string, AppRegistryEntry> = {
       title: 'Spreadsheet',
       iconName: 'FileSpreadsheet',
       category: 'productivity',
-      defaultWindow: { w: 960, h: 640, minW: 700, minH: 480, x: 140, y: 50 },
+      defaultWindow: { w: 1120, h: 700, minW: 480, minH: 380, x: 140, y: 50 },
       permissions: ['filesystem'],
       settingsSchema: [
         { id: 'autoSaveInterval', label: 'Auto-save Interval', type: 'select', options: ['Instant', '1 min', '5 min'], defaultValue: 'Instant' },

@@ -1,5 +1,6 @@
 import { ApiService } from './api/ApiService';
 import { ApiError, tokens } from './api/http';
+import { ContactsService } from './contacts/ContactsService';
 import { FileService, type FileItemResponse } from './files/FileService';
 import { MeetingService } from './meetings/MeetingService';
 import { localDatabase } from './offline/database';
@@ -123,6 +124,22 @@ export const platform = {
   },
 
   meetings: MeetingService,
+
+  contacts: {
+    list: ContactsService.list.bind(ContactsService),
+    get: ContactsService.get.bind(ContactsService),
+    create: ContactsService.create.bind(ContactsService),
+    /** Saves a platform user to the address book. Idempotent. */
+    saveUser: ContactsService.saveUser.bind(ContactsService),
+    update: ContactsService.update.bind(ContactsService),
+    remove: ContactsService.remove.bind(ContactsService),
+  },
+
+  presence: {
+    heartbeat: ContactsService.heartbeat.bind(ContactsService),
+    goOffline: ContactsService.goOffline.bind(ContactsService),
+    lookup: ContactsService.lookup.bind(ContactsService),
+  },
 
   network: {
     status: (): NetworkStatus => network.status(),

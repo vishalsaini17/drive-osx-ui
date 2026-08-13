@@ -6,6 +6,8 @@ import ScientificCalculator from './components/ScientificCalculator';
 import ProgrammerCalculator from './components/ProgrammerCalculator';
 import UnitConverter from './components/UnitConverter';
 import HistoryPanel from './components/HistoryPanel';
+import { useAppMenu } from '../../platform/menus/AppMenuContext';
+import { separator } from '../../platform/menus/types';
 
 export default function CalculatorApp() {
   const [mode, setMode] = useState<CalculatorMode>('basic');
@@ -287,6 +289,53 @@ export default function CalculatorApp() {
     setDisplay('0');
   };
 
+
+  useAppMenu('calculator', [
+    {
+      id: 'edit',
+      label: 'Edit',
+      items: [
+        { id: 'copy', label: 'Copy Result', shortcut: 'Ctrl+C', onSelect: () => navigator.clipboard?.writeText(display) },
+        { id: 'paste', label: 'Paste', shortcut: 'Ctrl+V', onSelect: async () => {
+            try {
+              const text = await navigator.clipboard.readText();
+              const value = Number(text.trim());
+              if (!Number.isNaN(value)) setDisplay(String(value));
+            } catch { /* clipboard denied */ }
+          } },
+        separator(),
+        { id: 'clear-history', label: 'Clear History', disabled: history.length === 0, onSelect: () => setHistory([]) },
+      ],
+    },
+    {
+      id: 'view',
+      label: 'View',
+      items: [
+        { id: 'mode-basic', label: 'Basic', selected: mode === 'basic', onSelect: () => setMode('basic') },
+        { id: 'mode-scientific', label: 'Scientific', selected: mode === 'scientific', onSelect: () => setMode('scientific') },
+        { id: 'mode-programmer', label: 'Programmer', selected: mode === 'programmer', onSelect: () => setMode('programmer') },
+        { id: 'mode-converter', label: 'Unit Converter', selected: mode === 'converter', onSelect: () => setMode('converter') },
+        separator(),
+        { id: 'history', label: 'History Panel', checked: isHistoryOpen, onSelect: () => setIsHistoryOpen((prev) => !prev) },
+      ],
+    },
+    {
+      id: 'options',
+      label: 'Options',
+      items: [
+        { id: 'deg', label: 'Degrees', selected: angleUnit === 'deg', onSelect: () => setAngleUnit('deg') },
+        { id: 'rad', label: 'Radians', selected: angleUnit === 'rad', onSelect: () => setAngleUnit('rad') },
+        separator(),
+        {
+          kind: 'submenu', id: 'base', label: 'Number Base',
+          items: (['DEC', 'HEX', 'OCT', 'BIN'] as const).map((base) => ({
+            id: `base-${base}`, label: base, selected: programmerBase === base,
+            onSelect: () => setProgrammerBase(base),
+          })),
+        },
+      ],
+    },
+  ]);
   return (
     <div className="w-full h-full flex flex-col bg-zinc-100 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 overflow-hidden font-sans">
       {/* App Header & Navigation Tabs */}

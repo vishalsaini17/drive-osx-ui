@@ -1,11 +1,37 @@
-import React, { useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { WindowState } from '../../platform/types';
 import { useSystemStore, getAppIcon } from '../state/systemStore';
 import { useContextMenuStore, ContextMenuItem } from '../context-menu/contextMenuStore';
 import WindowStatusBar from './WindowStatusBar';
-import WindowMenuPopup from './WindowMenuPopup';
+import { WindowStatusProvider } from './WindowStatusContext';
+import WindowMenu from './WindowMenu';
+import { buildStandardMenus } from './standardMenus';
+import { MenuItem, separator } from '../../platform/menus/types';
+import { useWindowMenus } from '../../platform/menus/AppMenuContext';
+import PreferencesDialog from '../preferences/PreferencesDialog';
 import Modal from '../../design-system/components/Modal';
-import { Minimize2, Maximize2, RotateCcw, X, Layers, Menu } from 'lucide-react';
+import { coversDockZone, useDockZoneStore } from '../taskbar/dockZone';
+import { useAppTheme } from '../../platform/theme/useAppTheme';
+import { themeChrome } from '../../platform/theme/themes';
+import { Palette, Settings, X } from 'lucide-react';
+
+/** Screen space the dock occupies, which a window may not be dropped behind. */
+function dockDeduction(dockSize: string | undefined): number {
+  if (dockSize === 'sm') return 52;
+  if (dockSize === 'lg') return 92;
+  return 78;
+}
+
+/**
+ * What the pointer is currently doing to this window.
+ *
+ * `settling` is the single render that applies the committed geometry once a
+ * gesture ends. It keeps the position transition switched off for that render;
+ * otherwise re-enabling the transition at the same moment `top`/`left` jump to
+ * their new values would animate the window from where the drag started to
+ * where it was dropped, 150ms after the user let go.
+ */
+type Gesture = 'idle' | 'drag' | 'resize' | 'settling';
 
 interface AppWindowProps {
   app: WindowState;
@@ -32,14 +58,25 @@ export default function AppWindow({
   minH,
 }: AppWindowProps) {
   const windowRef = useRef<HTMLDivElement>(null);
-  const [isDragging, setIsDragging] = useState(false);
-  const [isResizing, setIsResizing] = useState(false);
-  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [gesture, setGesture] = useState<Gesture>('idle');
   const [isAboutOpen, setIsAboutOpen] = useState(false);
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
+  const [isPreferencesOpen, setIsPreferencesOpen] = useState(false);
+
+  // Menus contributed by the application running in this window.
+  const appMenus = useWindowMenus(app.id);
+
+  // This window's own theme preference. Every window has one, so the entry
+  // sits beside Preferences rather than being re-implemented per application.
+  const appTheme = useAppTheme(app.id);
 
   const effectiveMinW = minW ?? app.minW ?? 300;
   const effectiveMinH = minH ?? app.minH ?? 200;
+
+  // Declared above the gesture handlers, which snapshot them when a drag or
+  // resize begins.
+  const currentW = Math.max(effectiveMinW, app.w);
+  const currentH = Math.max(effectiveMinH, app.h);
 
   // Subscribing to Zustand store
   const activeWindowId = useSystemStore((state) => state.activeWindowId);
@@ -53,6 +90,65 @@ export default function AppWindow({
   const onResize = useSystemStore((state) => state.handleResizeWindow);
 
   const openContextMenu = useContextMenuStore((state) => state.openContextMenu);
+  const windows = useSystemStore((state) => state.windows);
+  const openAppWindow = useSystemStore((state) => state.openAppWindow);
+
+  /**
+   * Contents of the single title-bar dropdown.
+   *
+   * Whatever the application contributes (File, Edit, View and any
+   * app-specific menus) becomes a submenu, followed by the entries every
+   * window shares.
+   */
+  const menuItems: MenuItem[] = useMemo(() => {
+    const [windowMenu, helpMenu] = buildStandardMenus({
+      app,
+      onNewWindow: () => openAppWindow(app.id),
+      onMinimize: () => onMinimize(app.id),
+      onMaximize: () => onMaximize(app.id),
+      onClose: () => onClose(app.id),
+      onBringToFront: () => onFocus(app.id),
+      onShortcuts: () => setIsShortcutsOpen(true),
+      onAbout: () => setIsAboutOpen(true),
+      onHelp: () => setIsShortcutsOpen(true),
+      otherWindows: windows.filter((w) => w.isOpen && w.id !== app.id),
+      onFocusWindow: (id) => onFocus(id),
+    });
+
+    const appEntries: MenuItem[] = appMenus.map((menu) => ({
+      kind: 'submenu' as const,
+      id: menu.id,
+      label: menu.label,
+      items: menu.items,
+    }));
+
+    return [
+      ...appEntries,
+      ...(appEntries.length > 0 ? [separator('after-app')] : []),
+      { kind: 'submenu' as const, id: windowMenu.id, label: windowMenu.label, items: windowMenu.items },
+      {
+        kind: 'submenu' as const,
+        id: 'app-theme',
+        label: 'Theme',
+        icon: Palette,
+        items: appTheme.options.map((option) => ({
+          id: `app-theme-${option.value}`,
+          label: option.label,
+          selected: appTheme.choice === option.value,
+          onSelect: () => appTheme.setChoice(option.value),
+        })),
+      },
+      {
+        id: 'preferences',
+        label: 'Preferences…',
+        shortcut: 'Ctrl+,',
+        icon: Settings,
+        onSelect: () => setIsPreferencesOpen(true),
+      },
+      separator('before-help'),
+      { kind: 'submenu' as const, id: helpMenu.id, label: helpMenu.label, items: helpMenu.items },
+    ];
+  }, [appMenus, app, windows, openAppWindow, onMinimize, onMaximize, onClose, onFocus, appTheme]);
 
   const handleTitleBarContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -87,131 +183,198 @@ export default function AppWindow({
   };
 
   const isFocused = activeWindowId === app.id;
-  const activeTheme = settings.theme || 'classic-light';
+  // The window's chrome follows this window's own preference. With the default
+  // ('Theme') that is the global theme verbatim, so nothing changes for anyone
+  // who has not chosen otherwise — including Retro Terminal.
+  const activeTheme = appTheme.windowTheme;
+  const showMenuButton = settings.showWindowMenuBar !== false;
 
-  // Dragging states
-  const dragStart = useRef({ mouseX: 0, mouseY: 0, winX: 0, winY: 0 });
-  const resizeStart = useRef({ mouseX: 0, mouseY: 0, winW: 0, winH: 0 });
+  /**
+   * Drag and resize move the element directly and write to the store exactly
+   * once, when the pointer is released.
+   *
+   * The store owns `windows`, and it replaces the whole array on every change.
+   * Committing each pointer move therefore re-rendered every subscriber — the
+   * dock, the launcher, the terminal and every other open window — sixty times
+   * a second, which is what made dragging stutter. Worse, the dock reacts to
+   * `windows` in effects that call `setState` and touch `localStorage`, so each
+   * frame cost several extra render passes and React never reached a settled
+   * commit; its nested-update counter climbed until it threw "Maximum update
+   * depth exceeded", blaming whichever handler dispatched last.
+   *
+   * `gestureKind` is a ref rather than derived from `gesture` state so a
+   * pointer event that arrives before React has re-rendered still sees the
+   * gesture that is actually in progress.
+   */
+  const reportDockGesture = useDockZoneStore((state) => state.reportGesture);
+  const endDockGesture = useDockZoneStore((state) => state.endGesture);
 
-  // Handle Dragging
+  const gestureKind = useRef<Gesture>('idle');
+  const pointerStart = useRef({ x: 0, y: 0 });
+  /** Geometry when the gesture began — what the live values are measured from. */
+  const gestureBase = useRef({ x: 0, y: 0, w: 0, h: 0 });
+  /** Geometry as of the most recent pointer event. */
+  const gestureLive = useRef({ x: 0, y: 0, w: 0, h: 0 });
+  const frame = useRef<number | null>(null);
+
+  const paint = useCallback(() => {
+    frame.current = null;
+    const el = windowRef.current;
+    if (!el) return;
+
+    const base = gestureBase.current;
+    const live = gestureLive.current;
+
+    // Position is a transform so the browser can move the window on the
+    // compositor instead of laying the page out again for every frame.
+    el.style.transform = `translate3d(${live.x - base.x}px, ${live.y - base.y}px, 0)`;
+    if (live.w !== base.w || live.h !== base.h) {
+      el.style.width = `${live.w}px`;
+      el.style.height = `${live.h}px`;
+    }
+
+    // The dock gets out of the way of a window that reaches its strip of the
+    // screen, exactly as it does for a maximized application. The store here
+    // ignores an unchanged value, so this costs a render on the frame the
+    // window crosses the line and nothing on the frames either side of it.
+    reportDockGesture(app.id, coversDockZone(live.y + live.h, settings.dockSize, window.innerHeight));
+  }, [app.id, settings.dockSize, reportDockGesture]);
+
+  /** Coalesces the pointer events of one frame into a single style write. */
+  const schedulePaint = useCallback(() => {
+    if (frame.current !== null) return;
+    frame.current = requestAnimationFrame(paint);
+  }, [paint]);
+
+  const beginGesture = useCallback(
+    (kind: 'drag' | 'resize', e: React.PointerEvent) => {
+      gestureKind.current = kind;
+      pointerStart.current = { x: e.clientX, y: e.clientY };
+      gestureBase.current = { x: app.x, y: app.y, w: currentW, h: currentH };
+      gestureLive.current = { ...gestureBase.current };
+      // Capture on the handler's own element: `e.target` may be a descendant
+      // (the title text, the resize glyph) that re-renders mid-gesture, and
+      // losing capture there drops the pointer moves and the drag jumps.
+      e.currentTarget.setPointerCapture(e.pointerId);
+      setGesture(kind);
+      e.stopPropagation();
+    },
+    [app.x, app.y, currentW, currentH]
+  );
+
+  const endGesture = useCallback(
+    (e: React.PointerEvent) => {
+      if (gestureKind.current === 'idle') return;
+      gestureKind.current = 'idle';
+
+      if (frame.current !== null) {
+        cancelAnimationFrame(frame.current);
+        frame.current = null;
+      }
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch {
+        // The pointer may already have been released by the browser.
+      }
+
+      const base = gestureBase.current;
+      const live = gestureLive.current;
+      const el = windowRef.current;
+      if (el) {
+        // Only the transform is cleared, and it is cleared in the same task as
+        // the commits below so the browser never paints the window back at its
+        // pre-drag position. Width and height are deliberately left alone:
+        // React writes a style property only when its own value for it
+        // changed, so clearing an inline width it still believes it has set
+        // would collapse the window instead of restoring it.
+        el.style.transform = '';
+      }
+
+      if (live.x !== base.x || live.y !== base.y) onMove(app.id, live.x, live.y);
+      if (live.w !== base.w || live.h !== base.h) onResize(app.id, live.w, live.h);
+
+      // Committed geometry decides from here. Both updates land in the same
+      // batch as the commits above, so the dock never sees a frame in which
+      // neither the gesture nor the store reports the window over the dock.
+      endDockGesture(app.id);
+
+      setGesture('settling');
+      // Reuses the paint slot, which is free: the gesture is over, so no
+      // further pointer move can schedule one. This keeps the frame cancelable
+      // from the unmount cleanup below.
+      frame.current = requestAnimationFrame(() => {
+        frame.current = null;
+        setGesture('idle');
+      });
+    },
+    [app.id, onMove, onResize, endDockGesture]
+  );
+
+  // A window closed mid-gesture must not leave a frame queued against a
+  // detached element, nor leave the dock hidden for a window that no longer
+  // exists.
+  useEffect(() => {
+    return () => {
+      if (frame.current !== null) cancelAnimationFrame(frame.current);
+      endDockGesture(app.id);
+    };
+  }, [app.id, endDockGesture]);
+
   const handleTitlePointerDown = (e: React.PointerEvent) => {
     onFocus(app.id);
 
     const target = e.target as HTMLElement;
     if (target.closest('.win-control-btn')) return;
     if (e.button !== 0) return; // Only left click
+    // A maximized window fills the screen and has no position to change.
+    // Double-clicking the title bar restores it first.
+    if (app.isMaximized) return;
 
-    target.setPointerCapture(e.pointerId);
-    setIsDragging(true);
-
-    dragStart.current = {
-      mouseX: e.clientX,
-      mouseY: e.clientY,
-      winX: app.x,
-      winY: app.y,
-    };
-    e.stopPropagation();
+    beginGesture('drag', e);
   };
 
   const handleTitlePointerMove = (e: React.PointerEvent) => {
-    if (!isDragging) return;
+    if (gestureKind.current !== 'drag') return;
 
-    const deltaX = e.clientX - dragStart.current.mouseX;
-    const deltaY = e.clientY - dragStart.current.mouseY;
+    const base = gestureBase.current;
+    let newX = base.x + (e.clientX - pointerStart.current.x);
+    let newY = base.y + (e.clientY - pointerStart.current.y);
 
-    let newX = dragStart.current.winX + deltaX;
-    let newY = dragStart.current.winY + deltaY;
+    // Boundaries: clamp top, left, right, and bottom edges. The title bar must
+    // stay reachable, so the window may not be dropped behind the dock.
+    const maxAllowedY = Math.max(0, window.innerHeight - dockDeduction(settings.dockSize) - 36);
+    newY = Math.max(0, Math.min(newY, maxAllowedY));
+    newX = Math.max(0, Math.min(newX, Math.max(0, window.innerWidth - base.w)));
 
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
-    const dockSize = settings.dockSize || 'md';
-    const dockDeduction = dockSize === 'sm' ? 52 : (dockSize === 'lg' ? 92 : 78);
-
-    // Boundaries: clamp top, left, right, and bottom edges
-    const topBarHeight = 0;
-    const maxAllowedY = Math.max(0, viewportHeight - dockDeduction - 36);
-    newY = Math.max(topBarHeight, Math.min(newY, maxAllowedY));
-
-    const minX = 0;
-    const maxX = Math.max(0, viewportWidth - app.w);
-    newX = Math.max(minX, Math.min(newX, maxX));
-
-    onMove(app.id, newX, newY);
+    gestureLive.current = { ...gestureLive.current, x: newX, y: newY };
+    schedulePaint();
   };
 
-  const handleTitlePointerUp = (e: React.PointerEvent) => {
-    if (isDragging) {
-      setIsDragging(false);
-      const target = e.target as HTMLElement;
-      try {
-        target.releasePointerCapture(e.pointerId);
-      } catch (err) {
-        // Safe catch
-      }
-    }
-  };
-
-  // Handle Resizing
   const handleResizePointerDown = (e: React.PointerEvent) => {
     onFocus(app.id);
     if (e.button !== 0) return;
 
-    const target = e.target as HTMLElement;
-    target.setPointerCapture(e.pointerId);
-    setIsResizing(true);
-
-    resizeStart.current = {
-      mouseX: e.clientX,
-      mouseY: e.clientY,
-      winW: app.w,
-      winH: app.h,
-    };
-    e.stopPropagation();
+    beginGesture('resize', e);
     e.preventDefault();
   };
 
   const handleResizePointerMove = (e: React.PointerEvent) => {
-    if (!isResizing) return;
+    if (gestureKind.current !== 'resize') return;
 
-    const deltaX = e.clientX - resizeStart.current.mouseX;
-    const deltaY = e.clientY - resizeStart.current.mouseY;
+    const base = gestureBase.current;
+    const maxW = Math.max(effectiveMinW, window.innerWidth - base.x);
+    const maxH = Math.max(effectiveMinH, window.innerHeight - dockDeduction(settings.dockSize) - base.y);
 
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
-    const dockSize = settings.dockSize || 'md';
-    const dockDeduction = dockSize === 'sm' ? 52 : (dockSize === 'lg' ? 92 : 78);
+    const newW = Math.max(effectiveMinW, Math.min(base.w + (e.clientX - pointerStart.current.x), maxW));
+    const newH = Math.max(effectiveMinH, Math.min(base.h + (e.clientY - pointerStart.current.y), maxH));
 
-    const maxW = Math.max(effectiveMinW, viewportWidth - app.x);
-    const maxH = Math.max(effectiveMinH, viewportHeight - dockDeduction - app.y);
-
-    const newW = Math.max(effectiveMinW, Math.min(resizeStart.current.winW + deltaX, maxW));
-    const newH = Math.max(effectiveMinH, Math.min(resizeStart.current.winH + deltaY, maxH));
-
-    onResize(app.id, newW, newH);
-  };
-
-  const handleResizePointerUp = (e: React.PointerEvent) => {
-    if (isResizing) {
-      setIsResizing(false);
-      const target = e.target as HTMLElement;
-      try {
-        target.releasePointerCapture(e.pointerId);
-      } catch (err) {
-        // Safe catch
-      }
-    }
+    gestureLive.current = { ...gestureLive.current, w: newW, h: newH };
+    schedulePaint();
   };
 
   if (!app.isOpen || app.isMinimized) {
     return null;
   }
-
-  // Positioning
-  const dockSize = settings.dockSize || 'md';
-  const dockDeduction = dockSize === 'sm' ? 52 : (dockSize === 'lg' ? 92 : 78);
-
-  const currentW = Math.max(effectiveMinW, app.w);
-  const currentH = Math.max(effectiveMinH, app.h);
 
   const windowStyle: React.CSSProperties = app.isMaximized
     ? {
@@ -233,47 +396,20 @@ export default function AppWindow({
         zIndex: app.zIndex,
       };
 
-  // Themes configurations
-  const themeClasses = {
-    'classic-light': {
-      window: 'bg-[#f4ebfced] backdrop-blur-3xl border-white/55 text-[#211625] shadow-[#211625]/5',
-      windowFocused: 'border-white/95 ring-2 ring-[#7c3aed]/15 shadow-[#211625]/15',
-      header: 'bg-white/40 border-b border-[#211625]/10 text-[#211625]',
-      controlBtn: 'text-[#211625] hover:bg-black/5 active:bg-black/10',
-      controlMinimizeMax: 'text-[#211625]',
-      controlClose: 'text-[#211625] hover:bg-rose-500/10 hover:text-rose-600 active:bg-rose-500/20',
-      content: 'text-[#211625] font-sans',
-    },
-    'modern-dark': {
-      window: 'bg-[#140f22ee] backdrop-blur-3xl border-white/10 text-[#f3eef8] shadow-black/40',
-      windowFocused: 'border-white/30 ring-2 ring-[#a855f7]/25 shadow-black/60',
-      header: 'bg-black/35 border-b border-white/10 text-[#f3eef8]',
-      controlBtn: 'text-[#f3eef8] hover:bg-white/5 active:bg-white/10',
-      controlMinimizeMax: 'text-[#f3eef8]',
-      controlClose: 'text-[#f3eef8] hover:bg-rose-500/15 hover:text-rose-400 active:bg-rose-500/30',
-      content: 'text-[#f3eef8] font-sans',
-    },
-    'retro-terminal': {
-      window: 'bg-[#030704f5] backdrop-blur-2xl border-green-500/30 text-[#22c55e] shadow-green-900/10',
-      windowFocused: 'border-green-400 ring-2 ring-green-500/20 shadow-green-900/25',
-      header: 'bg-black/50 border-b border-green-500/25 text-[#22c55e] font-mono',
-      controlBtn: 'text-[#22c55e] hover:bg-green-500/10 active:bg-green-500/20',
-      controlMinimizeMax: 'text-[#22c55e]',
-      controlClose: 'text-[#22c55e] hover:bg-red-500/20 hover:text-red-400 active:bg-red-500/30',
-      content: 'text-[#22c55e] font-mono',
-    },
-  };
+  // Chrome classes come from the theme catalogue, so a new theme is one entry
+  // there rather than another map to keep in step here.
+  const themeStyle = themeChrome(activeTheme);
 
-  const themeStyle = themeClasses[activeTheme] || themeClasses['classic-light'];
-
-  const isInteracting = isDragging || isResizing;
+  const isInteracting = gesture !== 'idle';
 
   return (
     <div
       ref={windowRef}
       style={{
         ...windowStyle,
-        willChange: isInteracting ? 'top, left, width, height' : 'auto',
+        // Promoted only while a gesture is running: a permanent layer per
+        // window would cost memory for every open application.
+        willChange: gesture === 'drag' ? 'transform' : gesture === 'resize' ? 'width, height' : 'auto',
       }}
       onClick={(e) => {
         e.stopPropagation();
@@ -296,7 +432,11 @@ export default function AppWindow({
         id={`win-titlebar-${app.id}`}
         onPointerDown={handleTitlePointerDown}
         onPointerMove={handleTitlePointerMove}
-        onPointerUp={handleTitlePointerUp}
+        onPointerUp={endGesture}
+        // Without this a gesture interrupted by the browser (an alt-tab, a
+        // touch cancelled by scrolling) would leave the window stuck under a
+        // stale transform, and the drop would never be committed.
+        onPointerCancel={endGesture}
         onContextMenu={handleTitleBarContextMenu}
         onDoubleClick={(e) => {
           const target = e.target as HTMLElement;
@@ -305,32 +445,14 @@ export default function AppWindow({
         }}
         className={`h-8 px-3 flex items-center justify-between cursor-move shrink-0 select-none relative ${themeStyle.header}`}
       >
-        {/* Left: Top Left Menu Trigger */}
+        {/* Left: application menu button */}
         <div className="w-20 flex items-center gap-2">
-          <div className="relative">
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setIsMenuOpen((prev) => !prev);
-              }}
-              className={`win-control-btn w-6 h-6 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${themeStyle.controlBtn}`}
-              title="Window Menu"
-            >
-              <Menu className="w-3.5 h-3.5" />
-            </button>
-            <WindowMenuPopup
-              isOpen={isMenuOpen}
-              onClose={() => setIsMenuOpen(false)}
-              app={app}
-              onOpenAbout={() => setIsAboutOpen(true)}
-              onOpenShortcuts={() => setIsShortcutsOpen(true)}
-              theme={activeTheme}
-            />
-          </div>
+          {showMenuButton && (
+            <WindowMenu items={menuItems} theme={activeTheme} buttonClassName={themeStyle.controlBtn} />
+          )}
         </div>
 
-        {/* Center: App Icon + App Name */}
+        {/* Center: application icon and name */}
         <div className="flex items-center justify-center gap-1.5 text-[11px] font-semibold tracking-wide truncate max-w-[260px]">
           <div className="w-4 h-4 flex items-center justify-center shrink-0">
             {getAppIcon(app.id, 'w-4 h-4')}
@@ -339,7 +461,7 @@ export default function AppWindow({
         </div>
 
         {/* Right: Window Controls */}
-        <div className="w-20 flex items-center justify-end gap-1">
+        <div className="w-20 flex items-center justify-end gap-1 shrink-0">
           {/* Minimize */}
           <button
             onClick={() => onMinimize(app.id)}
@@ -369,30 +491,34 @@ export default function AppWindow({
         </div>
       </div>
 
-      {/* WINDOW CONTENT BODY */}
-      <div className={`flex-1 overflow-auto ${themeStyle.content}`}>
-        {children}
-      </div>
+      {/* WINDOW CONTENT BODY + COMMON FOOTER / STATUS BAR.
+          Applications never render their own window footer: they publish
+          status content into the shared bar below via <WindowStatus />. */}
+      <WindowStatusProvider>
+        <div className={`flex-1 overflow-auto ${themeStyle.content}`}>
+          {children}
+        </div>
 
-      {/* WINDOW COMMON FOOTER / STATUS BAR */}
-      {footer ? (
-        footer
-      ) : showStatusBar ? (
-        <WindowStatusBar
-          id={`win-statusbar-${app.id}`}
-          appId={app.id}
-          leftInfo={statusLeft}
-          centerInfo={statusCenter}
-          rightInfo={statusRight}
-        />
-      ) : null}
+        {footer ? (
+          footer
+        ) : showStatusBar ? (
+          <WindowStatusBar
+            id={`win-statusbar-${app.id}`}
+            appId={app.id}
+            leftInfo={statusLeft}
+            centerInfo={statusCenter}
+            rightInfo={statusRight}
+          />
+        ) : null}
+      </WindowStatusProvider>
 
       {/* WINDOW RESIZE HANDLE (only when not maximized) */}
       {!app.isMaximized && (
         <div
           onPointerDown={handleResizePointerDown}
           onPointerMove={handleResizePointerMove}
-          onPointerUp={handleResizePointerUp}
+          onPointerUp={endGesture}
+          onPointerCancel={endGesture}
           className="absolute bottom-0 right-0 w-4 h-4 cursor-se-resize flex items-end justify-end p-0.5 z-[1000]"
           title="Resize Window"
         >
@@ -402,6 +528,8 @@ export default function AppWindow({
           </svg>
         </div>
       )}
+
+      <PreferencesDialog isOpen={isPreferencesOpen} onClose={() => setIsPreferencesOpen(false)} />
 
       {/* ABOUT APP MODAL */}
       <Modal

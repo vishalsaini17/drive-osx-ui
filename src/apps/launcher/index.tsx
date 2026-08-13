@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Search, Monitor, Cpu, HardDrive, Sparkles, ExternalLink, Pin, Settings as SettingsIcon, Info, RefreshCw } from 'lucide-react';
 import { useSystemStore, getAppIcon } from '../../shell/state/systemStore';
+import { useAppTheme } from '../../platform/theme/useAppTheme';
 import { useContextMenuStore, ContextMenuItem } from '../../shell/context-menu/contextMenuStore';
 import { StorageService } from '../../platform/storage/StorageService';
 
@@ -11,7 +12,6 @@ export default function AppLauncher() {
   const windows = useSystemStore((state) => state.windows);
   const toggleWindow = useSystemStore((state) => state.toggleWindow);
   const openAppWindow = useSystemStore((state) => state.openAppWindow);
-  const settings = useSystemStore((state) => state.settings);
   const openContextMenu = useContextMenuStore((state) => state.openContextMenu);
 
   const handleLauncherBackgroundContextMenu = (e: React.MouseEvent) => {
@@ -100,7 +100,7 @@ export default function AppLauncher() {
     openContextMenu(e, items, app.title);
   };
   
-  const activeTheme = settings.theme || 'classic-light';
+  const activeTheme = useAppTheme('launcher').chromeTheme;
 
   // Filter apps
   const filteredApps = windows.filter(

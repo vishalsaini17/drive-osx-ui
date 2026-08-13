@@ -39,6 +39,7 @@ import {
   Clock,
   Battery,
   Moon,
+  Sun,
   Smartphone,
   HardDrive,
   Globe,
@@ -47,7 +48,11 @@ import {
   SlidersHorizontal as SlidersIcon
 } from 'lucide-react';
 import { useSystemStore } from '../../shell/state/systemStore';
+import { useAppTheme } from '../../platform/theme/useAppTheme';
 import { AppRegistry } from '../../platform/registry/AppRegistry';
+import { globalThemeIsDark } from '../../platform/theme/appTheme';
+import { themeById, themeForMode, themesByFamily } from '../../platform/theme/themes';
+import { wallpapersByGroup } from '../../platform/theme/wallpapers';
 
 export default function Settings() {
   const settings = useSystemStore((state) => state.settings);
@@ -58,7 +63,7 @@ export default function Settings() {
   const updateCurrentUser = useSystemStore((state) => state.updateCurrentUser);
   const usersList = useSystemStore((state) => state.usersList);
 
-  const activeTheme = settings.theme || 'classic-light';
+  const activeTheme = useAppTheme('settings').chromeTheme;
 
   // Categories aligned strictly with requirements
   const categories = [
@@ -818,58 +823,95 @@ export default function Settings() {
             {/* Theme */}
             {(activeSubTab === 'Theme' || !activeSubTab) && (
               <div className={`border ${ts.card} space-y-4`}>
-                <h3 className={ts.sectionHeader}>System Theme Presets</h3>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                  {/* Light */}
-                  <div className="flex flex-col gap-2">
-                    <button
-                      onClick={() => setSettings(prev => ({ ...prev, wallpaper: 'wave-default', theme: 'classic-light' }))}
-                      className={`w-full h-24 rounded-xl overflow-hidden border-2 relative transition-all shadow-sm cursor-pointer ${settings.theme === 'classic-light' ? 'border-purple-500 scale-[1.02] ring-2 ring-purple-500/20' : 'border-black/10'
+                <h3 className={ts.sectionHeader}>Theme</h3>
+                <p className={`text-xs ${ts.subText}`}>
+                  The appearance of the whole environment. Any application whose own theme
+                  preference is set to <strong>Theme</strong> — the default — follows this
+                  immediately, without being reopened.
+                </p>
+                <div className="grid grid-cols-2 gap-3">
+                  {([
+                    { id: 'light', label: 'Light', icon: Sun },
+                    { id: 'dark', label: 'Dark', icon: Moon },
+                  ] as const).map(({ id, label, icon: Icon }) => {
+                    // Keeps you inside your chosen design where it has a
+                    // counterpart — Halo Light ↔ Halo Dark — rather than
+                    // resetting to a fixed pair.
+                    const target = themeById(themeForMode(settings.theme, id));
+                    const isSelected = globalThemeIsDark(settings.theme) === (id === 'dark');
+                    return (
+                      <button
+                        key={id}
+                        onClick={() => setSettings(prev => ({
+                          ...prev,
+                          theme: target.id,
+                          wallpaper: target.wallpaper,
+                          accentColor: target.accent,
+                        }))}
+                        aria-pressed={isSelected}
+                        className={`px-4 py-3 rounded-xl border-2 flex items-center justify-center gap-2 text-sm font-bold transition-all cursor-pointer ${
+                          isSelected
+                            ? 'border-purple-500 ring-2 ring-purple-500/20'
+                            : 'border-black/10 hover:border-black/20'
                         }`}
-                    >
-                      <div className="absolute inset-0 bg-gradient-to-tr from-indigo-900 via-[#bd2c8e] to-[#ec4899]" />
-                      <div className="absolute inset-x-0 bottom-0 bg-black/60 p-2 flex items-center justify-between">
-                        <span className="text-[10px] font-bold text-white">Classic Light</span>
-                        {settings.theme === 'classic-light' && <Check className="w-3.5 h-3.5 text-emerald-400" />}
-                      </div>
-                    </button>
-                    <span className={`text-[11px] text-center font-medium ${ts.subText}`}>Light Theme</span>
-                  </div>
-
-                  {/* Dark */}
-                  <div className="flex flex-col gap-2">
-                    <button
-                      onClick={() => setSettings(prev => ({ ...prev, wallpaper: 'deep-space', theme: 'modern-dark' }))}
-                      className={`w-full h-24 rounded-xl overflow-hidden border-2 relative transition-all shadow-sm cursor-pointer ${settings.theme === 'modern-dark' ? 'border-purple-500 scale-[1.02] ring-2 ring-purple-500/20' : 'border-black/10'
-                        }`}
-                    >
-                      <div className="absolute inset-0 bg-[#0c0a15] bg-gradient-to-tr from-[#130d22] to-[#40305a]" />
-                      <div className="absolute inset-x-0 bottom-0 bg-black/60 p-2 flex items-center justify-between">
-                        <span className="text-[10px] font-bold text-white">Modern Dark</span>
-                        {settings.theme === 'modern-dark' && <Check className="w-3.5 h-3.5 text-emerald-400" />}
-                      </div>
-                    </button>
-                    <span className={`text-[11px] text-center font-medium ${ts.subText}`}>Dark Theme</span>
-                  </div>
-
-                  {/* Terminal */}
-                  <div className="flex flex-col gap-2">
-                    <button
-                      onClick={() => setSettings(prev => ({ ...prev, wallpaper: 'matrix-green', theme: 'retro-terminal' }))}
-                      className={`w-full h-24 rounded-xl overflow-hidden border-2 relative transition-all shadow-sm cursor-pointer ${settings.theme === 'retro-terminal' ? 'border-green-500 scale-[1.02] ring-2 ring-green-500/20' : 'border-black/10'
-                        }`}
-                    >
-                      <div className="absolute inset-0 bg-black p-2 font-mono text-[8px] text-green-500 overflow-hidden">
-                        &gt; SYSTEM_BOOT_OK
-                      </div>
-                      <div className="absolute inset-x-0 bottom-0 bg-black/80 p-2 flex items-center justify-between">
-                        <span className="text-[10px] font-bold text-green-400">Retro Terminal</span>
-                        {settings.theme === 'retro-terminal' && <Check className="w-3.5 h-3.5 text-green-400" />}
-                      </div>
-                    </button>
-                    <span className={`text-[11px] text-center font-medium ${ts.subText}`}>Terminal Theme</span>
-                  </div>
+                      >
+                        <Icon className="w-4 h-4" />
+                        {label}
+                        {isSelected && <Check className="w-3.5 h-3.5 text-emerald-500" />}
+                      </button>
+                    );
+                  })}
                 </div>
+
+                <h3 className={ts.sectionHeader}>All themes</h3>
+                <p className={`text-xs ${ts.subText}`}>
+                  Every theme belongs to a family. Choosing one also applies its accent colour
+                  and matching wallpaper. Terminal themes are dark, so applications following
+                  the global theme render dark with them.
+                </p>
+
+                {themesByFamily().map(({ family, label, themes }) => (
+                  <div key={family} className="space-y-2">
+                    <div className={`text-[11px] font-bold uppercase tracking-wide ${ts.subText}`}>
+                      {label}
+                    </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                      {themes.map((theme) => {
+                        const isSelected = settings.theme === theme.id;
+                        return (
+                          <div key={theme.id} className="flex flex-col gap-1.5">
+                            <button
+                              onClick={() =>
+                                setSettings(prev => ({
+                                  ...prev,
+                                  theme: theme.id,
+                                  wallpaper: theme.wallpaper,
+                                  accentColor: theme.accent,
+                                }))
+                              }
+                              title={theme.description}
+                              aria-pressed={isSelected}
+                              className={`w-full h-20 rounded-xl overflow-hidden border-2 relative transition-all shadow-sm cursor-pointer ${
+                                isSelected
+                                  ? 'border-purple-500 scale-[1.02] ring-2 ring-purple-500/20'
+                                  : 'border-black/10 hover:border-black/30'
+                              }`}
+                            >
+                              <div className={`absolute inset-0 ${theme.swatch}`} />
+                              <div className="absolute inset-x-0 bottom-0 bg-black/60 p-1.5 flex items-center justify-between gap-1">
+                                <span className="text-[10px] font-bold text-white truncate">{theme.name}</span>
+                                {isSelected && <Check className="w-3 h-3 text-emerald-400 shrink-0" />}
+                              </div>
+                            </button>
+                            <span className={`text-[10px] leading-snug ${ts.subText}`}>
+                              {theme.description}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
 
@@ -906,26 +948,40 @@ export default function Settings() {
             {activeSubTab === 'Wallpapers' && (
               <div className={`border ${ts.card} space-y-4`}>
                 <h3 className={ts.sectionHeader}>Desktop Wallpaper Backgrounds</h3>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                  {[
-                    { id: 'wave-default', name: 'Wave Gradient', previewBg: 'bg-gradient-to-tr from-indigo-900 via-[#bd2c8e] to-[#ec4899]' },
-                    { id: 'sunset', name: 'Sunset Glow', previewBg: 'bg-gradient-to-br from-amber-500 via-rose-500 to-purple-800' },
-                    { id: 'deep-space', name: 'Deep Space', previewBg: 'bg-gradient-to-tr from-slate-950 via-slate-900 to-indigo-950' },
-                    { id: 'matrix-green', name: 'Matrix Green', previewBg: 'bg-black border border-green-500/40' },
-                  ].map((wp) => (
-                    <button
-                      key={wp.id}
-                      onClick={() => setSettings(prev => ({ ...prev, wallpaper: wp.id as any }))}
-                      className={`h-20 rounded-xl overflow-hidden border-2 relative transition-all shadow-xs cursor-pointer ${settings.wallpaper === wp.id ? 'border-purple-500 scale-[1.02]' : 'border-black/10 hover:border-black/30'
-                        }`}
-                    >
-                      <div className={`absolute inset-0 ${wp.previewBg}`} />
-                      <div className="absolute inset-x-0 bottom-0 bg-black/50 p-1 text-center">
-                        <span className="text-[9px] font-semibold text-white">{wp.name}</span>
-                      </div>
-                    </button>
-                  ))}
-                </div>
+                <p className={`text-xs ${ts.subText}`}>
+                  Desktop icon labels switch to dark text on a light wallpaper, so light and
+                  dark backgrounds both stay readable.
+                </p>
+
+                {wallpapersByGroup().map(({ group, label, wallpapers }) => (
+                  <div key={group} className="space-y-2">
+                    <div className={`text-[11px] font-bold uppercase tracking-wide ${ts.subText}`}>
+                      {label}
+                    </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                      {wallpapers.map((wp) => (
+                        <button
+                          key={wp.id}
+                          onClick={() => setSettings(prev => ({ ...prev, wallpaper: wp.id }))}
+                          aria-pressed={settings.wallpaper === wp.id}
+                          className={`h-20 rounded-xl overflow-hidden border-2 relative transition-all shadow-xs cursor-pointer ${
+                            settings.wallpaper === wp.id
+                              ? 'border-purple-500 scale-[1.02] ring-2 ring-purple-500/20'
+                              : 'border-black/10 hover:border-black/30'
+                          }`}
+                        >
+                          <div className={`absolute inset-0 ${wp.swatch}`} />
+                          <div className="absolute inset-x-0 bottom-0 bg-black/55 p-1 flex items-center justify-center gap-1">
+                            <span className="text-[9px] font-semibold text-white truncate">{wp.name}</span>
+                            {settings.wallpaper === wp.id && (
+                              <Check className="w-2.5 h-2.5 text-emerald-400 shrink-0" />
+                            )}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
 
                 <div className="pt-2">
                   <label className={`text-xs block mb-1 font-medium ${ts.subText}`}>Custom Wallpaper Image URL</label>

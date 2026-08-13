@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import AppShell from '../../design-system/components/AppShell';
 import {
   Video,
@@ -22,33 +22,31 @@ import {
   Link,
   Info,
   RefreshCw,
-  ExternalLink,
   AlertTriangle,
   Camera,
-  CheckCircle2,
-  Sliders,
   Lock,
   ShieldCheck,
-  ShieldAlert,
   Disc,
   Pause,
-  Play,
   Download,
-  HardDrive,
   BarChart2,
   Split,
   UserPlus,
   Paperclip,
   FileText,
-  Image as ImageIcon,
   Pin,
   UserX,
   UserCheck,
   VolumeX,
   Settings,
   Filter,
+  LayoutGrid,
+  Captions,
+  MoreVertical,
+  PictureInPicture2,
 } from 'lucide-react';
 import { useSystemStore } from '../../shell/state/systemStore';
+import { useAppTheme } from '../../platform/theme/useAppTheme';
 import { MeetingService } from '../../platform/meetings/MeetingService';
 import { Participant, ChatMessage, Poll, MeetingSecuritySettings, WaitingParticipant } from './types';
 import WhiteboardModal from './components/WhiteboardModal';
@@ -56,10 +54,51 @@ import PollsDrawer from './components/PollsDrawer';
 import BreakoutRoomsModal from './components/BreakoutRoomsModal';
 import SecurityModal from './components/SecurityModal';
 import InviteModal from './components/InviteModal';
+import { themeFamily } from '../../platform/theme/themes';
 
-// Canvas component for Virtual Studio Camera or live webcam feed
-function VirtualCameraCanvas({ name = 'You (Virtual Cam)', stream, mirrored = true }: { name?: string; stream?: MediaStream | null; mirrored?: boolean }) {
+// Canvas component for Virtual Studio Camera or live webcam feed.
+// The canvas backing store tracks its container so the picture never stretches:
+// the source frame is scaled by a single factor and centred, cropping evenly
+// ("cover") or letterboxing ("contain") instead of distorting the aspect ratio.
+function VirtualCameraCanvas({
+  stream,
+  mirrored = true,
+  fit = 'cover',
+  compact = false,
+}: {
+  name?: string;
+  stream?: MediaStream | null;
+  mirrored?: boolean;
+  fit?: 'cover' | 'contain';
+  compact?: boolean;
+}) {
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  // Keep the backing store in step with the rendered size (and pixel density),
+  // so a resized window re-renders sharp rather than scaling a stale bitmap.
+  useEffect(() => {
+    const wrapper = wrapperRef.current;
+    const canvas = canvasRef.current;
+    if (!wrapper || !canvas) return;
+
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const width = Math.max(1, Math.round(wrapper.clientWidth));
+      const height = Math.max(1, Math.round(wrapper.clientHeight));
+      const nextW = Math.round(width * dpr);
+      const nextH = Math.round(height * dpr);
+      if (canvas.width !== nextW || canvas.height !== nextH) {
+        canvas.width = nextW;
+        canvas.height = nextH;
+      }
+    };
+
+    resize();
+    const observer = new ResizeObserver(resize);
+    observer.observe(wrapper);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -70,6 +109,13 @@ function VirtualCameraCanvas({ name = 'You (Virtual Cam)', stream, mirrored = tr
     let animationFrameId: number;
     let t = 0;
 
+    // Logical (CSS pixel) drawing size for the current frame.
+    const frame = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      return { w: canvas.width / dpr, h: canvas.height / dpr };
+    };
+
     if (stream) {
       const video = document.createElement('video');
       video.srcObject = stream;
@@ -78,24 +124,31 @@ function VirtualCameraCanvas({ name = 'You (Virtual Cam)', stream, mirrored = tr
       video.play().catch(() => {});
 
       const render = () => {
-        const w = canvas.width;
-        const h = canvas.height;
+        const { w, h } = frame();
         ctx.clearRect(0, 0, w, h);
-        if (video.readyState >= 2) {
+
+        const sw = video.videoWidth;
+        const sh = video.videoHeight;
+        if (video.readyState >= 2 && sw > 0 && sh > 0) {
+          // One scale factor for both axes: the picture keeps its shape.
+          const scale = fit === 'cover' ? Math.max(w / sw, h / sh) : Math.min(w / sw, h / sh);
+          const dw = sw * scale;
+          const dh = sh * scale;
+          const dx = (w - dw) / 2;
+          const dy = (h - dh) / 2;
+
           ctx.save();
           if (mirrored) {
             ctx.translate(w, 0);
             ctx.scale(-1, 1);
           }
-          ctx.drawImage(video, 0, 0, w, h);
+          ctx.drawImage(video, dx, dy, dw, dh);
           ctx.restore();
         }
         animationFrameId = requestAnimationFrame(render);
       };
 
-      video.onloadedmetadata = () => {
-        render();
-      };
+      render();
 
       return () => {
         cancelAnimationFrame(animationFrameId);
@@ -106,8 +159,7 @@ function VirtualCameraCanvas({ name = 'You (Virtual Cam)', stream, mirrored = tr
 
     const render = () => {
       t += 0.04;
-      const w = canvas.width;
-      const h = canvas.height;
+      const { w, h } = frame();
 
       // Dark studio background gradient
       const bgGrad = ctx.createLinearGradient(0, 0, w, h);
@@ -136,73 +188,82 @@ function VirtualCameraCanvas({ name = 'You (Virtual Cam)', stream, mirrored = tr
         ctx.stroke();
       }
 
-      // Animated ambient studio light orb behind head
+      // The synthetic avatar is sized from the shorter edge so it stays in
+      // proportion in a small tile and in a full-width preview alike.
+      const unit = Math.min(w, h) / 320;
       const cx = w / 2;
-      const cy = h / 2 - 10;
+      const cy = h / 2 - 10 * unit;
+
+      // Animated ambient studio light orb behind head
+      const orbRadius = Math.max(w, h) * 0.45;
       const lightGrad = ctx.createRadialGradient(
-        cx + Math.sin(t) * 20,
-        cy + Math.cos(t * 0.7) * 15,
-        10,
+        cx + Math.sin(t) * 20 * unit,
+        cy + Math.cos(t * 0.7) * 15 * unit,
+        10 * unit,
         cx,
         cy,
-        w * 0.45
+        orbRadius
       );
       lightGrad.addColorStop(0, 'rgba(129, 140, 248, 0.35)');
       lightGrad.addColorStop(0.5, 'rgba(99, 102, 241, 0.12)');
       lightGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
       ctx.fillStyle = lightGrad;
       ctx.beginPath();
-      ctx.arc(cx, cy, w * 0.45, 0, Math.PI * 2);
+      ctx.arc(cx, cy, orbRadius, 0, Math.PI * 2);
       ctx.fill();
 
       // Draw stylized head & shoulders silhouette / avatar
-      const headY = cy - 25 + Math.sin(t * 1.2) * 3;
+      const headR = 32 * unit;
+      const headY = cy - 25 * unit + Math.sin(t * 1.2) * 3 * unit;
+      const ringR = headR * 1.2 + Math.sin(t * 1.5) * 2 * unit;
 
       // Shoulders
       ctx.fillStyle = 'rgba(224, 231, 255, 0.85)';
       ctx.beginPath();
-      ctx.ellipse(cx, headY + 80, 75, 40, 0, 0, Math.PI, true);
+      ctx.ellipse(cx, headY + 80 * unit, 75 * unit, 40 * unit, 0, 0, Math.PI, true);
       ctx.fill();
 
       // Head
       ctx.fillStyle = 'rgba(238, 242, 255, 0.95)';
       ctx.beginPath();
-      ctx.arc(cx, headY, 32, 0, Math.PI * 2);
+      ctx.arc(cx, headY, headR, 0, Math.PI * 2);
       ctx.fill();
 
       // Face tracking / AR contour ring
       ctx.strokeStyle = `rgba(59, 130, 246, ${0.4 + Math.sin(t * 2) * 0.2})`;
       ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.arc(cx, headY, 38 + Math.sin(t * 1.5) * 2, 0, Math.PI * 2);
+      ctx.arc(cx, headY, ringR, 0, Math.PI * 2);
       ctx.stroke();
 
       // AR Face landmark points
       ctx.fillStyle = '#60a5fa';
       for (let i = 0; i < 4; i++) {
         const angle = t * 1.5 + (i * Math.PI) / 2;
-        const px = cx + Math.cos(angle) * (38 + Math.sin(t * 1.5) * 2);
-        const py = headY + Math.sin(angle) * (38 + Math.sin(t * 1.5) * 2);
+        const px = cx + Math.cos(angle) * ringR;
+        const py = headY + Math.sin(angle) * ringR;
         ctx.beginPath();
-        ctx.arc(px, py, 2.5, 0, Math.PI * 2);
+        ctx.arc(px, py, 2.5 * unit, 0, Math.PI * 2);
         ctx.fill();
       }
 
-      // Live HD Studio Cam Watermark
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
-      ctx.font = '10px sans-serif';
-      ctx.fillText('✨ OSX VIRTUAL CAM HD', 12, 20);
+      // Overlay chrome is noise in a small tile, so it is drawn only when
+      // the surface is large enough to read it.
+      if (!compact && w > 220) {
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+        ctx.font = '10px sans-serif';
+        ctx.fillText('✨ OSX VIRTUAL CAM HD', 12, 20);
 
-      // REC Dot
-      ctx.fillStyle = '#ef4444';
-      ctx.beginPath();
-      ctx.arc(w - 20, 16, 4, 0, Math.PI * 2);
-      ctx.fill();
+        ctx.fillStyle = '#ef4444';
+        ctx.beginPath();
+        ctx.arc(w - 20, 16, 4, 0, Math.PI * 2);
+        ctx.fill();
 
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
-      ctx.font = '10px monospace';
-      const timeStr = new Date().toLocaleTimeString([], { hour12: false });
-      ctx.fillText(timeStr, w - 75, 20);
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+        ctx.font = '10px monospace';
+        const timeStr = new Date().toLocaleTimeString([], { hour12: false });
+        ctx.fillText(timeStr, w - 75, 20);
+      }
 
       animationFrameId = requestAnimationFrame(render);
     };
@@ -212,11 +273,11 @@ function VirtualCameraCanvas({ name = 'You (Virtual Cam)', stream, mirrored = tr
     return () => {
       cancelAnimationFrame(animationFrameId);
     };
-  }, [stream, mirrored]);
+  }, [stream, mirrored, fit, compact]);
 
   return (
-    <div className="w-full h-full relative flex items-center justify-center bg-slate-900 overflow-hidden">
-      <canvas ref={canvasRef} width={480} height={320} className="w-full h-full object-cover" />
+    <div ref={wrapperRef} className="w-full h-full relative bg-slate-900 overflow-hidden">
+      <canvas ref={canvasRef} className="block w-full h-full" />
     </div>
   );
 }
@@ -322,9 +383,126 @@ function ScreenShareCanvas() {
   );
 }
 
+/**
+ * One participant frame. Every layout uses this, so the video framing, the
+ * name tag and the hand/mute state stay identical whether the tile is a
+ * thumbnail in a strip or the full spotlight.
+ */
+function ParticipantTile({
+  participant,
+  isMe,
+  isVideoOn,
+  isMicOn,
+  webcamStream,
+  pinnedParticipantId,
+  onTogglePin,
+  compact = false,
+  className = '',
+}: {
+  participant: Participant;
+  isMe: boolean;
+  isVideoOn: boolean;
+  isMicOn: boolean;
+  webcamStream: MediaStream | null;
+  pinnedParticipantId: string | null;
+  onTogglePin: (id: string | null) => void;
+  compact?: boolean;
+  className?: string;
+}) {
+  const showVideo = isMe ? isVideoOn : participant.isVideoOn;
+  const showMuted = isMe ? !isMicOn : participant.isMuted;
+  const isPinned = pinnedParticipantId === participant.id;
+
+  return (
+    <div
+      className={`relative rounded-2xl overflow-hidden border flex items-center justify-center bg-zinc-900 transition-all group ${
+        participant.isSpeaking
+          ? 'border-emerald-500 ring-2 ring-emerald-500/50 shadow-lg shadow-emerald-500/10'
+          : 'border-zinc-800'
+      } ${className}`}
+    >
+      {isMe && showVideo ? (
+        <VirtualCameraCanvas stream={webcamStream} mirrored compact={compact} />
+      ) : showVideo ? (
+        <img
+          src={participant.avatar}
+          alt={participant.name}
+          className="w-full h-full object-cover filter brightness-90"
+        />
+      ) : (
+        <div
+          className={`w-full h-full bg-gradient-to-tr ${participant.bgGradient} flex flex-col items-center justify-center p-2 gap-1 text-center`}
+        >
+          <div
+            className={`rounded-full border-2 border-white/20 overflow-hidden shadow-xl ${
+              compact ? 'w-8 h-8' : 'w-14 h-14 sm:w-20 sm:h-20'
+            }`}
+          >
+            <img src={participant.avatar} alt={participant.name} className="w-full h-full object-cover" />
+          </div>
+          {!compact && (
+            <>
+              <span className="font-bold text-xs sm:text-sm text-white truncate max-w-full">
+                {participant.name}
+              </span>
+              <span className="text-[10px] sm:text-xs text-white/60">{participant.role}</span>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Name tag */}
+      <div className="absolute bottom-1.5 left-1.5 px-1.5 sm:px-2.5 py-0.5 rounded-lg bg-black/60 backdrop-blur-md text-[10px] sm:text-xs font-semibold flex items-center gap-1 border border-white/10 z-10 max-w-[85%]">
+        <span className="truncate">{participant.name}</span>
+        {showMuted && <MicOff size={11} className="text-red-400 shrink-0" />}
+      </div>
+
+      {/* Raised hand */}
+      {participant.isHandRaised && (
+        <div className="absolute top-1.5 right-1.5 p-1 rounded-lg bg-amber-500 text-white shadow-md z-10" title="Hand raised">
+          <Hand size={compact ? 10 : 13} />
+        </div>
+      )}
+
+      {/* Speaking */}
+      {participant.isSpeaking && !participant.isHandRaised && (
+        <div className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded-lg bg-emerald-500/90 text-white text-[10px] font-bold flex items-center gap-1 shadow-md z-10">
+          <Volume2 size={11} />
+          {!compact && <span>Speaking</span>}
+        </div>
+      )}
+
+      {/* Pin: revealed on hover so it never covers a small tile permanently */}
+      <button
+        onClick={() => onTogglePin(isPinned ? null : participant.id)}
+        className={`absolute top-1.5 left-1.5 p-1.5 rounded-lg text-white backdrop-blur-md transition-all cursor-pointer z-10 ${
+          isPinned ? 'bg-blue-600 opacity-100' : 'bg-black/50 hover:bg-black/70 opacity-0 group-hover:opacity-100 focus:opacity-100'
+        }`}
+        title={isPinned ? 'Unpin' : 'Pin to screen'}
+      >
+        <Pin size={compact ? 10 : 12} />
+      </button>
+    </div>
+  );
+}
+
+// The local user's roster entry, used for the initial state and whenever the
+// roster is reset after leaving a call.
+const selfParticipant: Participant = {
+  id: 'me',
+  name: 'You (Host)',
+  role: 'Host',
+  avatar: '',
+  isMuted: false,
+  isVideoOn: false,
+  isHandRaised: false,
+  isSpeaking: false,
+  bgGradient: 'from-blue-600 to-indigo-700',
+};
+
 export default function MeetingApp() {
-  const theme = useSystemStore((state) => state.settings.theme);
-  const isLight = theme === 'classic-light';
+  const theme = useAppTheme('meeting').chromeTheme;
+  const isLight = themeFamily(theme) === 'light';
 
   // System Store integration
   const calendarEvents = useSystemStore((state) => state.calendarEvents);
@@ -335,6 +513,7 @@ export default function MeetingApp() {
   // Container width state for responsive layout inside windows / mobile
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState<number>(800);
+  const [containerHeight, setContainerHeight] = useState<number>(600);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -342,6 +521,7 @@ export default function MeetingApp() {
       for (const entry of entries) {
         if (entry.contentRect) {
           setContainerWidth(entry.contentRect.width);
+          setContainerHeight(entry.contentRect.height);
         }
       }
     });
@@ -388,12 +568,26 @@ export default function MeetingApp() {
   const [isHandRaised, setIsHandRaised] = useState(false);
   const [pinnedParticipantId, setPinnedParticipantId] = useState<string | null>(null);
 
+  // Stage layout, as in Google Meet's "Change layout" panel
+  const [layoutMode, setLayoutMode] = useState<'auto' | 'tiled' | 'spotlight' | 'sidebar'>('auto');
+  const [showLayoutMenu, setShowLayoutMenu] = useState(false);
+
+  // Live captions
+  const [captionsOn, setCaptionsOn] = useState(false);
+  const [captionLines, setCaptionLines] = useState<{ id: string; speaker: string; text: string }[]>([]);
+  const [captionsSupported, setCaptionsSupported] = useState(true);
+  const [captionError, setCaptionError] = useState<string | null>(null);
+
+  // Meeting elapsed time
+  const [meetingSeconds, setMeetingSeconds] = useState(0);
+
   // Modals & Drawers state
-  const [activeSideDrawer, setActiveSideDrawer] = useState<'chat' | 'people' | 'polls' | 'info' | 'waiting' | null>(null);
+  const [activeSideDrawer, setActiveSideDrawer] = useState<'chat' | 'people' | 'polls' | 'info' | 'waiting' | 'activities' | null>(null);
   const [showWhiteboard, setShowWhiteboard] = useState(false);
   const [showBreakoutRooms, setShowBreakoutRooms] = useState(false);
   const [showSecurityModal, setShowSecurityModal] = useState(false);
   const [showInviteModal, setShowInviteModal] = useState(false);
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
 
   // Recording Engine State
   const [isRecording, setIsRecording] = useState(false);
@@ -417,6 +611,113 @@ export default function MeetingApp() {
     const p = (n: number) => n.toString().padStart(2, '0');
     return hrs > 0 ? `${p(hrs)}:${p(mins)}:${p(secs)}` : `${p(mins)}:${p(secs)}`;
   };
+
+  // Elapsed meeting time, shown in the top bar like Google Meet's clock.
+  useEffect(() => {
+    if (activeTab !== 'in-call') {
+      setMeetingSeconds(0);
+      return;
+    }
+    const interval = setInterval(() => setMeetingSeconds((prev) => prev + 1), 1000);
+    return () => clearInterval(interval);
+  }, [activeTab]);
+
+  /**
+   * Live captions, transcribed from the microphone by the browser's speech
+   * recognition engine. Only Chromium-based browsers ship it, so the control
+   * reports the gap rather than pretending to caption.
+   */
+  useEffect(() => {
+    const SpeechRecognitionImpl =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    setCaptionsSupported(Boolean(SpeechRecognitionImpl));
+  }, []);
+
+  useEffect(() => {
+    if (!captionsOn || activeTab !== 'in-call') return;
+
+    const SpeechRecognitionImpl =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognitionImpl) {
+      setCaptionError('Live captions need a browser with speech recognition (Chrome or Edge).');
+      return;
+    }
+    if (!isMicOn) {
+      setCaptionError('Captions pause while your microphone is muted.');
+      return;
+    }
+
+    let stopped = false;
+    const recognition = new SpeechRecognitionImpl();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = navigator.language || 'en-US';
+
+    recognition.onresult = (event: any) => {
+      let interim = '';
+      let final = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const chunk = event.results[i][0].transcript;
+        if (event.results[i].isFinal) final += chunk;
+        else interim += chunk;
+      }
+      const text = (final || interim).trim();
+      if (!text) return;
+      setCaptionLines((prev) => {
+        const next = [...prev];
+        const last = next[next.length - 1];
+        // Interim results replace the line in progress; a final result closes it.
+        if (last && last.id === 'live') next[next.length - 1] = { ...last, text };
+        else next.push({ id: 'live', speaker: 'You', text });
+        if (final) {
+          next[next.length - 1] = { id: `cap-${Date.now()}`, speaker: 'You', text };
+        }
+        return next.slice(-3);
+      });
+    };
+
+    recognition.onerror = (event: any) => {
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+        setCaptionError('Captions need microphone permission.');
+        setCaptionsOn(false);
+      } else if (event.error !== 'no-speech') {
+        setCaptionError('Captions stopped unexpectedly. Turn them on again to retry.');
+      }
+    };
+
+    // The engine stops itself after a pause; restart while the user wants captions.
+    recognition.onend = () => {
+      if (stopped) return;
+      try {
+        recognition.start();
+      } catch {
+        // Already restarting.
+      }
+    };
+
+    try {
+      recognition.start();
+      setCaptionError(null);
+    } catch {
+      setCaptionError('Could not start captions.');
+    }
+
+    return () => {
+      stopped = true;
+      try {
+        recognition.stop();
+      } catch {
+        // Never started.
+      }
+    };
+  }, [captionsOn, activeTab, isMicOn]);
+
+  useEffect(() => {
+    if (!captionsOn) {
+      setCaptionLines([]);
+      setCaptionError(null);
+    }
+  }, [captionsOn]);
 
   const handleToggleRecording = () => {
     if (!securitySettings.allowRecording) {
@@ -466,6 +767,85 @@ export default function MeetingApp() {
   const [permissionStatus, setPermissionStatus] = useState<'prompt' | 'granted' | 'denied'>('prompt');
   const [micLevel, setMicLevel] = useState(0);
   const [audioContext, setAudioContext] = useState<AudioContext | null>(null);
+
+  /**
+   * Live hardware handles, mirrored outside React state.
+   *
+   * The camera indicator stays lit until every track is stopped, so teardown
+   * cannot depend on a value captured when an effect ran: the stream is
+   * acquired asynchronously and lands after that closure was created. These
+   * refs always hold the current handles, which is what unmount reads.
+   */
+  const mediaRef = useRef<{
+    webcam: MediaStream | null;
+    audio: MediaStream | null;
+    screen: MediaStream | null;
+    audioCtx: AudioContext | null;
+  }>({ webcam: null, audio: null, screen: null, audioCtx: null });
+
+  const stopStream = (stream: MediaStream | null | undefined) => {
+    stream?.getTracks().forEach((track) => {
+      try {
+        track.stop();
+      } catch {
+        // A track already ended by the browser throws; nothing to release.
+      }
+    });
+  };
+
+  // Releases camera and microphone. Safe to call more than once.
+  const stopLocalMedia = useCallback(() => {
+    stopStream(mediaRef.current.webcam);
+    stopStream(mediaRef.current.audio);
+    mediaRef.current.webcam = null;
+    mediaRef.current.audio = null;
+
+    const ctx = mediaRef.current.audioCtx;
+    mediaRef.current.audioCtx = null;
+    if (ctx && ctx.state !== 'closed') {
+      ctx.close().catch(() => {});
+    }
+
+    setWebcamStream(null);
+    setAudioStream(null);
+    setAudioContext(null);
+    setMicLevel(0);
+  }, []);
+
+  // Releases every device this app holds, including the screen share.
+  const stopAllMedia = useCallback(() => {
+    stopLocalMedia();
+    stopStream(mediaRef.current.screen);
+    mediaRef.current.screen = null;
+    setScreenStream(null);
+    setIsScreenSharing(false);
+  }, [stopLocalMedia]);
+
+  // Closing or minimising the window unmounts the app. Release the hardware
+  // here so the camera light goes out with it.
+  useEffect(() => {
+    return () => {
+      stopStream(mediaRef.current.webcam);
+      stopStream(mediaRef.current.audio);
+      stopStream(mediaRef.current.screen);
+      const ctx = mediaRef.current.audioCtx;
+      if (ctx && ctx.state !== 'closed') {
+        ctx.close().catch(() => {});
+      }
+      mediaRef.current = { webcam: null, audio: null, screen: null, audioCtx: null };
+    };
+  }, []);
+
+  // A reload or tab close never runs React cleanup; stop the tracks directly.
+  useEffect(() => {
+    const release = () => {
+      stopStream(mediaRef.current.webcam);
+      stopStream(mediaRef.current.audio);
+      stopStream(mediaRef.current.screen);
+    };
+    window.addEventListener('pagehide', release);
+    return () => window.removeEventListener('pagehide', release);
+  }, []);
 
   useEffect(() => {
     let isCancelled = false;
@@ -529,8 +909,9 @@ export default function MeetingApp() {
     if (!stream.getAudioTracks().length) return;
 
     try {
-      if (audioContext) {
-        audioContext.close();
+      const previous = mediaRef.current.audioCtx;
+      if (previous && previous.state !== 'closed') {
+        previous.close().catch(() => {});
       }
 
       const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -542,15 +923,18 @@ export default function MeetingApp() {
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
       const updateLevel = () => {
-        if (!audioStream || !audioStream.active) return;
+        // Stop the loop once the meter's own context or stream is gone,
+        // otherwise it keeps a closed AudioContext alive frame after frame.
+        if (mediaRef.current.audioCtx !== ctx || !stream.active) return;
         analyser.getByteFrequencyData(dataArray);
         const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
         setMicLevel(Math.min(100, Math.round((average / 128) * 100)));
         requestAnimationFrame(updateLevel);
       };
 
-      updateLevel();
+      mediaRef.current.audioCtx = ctx;
       setAudioContext(ctx);
+      updateLevel();
     } catch {
       setMicLevel(65);
     }
@@ -568,19 +952,7 @@ export default function MeetingApp() {
   const [polls, setPolls] = useState<Poll[]>([]);
 
   // Participants State
-  const [participants, setParticipants] = useState<Participant[]>([
-    {
-      id: 'me',
-      name: 'You (Host)',
-      role: 'Host',
-      avatar: '',
-      isMuted: false,
-      isVideoOn: false,
-      isHandRaised: false,
-      isSpeaking: false,
-      bgGradient: 'from-blue-600 to-indigo-700',
-    },
-  ]);
+  const [participants, setParticipants] = useState<Participant[]>([selfParticipant]);
 
   // Schedule Modal
   const [showScheduleModal, setShowScheduleModal] = useState(false);
@@ -597,10 +969,13 @@ export default function MeetingApp() {
     setIsRequestingCamera(true);
     setCameraError(null);
 
-    if (webcamStream) {
-      webcamStream.getTracks().forEach((t) => t.stop());
-      setWebcamStream(null);
-    }
+    // Release the previous capture before asking for another, or the old
+    // track keeps the device busy and the indicator stays on.
+    stopStream(mediaRef.current.webcam);
+    stopStream(mediaRef.current.audio);
+    mediaRef.current.webcam = null;
+    mediaRef.current.audio = null;
+    setWebcamStream(null);
 
     try {
       if (!navigator?.mediaDevices?.getUserMedia) {
@@ -620,6 +995,8 @@ export default function MeetingApp() {
         });
       }
 
+      mediaRef.current.webcam = stream;
+      mediaRef.current.audio = stream;
       setWebcamStream(stream);
       setAudioStream(stream);
       setPermissionStatus('granted');
@@ -656,27 +1033,20 @@ export default function MeetingApp() {
     }
   };
 
+  // Single owner of camera acquisition: previously the lobby and the
+  // pre-meeting screen each ran their own effect and raced for the device.
   useEffect(() => {
-    if (isVideoOn && !useVirtualCam) {
+    const wantsPhysicalCamera = isVideoOn && !useVirtualCam;
+
+    if (wantsPhysicalCamera && permissionStatus !== 'denied') {
       requestCameraAccess(selectedVideoDeviceId || undefined);
-    } else {
-      if (webcamStream) {
-        webcamStream.getTracks().forEach((t) => t.stop());
-        setWebcamStream(null);
-      }
+      return;
     }
-    return () => {
-      if (webcamStream) {
-        webcamStream.getTracks().forEach((t) => t.stop());
-      }
-      if (audioStream && audioStream !== webcamStream) {
-        audioStream.getTracks().forEach((t) => t.stop());
-      }
-      if (audioContext) {
-        audioContext.close();
-      }
-    };
-  }, [isVideoOn, useVirtualCam, selectedVideoDeviceId]);
+
+    stopStream(mediaRef.current.webcam);
+    mediaRef.current.webcam = null;
+    setWebcamStream(null);
+  }, [isVideoOn, useVirtualCam, selectedVideoDeviceId, permissionStatus]);
 
   useEffect(() => {
     if (!isMicOn) {
@@ -705,14 +1075,6 @@ export default function MeetingApp() {
     }, 3500);
     return () => clearInterval(interval);
   }, [activeTab]);
-
-  useEffect(() => {
-    if (activeTab !== 'pre-meeting') return;
-    if (!isVideoOn || useVirtualCam) return;
-    if (permissionStatus === 'denied') return;
-
-    requestCameraAccess(selectedVideoDeviceId || undefined);
-  }, [activeTab, isVideoOn, useVirtualCam, permissionStatus, selectedVideoDeviceId]);
 
   // Start instant meeting
   const handleStartInstantMeeting = async (title = 'Instant Sync') => {
@@ -769,18 +1131,15 @@ export default function MeetingApp() {
         console.warn('Failed to leave meeting:', error);
       }
     }
-    if (webcamStream) {
-      webcamStream.getTracks().forEach((t) => t.stop());
-      setWebcamStream(null);
-    }
-    if (audioContext) {
-      audioContext.close();
-    }
+    stopAllMedia();
     setActiveTab('lobby');
     setActiveSideDrawer(null);
     setIsRecording(false);
     setIsScreenSharing(false);
-    setParticipants([]);
+    setIsHandRaised(false);
+    setCaptionsOn(false);
+    setPinnedParticipantId(null);
+    setParticipants([selfParticipant]);
     setChatMessages([]);
     setWaitingQueue([]);
   };
@@ -792,17 +1151,27 @@ export default function MeetingApp() {
     setTimeout(() => setIsCopied(false), 2000);
   };
 
-  // Screen Sharing
-  const toggleScreenShare = async () => {
+  // Screen Sharing. `mode` maps to the surface the picker opens on; browsers
+  // treat it as a hint, and the user's choice in the picker always wins.
+  const toggleScreenShare = async (mode: 'entire' | 'window' | 'tab' = screenShareMode) => {
     if (!isScreenSharing) {
+      if (!securitySettings.allowScreenShare) {
+        alert('The host has turned off screen sharing for participants.');
+        return;
+      }
       try {
+        const surface = mode === 'window' ? 'window' : mode === 'tab' ? 'browser' : 'monitor';
         const stream = await navigator.mediaDevices.getDisplayMedia({
-          video: { width: { ideal: 1920 }, height: { ideal: 1080 } } as any,
+          video: { width: { ideal: 1920 }, height: { ideal: 1080 }, displaySurface: surface } as any,
           audio: false,
         });
+        setScreenShareMode(mode);
+        mediaRef.current.screen = stream;
         setScreenStream(stream);
         setIsScreenSharing(true);
+        // The browser's own "Stop sharing" bar ends the track behind our back.
         stream.getVideoTracks()[0].onended = () => {
+          mediaRef.current.screen = null;
           setScreenStream(null);
           setIsScreenSharing(false);
         };
@@ -810,10 +1179,9 @@ export default function MeetingApp() {
         console.warn('Screen share denied:', error);
       }
     } else {
-      if (screenStream) {
-        screenStream.getTracks().forEach((t) => t.stop());
-        setScreenStream(null);
-      }
+      stopStream(mediaRef.current.screen);
+      mediaRef.current.screen = null;
+      setScreenStream(null);
       setIsScreenSharing(false);
     }
   };
@@ -942,6 +1310,87 @@ export default function MeetingApp() {
     }, 2500);
   };
 
+  // Raising a hand is visible to the room, so it belongs on the participant
+  // record and not only on the toolbar button.
+  const handleToggleHand = useCallback(() => {
+    setIsHandRaised((prev) => {
+      const next = !prev;
+      setParticipants((list) =>
+        list.map((p) => (p.id === 'me' ? { ...p, isHandRaised: next } : p))
+      );
+      return next;
+    });
+  }, []);
+
+  // Keyboard shortcuts, matching Google Meet's defaults.
+  useEffect(() => {
+    if (activeTab !== 'in-call') return;
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const isTyping =
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.isContentEditable);
+      if (isTyping || !(e.ctrlKey || e.metaKey)) return;
+
+      const key = e.key.toLowerCase();
+      if (key === 'd') {
+        e.preventDefault();
+        setIsMicOn((prev) => !prev);
+      } else if (key === 'e') {
+        e.preventDefault();
+        setIsVideoOn((prev) => !prev);
+      } else if (e.ctrlKey && key === 'h') {
+        e.preventDefault();
+        handleToggleHand();
+      } else if (e.altKey && key === 'c') {
+        e.preventDefault();
+        setActiveSideDrawer((prev) => (prev === 'chat' ? null : 'chat'));
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [activeTab, handleToggleHand]);
+
+  // Stage layout. "Auto" spotlights whoever is presenting or pinned and
+  // otherwise tiles the room, which is how Meet behaves.
+  const effectiveLayout = useMemo(() => {
+    if (layoutMode !== 'auto') return layoutMode;
+    if (isScreenSharing || pinnedParticipantId) return 'spotlight';
+    return 'tiled';
+  }, [layoutMode, isScreenSharing, pinnedParticipantId]);
+
+  const raisedHandCount = participants.filter((p) => p.isHandRaised).length;
+
+  // Who the stage shows. Pinning selects the main feed; otherwise the first
+  // active speaker takes it, falling back to the first participant.
+  const stageParticipants = participants;
+
+  const spotlightParticipant = useMemo(() => {
+    if (pinnedParticipantId) {
+      const pinned = participants.find((p) => p.id === pinnedParticipantId);
+      if (pinned) return pinned;
+    }
+    return participants.find((p) => p.isSpeaking) || participants[0] || null;
+  }, [participants, pinnedParticipantId]);
+
+  const otherParticipants = useMemo(
+    () => participants.filter((p) => p.id !== spotlightParticipant?.id),
+    [participants, spotlightParticipant]
+  );
+
+  // Column count for the tiled stage: derived from the room size and the
+  // width actually available, so tiles stay legible instead of slivers.
+  const tileColumns = useMemo(() => {
+    const stageWidth = activeSideDrawer && !isCompact ? containerWidth - 320 : containerWidth;
+    const maxByWidth = Math.max(1, Math.floor(stageWidth / 240));
+    const byCount = Math.ceil(Math.sqrt(Math.max(1, participants.length)));
+    return Math.max(1, Math.min(maxByWidth, byCount, 4));
+  }, [containerWidth, participants.length, activeSideDrawer, isCompact]);
+
   // Schedule Meeting
   const handleSaveSchedule = async () => {
     if (!schedTitle.trim()) return;
@@ -1010,9 +1459,10 @@ export default function MeetingApp() {
           VIEW 1: LOBBY / DASHBOARD VIEW WITH CAMERA PREVIEW
          ========================================================= */}
       {activeTab === 'lobby' && (
-        <div className={`flex-1 flex ${containerWidth >= 780 ? 'flex-row' : 'flex-col'} p-3 sm:p-5 gap-4 sm:gap-6 overflow-y-auto max-w-6xl mx-auto w-full`}>
+        <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
+          <div className={`flex ${containerWidth >= 780 ? 'flex-row' : 'flex-col'} p-3 sm:p-5 gap-4 sm:gap-6 max-w-6xl mx-auto w-full`}>
           {/* Left Column: Quick Actions & Camera Test Panel */}
-          <div className="flex-1 flex flex-col gap-4 justify-center min-w-0 w-full">
+          <div className="flex-1 flex flex-col gap-4 min-w-0 w-full">
             {/* Header branding */}
             <div className="flex flex-col gap-1">
               <div className="flex items-center gap-2.5">
@@ -1034,38 +1484,38 @@ export default function MeetingApp() {
                  isLight ? 'bg-white border-slate-200/90 shadow-sm' : 'bg-[#24232a] border-white/10'
                }`}
              >
-               {/* Preview Window */}
-               <div className={`rounded-xl overflow-hidden bg-black relative border border-white/10 flex items-center justify-center shrink-0 ${containerWidth >= 560 ? 'h-44' : 'h-40'}`}>
+               {/* Preview Window: fixed 16:9 frame, capped so a wide window
+                   does not stretch the picture into a letterbox strip. */}
+               <div className="w-full max-w-lg mx-auto aspect-video rounded-xl overflow-hidden bg-black relative border border-white/10 flex items-center justify-center shrink-0">
                   {isVideoOn ? (
-                    <VirtualCameraCanvas stream={webcamStream} name={webcamStream ? "You" : "You (Virtual Cam)"} />
+                    <VirtualCameraCanvas stream={webcamStream} />
                   ) : (
                     <div className="flex flex-col items-center justify-center p-3 text-center gap-1 text-slate-400">
                       <VideoOff size={24} className="opacity-60" />
                       <span className="text-[11px] font-medium">Camera is Off</span>
                     </div>
                   )}
-                 </div>
 
                   {/* Status Overlay Badge */}
-                 <div className="absolute top-2 left-2 px-2 py-0.5 rounded-full bg-black/70 backdrop-blur-md text-[10px] font-bold text-white flex items-center gap-1 border border-white/10 z-10">
-                   {webcamStream ? (
-                     <>
-                       <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                       <span>Webcam Live</span>
-                     </>
-                   ) : useVirtualCam ? (
-                     <>
-                       <Sparkles size={10} className="text-indigo-400" />
-                       <span>Virtual Studio Cam</span>
-                     </>
-                   ) : (
-                     <>
-                       <span className="w-2 h-2 rounded-full bg-zinc-500" />
-                       <span>Camera Off</span>
-                     </>
-                   )}
+                  <div className="absolute top-2 left-2 px-2 py-0.5 rounded-full bg-black/70 backdrop-blur-md text-[10px] font-bold text-white flex items-center gap-1 border border-white/10 z-10">
+                    {webcamStream ? (
+                      <>
+                        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                        <span>Webcam Live</span>
+                      </>
+                    ) : useVirtualCam ? (
+                      <>
+                        <Sparkles size={10} className="text-indigo-400" />
+                        <span>Virtual Studio Cam</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="w-2 h-2 rounded-full bg-zinc-500" />
+                        <span>Camera Off</span>
+                      </>
+                    )}
+                  </div>
                  </div>
-               </div>
 
                {(permissionStatus === 'prompt' || permissionStatus === 'denied') && (
                  <div className={`p-3 rounded-xl border flex flex-col gap-2 ${
@@ -1183,8 +1633,9 @@ export default function MeetingApp() {
                    </button>
                  </div>
                </div>
+             </div>
 
-              {/* Quick Actions Card Grid */}
+            {/* Quick Actions Card Grid */}
             <div className={`grid gap-3.5 ${containerWidth >= 480 ? 'grid-cols-2' : 'grid-cols-1'}`}>
               {/* Action 1: Instant Meeting */}
               <button
@@ -1334,6 +1785,7 @@ export default function MeetingApp() {
               </div>
             </div>
           </div>
+          </div>
          </div>
        )}
 
@@ -1341,7 +1793,11 @@ export default function MeetingApp() {
            VIEW 1.5: PRE-MEETING SCREEN
           ========================================================= */}
        {activeTab === 'pre-meeting' && (
-         <div className="flex-1 flex flex-col items-center justify-center p-4 sm:p-6 gap-4 sm:gap-6 overflow-y-auto">
+         /* Scroll on the outer box and centre on an inner box that is at least
+            full height: centring the scroll container itself puts the top of
+            tall content above the scroll origin, where it can never be reached. */
+         <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
+           <div className="min-h-full flex flex-col items-center justify-center p-4 sm:p-6">
            <div className="w-full max-w-2xl flex flex-col gap-4 sm:gap-5">
              <div className="flex items-center gap-3">
                <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center text-white shadow-lg shadow-blue-500/20 shrink-0">
@@ -1399,15 +1855,19 @@ export default function MeetingApp() {
                <div className={`p-4 sm:p-5 rounded-2xl border flex flex-col gap-4 ${
                  isLight ? 'bg-white border-slate-200/90 shadow-sm' : 'bg-[#24232a] border-white/10'
                }`}>
-                <div className={`rounded-xl overflow-hidden bg-black relative border border-white/10 flex items-center justify-center shrink-0 ${containerWidth >= 560 ? 'h-44' : 'h-40'}`}>
+                <div className="w-full aspect-video rounded-xl overflow-hidden bg-black relative border border-white/10 flex items-center justify-center shrink-0">
                   {isVideoOn ? (
-                    <VirtualCameraCanvas stream={webcamStream} name={webcamStream ? "You" : "You (Virtual Cam)"} />
+                    <VirtualCameraCanvas stream={webcamStream} />
                   ) : (
                     <div className="flex flex-col items-center justify-center p-3 text-center gap-1 text-slate-400">
                       <VideoOff size={24} className="opacity-60" />
                       <span className="text-[11px] font-medium">Camera is Off</span>
                     </div>
                   )}
+                  <div className="absolute bottom-2 left-2 px-2 py-0.5 rounded-full bg-black/70 backdrop-blur-md text-[10px] font-bold text-white flex items-center gap-1.5 border border-white/10">
+                    {isMicOn ? <Mic size={10} className="text-emerald-400" /> : <MicOff size={10} className="text-red-400" />}
+                    <span>{meetingTitle}</span>
+                  </div>
                 </div>
 
                <div className="flex flex-col gap-3">
@@ -1526,13 +1986,7 @@ export default function MeetingApp() {
                </button>
                <button
                  onClick={() => {
-                   if (webcamStream) {
-                     webcamStream.getTracks().forEach((t) => t.stop());
-                     setWebcamStream(null);
-                   }
-                   if (audioContext) {
-                     audioContext.close();
-                   }
+                   stopLocalMedia();
                    setActiveTab('lobby');
                  }}
                  className="px-4 py-3 rounded-xl text-sm font-bold bg-zinc-800 hover:bg-zinc-700 text-zinc-300 cursor-pointer transition-colors"
@@ -1540,6 +1994,7 @@ export default function MeetingApp() {
                  Back
                </button>
              </div>
+           </div>
            </div>
          </div>
        )}
@@ -1570,6 +2025,55 @@ export default function MeetingApp() {
 
             {/* Recording & Status Indicators */}
             <div className="flex items-center gap-2 shrink-0">
+              {!isVeryCompact && (
+                <span className="text-[11px] font-mono text-zinc-400 tabular-nums" title="Meeting duration">
+                  {formatRecordingTime(meetingSeconds)}
+                </span>
+              )}
+
+              {/* Change layout */}
+              <div className="relative">
+                <button
+                  onClick={() => setShowLayoutMenu((prev) => !prev)}
+                  className={`p-1.5 rounded-lg cursor-pointer transition-colors ${
+                    showLayoutMenu ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
+                  }`}
+                  title="Change layout"
+                >
+                  <LayoutGrid size={15} />
+                </button>
+                {showLayoutMenu && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setShowLayoutMenu(false)} />
+                    <div className="absolute right-0 top-full mt-1.5 w-44 p-1.5 rounded-xl bg-zinc-800 border border-zinc-700 shadow-2xl z-50 flex flex-col gap-0.5">
+                      <span className="px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-zinc-500">
+                        Change layout
+                      </span>
+                      {([
+                        { id: 'auto', label: 'Auto', hint: 'Follows the room' },
+                        { id: 'tiled', label: 'Tiled', hint: 'Everyone equal' },
+                        { id: 'spotlight', label: 'Spotlight', hint: 'One large feed' },
+                        { id: 'sidebar', label: 'Sidebar', hint: 'Main plus strip' },
+                      ] as const).map((option) => (
+                        <button
+                          key={option.id}
+                          onClick={() => {
+                            setLayoutMode(option.id);
+                            setShowLayoutMenu(false);
+                          }}
+                          className={`px-2 py-1.5 rounded-lg text-left cursor-pointer transition-colors ${
+                            layoutMode === option.id ? 'bg-blue-600 text-white' : 'hover:bg-zinc-700 text-zinc-200'
+                          }`}
+                        >
+                          <span className="block text-xs font-bold">{option.label}</span>
+                          <span className="block text-[10px] opacity-70">{option.hint}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+
               {isRecording && (
                 <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-red-500/20 text-red-400 text-[11px] font-bold border border-red-500/40">
                   <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
@@ -1607,100 +2111,179 @@ export default function MeetingApp() {
 
           {/* Center Stage + Side Drawer Container */}
           <div className="flex-1 flex min-h-0 relative overflow-hidden">
-            {/* Main Stage Grid OR Screen Share View */}
-            <div className="flex-1 p-2 sm:p-3 flex flex-col min-h-0 relative overflow-hidden">
+            {/* Main Stage: presentation, spotlight, sidebar or tiles */}
+            <div className="flex-1 p-2 sm:p-3 flex flex-col min-h-0 relative overflow-hidden gap-2">
               {isScreenSharing ? (
-                <div className="flex-1 rounded-2xl overflow-hidden border border-emerald-500/50 relative shadow-2xl">
-                  {screenStream ? (
-                    <video
-                      autoPlay
-                      playsInline
-                      muted
-                      className="w-full h-full object-contain"
-                      ref={(el) => {
-                        if (el && el.srcObject !== screenStream) {
-                          el.srcObject = screenStream;
-                        }
-                      }}
-                    />
-                  ) : (
-                    <ScreenShareCanvas />
+                <div className="flex-1 flex flex-col min-h-0 gap-2">
+                  <div className="flex-1 min-h-0 rounded-2xl overflow-hidden border border-emerald-500/50 relative shadow-2xl bg-black">
+                    {screenStream ? (
+                      <video
+                        autoPlay
+                        playsInline
+                        muted
+                        className="w-full h-full object-contain"
+                        ref={(el) => {
+                          if (el && el.srcObject !== screenStream) {
+                            el.srcObject = screenStream;
+                          }
+                        }}
+                      />
+                    ) : (
+                      <ScreenShareCanvas />
+                    )}
+
+                    {/* Presentation controls, as in Meet's presenting bar */}
+                    <div className="absolute top-3 left-3 right-3 flex items-center justify-between gap-2 flex-wrap">
+                      <div className="px-2.5 py-1 rounded-lg bg-emerald-500/90 text-white text-[10px] font-bold flex items-center gap-1.5 shadow-md">
+                        <Monitor size={12} />
+                        <span>You are presenting</span>
+                      </div>
+                      <button
+                        onClick={() => toggleScreenShare()}
+                        className="px-2.5 py-1 rounded-lg bg-black/70 hover:bg-red-600 text-white text-[10px] font-bold flex items-center gap-1.5 border border-white/15 cursor-pointer transition-colors backdrop-blur-md"
+                      >
+                        <X size={11} />
+                        <span>Stop presenting</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Presenter's own camera stays visible beside the content */}
+                  {containerHeight >= 420 && (
+                    <div className="shrink-0 h-24 sm:h-28 flex items-center gap-2 overflow-x-auto pb-0.5">
+                      {participants.map((p) => (
+                        <ParticipantTile
+                          key={p.id}
+                          participant={p}
+                          isMe={p.id === 'me'}
+                          isVideoOn={isVideoOn}
+                          isMicOn={isMicOn}
+                          webcamStream={webcamStream}
+                          pinnedParticipantId={pinnedParticipantId}
+                          onTogglePin={setPinnedParticipantId}
+                          compact
+                          className="h-full aspect-video shrink-0"
+                        />
+                      ))}
+                    </div>
                   )}
-                  <div className="absolute top-3 left-3 px-2.5 py-1 rounded-lg bg-emerald-500/90 text-white text-[10px] font-bold flex items-center gap-1.5 shadow-md">
-                    <Monitor size={12} />
-                    <span>You are sharing your screen</span>
+                </div>
+              ) : effectiveLayout === 'spotlight' ? (
+                <div className="flex-1 flex flex-col min-h-0 gap-2">
+                  <div className="flex-1 min-h-0">
+                    {spotlightParticipant && (
+                      <ParticipantTile
+                        participant={spotlightParticipant}
+                        isMe={spotlightParticipant.id === 'me'}
+                        isVideoOn={isVideoOn}
+                        isMicOn={isMicOn}
+                        webcamStream={webcamStream}
+                        pinnedParticipantId={pinnedParticipantId}
+                        onTogglePin={setPinnedParticipantId}
+                        className="w-full h-full"
+                      />
+                    )}
+                  </div>
+                  {otherParticipants.length > 0 && containerHeight >= 420 && (
+                    <div className="shrink-0 h-20 sm:h-24 flex items-center gap-2 overflow-x-auto pb-0.5">
+                      {otherParticipants.map((p) => (
+                        <ParticipantTile
+                          key={p.id}
+                          participant={p}
+                          isMe={p.id === 'me'}
+                          isVideoOn={isVideoOn}
+                          isMicOn={isMicOn}
+                          webcamStream={webcamStream}
+                          pinnedParticipantId={pinnedParticipantId}
+                          onTogglePin={setPinnedParticipantId}
+                          compact
+                          className="h-full aspect-video shrink-0"
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : effectiveLayout === 'sidebar' && !isCompact ? (
+                <div className="flex-1 flex min-h-0 gap-2">
+                  <div className="flex-1 min-h-0">
+                    {spotlightParticipant && (
+                      <ParticipantTile
+                        participant={spotlightParticipant}
+                        isMe={spotlightParticipant.id === 'me'}
+                        isVideoOn={isVideoOn}
+                        isMicOn={isMicOn}
+                        webcamStream={webcamStream}
+                        pinnedParticipantId={pinnedParticipantId}
+                        onTogglePin={setPinnedParticipantId}
+                        className="w-full h-full"
+                      />
+                    )}
+                  </div>
+                  <div className="w-40 shrink-0 overflow-y-auto flex flex-col gap-2 pr-0.5">
+                    {otherParticipants.map((p) => (
+                      <ParticipantTile
+                        key={p.id}
+                        participant={p}
+                        isMe={p.id === 'me'}
+                        isVideoOn={isVideoOn}
+                        isMicOn={isMicOn}
+                        webcamStream={webcamStream}
+                        pinnedParticipantId={pinnedParticipantId}
+                        onTogglePin={setPinnedParticipantId}
+                        compact
+                        className="w-full aspect-video shrink-0"
+                      />
+                    ))}
                   </div>
                 </div>
               ) : (
-                <div className={`flex-1 grid gap-2 sm:gap-3 min-h-0 overflow-y-auto ${
-                  pinnedParticipantId ? 'grid-cols-1' : containerWidth >= 520 ? 'grid-cols-2' : 'grid-cols-1'
-                }`}>
-                  {participants
-                    .filter((p) => !pinnedParticipantId || p.id === pinnedParticipantId)
-                    .map((p) => {
-                      const isMe = p.id === 'me';
-                      const showVideo = isMe ? isVideoOn : p.isVideoOn;
-                      const showMuted = isMe ? !isMicOn : p.isMuted;
+                /* Tiled: the stage scrolls, and every tile keeps a 16:9 frame
+                   so faces are never squeezed into a wide or narrow box. */
+                <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
+                  <div
+                    className="grid gap-2 sm:gap-3 auto-rows-min"
+                    style={{ gridTemplateColumns: `repeat(${tileColumns}, minmax(0, 1fr))` }}
+                  >
+                    {stageParticipants.map((p) => (
+                      <ParticipantTile
+                        key={p.id}
+                        participant={p}
+                        isMe={p.id === 'me'}
+                        isVideoOn={isVideoOn}
+                        isMicOn={isMicOn}
+                        webcamStream={webcamStream}
+                        pinnedParticipantId={pinnedParticipantId}
+                        onTogglePin={setPinnedParticipantId}
+                        compact={tileColumns > 2}
+                        className="w-full aspect-video"
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
 
-                      return (
-                        <div
-                          key={p.id}
-                          className={`relative rounded-2xl overflow-hidden border flex flex-col items-center justify-center bg-zinc-900 transition-all min-h-[140px] sm:min-h-[180px] ${
-                            p.isSpeaking
-                              ? 'border-emerald-500 ring-2 ring-emerald-500/50 shadow-lg shadow-emerald-500/10'
-                              : 'border-zinc-800'
-                          }`}
-                        >
-                           {isMe && showVideo ? (
-                             <VirtualCameraCanvas stream={webcamStream} name="You (Virtual Studio)" mirrored />
-                           ) : showVideo ? (
-                            <div className="relative w-full h-full flex items-center justify-center overflow-hidden">
-                              <img
-                                src={p.avatar}
-                                alt={p.name}
-                                className="w-full h-full object-cover filter brightness-90"
-                              />
-                              <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/20" />
-                            </div>
-                          ) : (
-                            <div className={`w-full h-full bg-gradient-to-tr ${p.bgGradient} flex flex-col items-center justify-center p-3 sm:p-4 relative`}>
-                              <div className="w-14 h-14 sm:w-20 sm:h-20 rounded-full border-2 border-white/20 overflow-hidden shadow-xl mb-1.5 sm:mb-2">
-                                <img src={p.avatar} alt={p.name} className="w-full h-full object-cover" />
-                              </div>
-                              <span className="font-bold text-xs sm:text-sm text-white">{p.name}</span>
-                              <span className="text-[10px] sm:text-xs text-white/60">{p.role}</span>
-                            </div>
-                          )}
-
-                          {/* Participant Name Tag */}
-                          <div className="absolute bottom-2 left-2 sm:bottom-3 sm:left-3 px-2 sm:px-2.5 py-0.5 sm:py-1 rounded-lg bg-black/60 backdrop-blur-md text-[11px] sm:text-xs font-semibold flex items-center gap-1.5 border border-white/10 z-10 max-w-[85%] truncate">
-                            <span className="truncate">{p.name}</span>
-                            {showMuted && <MicOff size={12} className="text-red-400 shrink-0" />}
-                          </div>
-
-                          {/* Pin / Host Quick Action overlay */}
-                          <div className="absolute top-2 left-2 flex items-center gap-1 z-10">
-                            <button
-                              onClick={() => setPinnedParticipantId(pinnedParticipantId === p.id ? null : p.id)}
-                              className={`p-1.5 rounded-lg text-white backdrop-blur-md transition-colors cursor-pointer ${
-                                pinnedParticipantId === p.id ? 'bg-blue-600' : 'bg-black/40 hover:bg-black/60'
-                              }`}
-                              title={pinnedParticipantId === p.id ? 'Unpin' : 'Pin to screen'}
-                            >
-                              <Pin size={12} />
-                            </button>
-                          </div>
-
-                          {/* Speaking Waveform Indicator */}
-                          {p.isSpeaking && (
-                            <div className="absolute top-2 right-2 sm:top-3 sm:right-3 px-2 py-0.5 sm:py-1 rounded-lg bg-emerald-500/90 text-white text-[10px] font-bold flex items-center gap-1 shadow-md z-10">
-                              <Volume2 size={12} className="animate-bounce" />
-                              <span className="hidden sm:inline">Speaking</span>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
+              {/* Live captions overlay */}
+              {captionsOn && (
+                <div className="absolute inset-x-3 bottom-3 z-30 pointer-events-none flex flex-col items-center gap-1">
+                  {captionError ? (
+                    <div className="px-3 py-1.5 rounded-xl bg-black/85 text-amber-300 text-[11px] font-semibold max-w-xl text-center border border-amber-500/30">
+                      {captionError}
+                    </div>
+                  ) : captionLines.length === 0 ? (
+                    <div className="px-3 py-1.5 rounded-xl bg-black/70 text-zinc-300 text-[11px] font-medium">
+                      Listening for speech…
+                    </div>
+                  ) : (
+                    captionLines.map((line) => (
+                      <div
+                        key={line.id}
+                        className="px-3 py-1.5 rounded-xl bg-black/85 text-white text-xs sm:text-sm font-medium max-w-2xl text-center leading-snug"
+                      >
+                        <span className="text-blue-300 font-bold mr-1.5">{line.speaker}:</span>
+                        {line.text}
+                      </div>
+                    ))
+                  )}
                 </div>
               )}
             </div>
@@ -1721,10 +2304,12 @@ export default function MeetingApp() {
             {/* Side Drawers: Chat / People / Polls / Waiting / Info */}
             {activeSideDrawer && (
               <div
-                className={`bg-zinc-900 border-l border-zinc-800 flex flex-col shrink-0 transition-all ${
+                className={`bg-zinc-900 border-l border-zinc-800 flex flex-col shrink-0 min-h-0 transition-all ${
                   isCompact
-                    ? 'absolute inset-y-0 right-0 w-full sm:w-80 bg-zinc-900/95 backdrop-blur-md z-40 shadow-2xl animate-in slide-in-from-right duration-200'
-                    : 'w-72 sm:w-80 relative z-20'
+                    ? `absolute inset-y-0 right-0 ${
+                        isVeryCompact ? 'w-full' : 'w-80'
+                      } bg-zinc-900/95 backdrop-blur-md z-40 shadow-2xl animate-in slide-in-from-right duration-200`
+                    : 'w-80 relative z-20'
                 }`}
               >
                 {/* Drawer Header */}
@@ -1736,7 +2321,9 @@ export default function MeetingApp() {
                       ? `Participants (${participants.length})`
                       : activeSideDrawer === 'waiting'
                       ? `Waiting Room (${waitingQueue.length})`
-                      : 'Meeting Info'}
+                      : activeSideDrawer === 'activities'
+                      ? 'Activities'
+                      : 'Meeting Details'}
                   </span>
                   <button
                     onClick={() => setActiveSideDrawer(null)}
@@ -1824,20 +2411,38 @@ export default function MeetingApp() {
                       <span>Mute All Participants</span>
                     </button>
 
-                    {participants.map((p) => (
+                    {[...participants]
+                      .sort((a, b) => Number(b.isHandRaised) - Number(a.isHandRaised))
+                      .map((p) => (
                       <div
                         key={p.id}
-                        className="p-2.5 rounded-xl bg-zinc-800/60 border border-zinc-800 flex items-center justify-between gap-2"
+                        className={`p-2.5 rounded-xl border flex items-center justify-between gap-2 ${
+                          p.isHandRaised ? 'bg-amber-500/10 border-amber-500/30' : 'bg-zinc-800/60 border-zinc-800'
+                        }`}
                       >
                         <div className="flex items-center gap-2.5 min-w-0">
                           <img src={p.avatar} alt={p.name} className="w-8 h-8 rounded-full object-cover" />
                           <div className="flex flex-col min-w-0">
-                            <span className="text-xs font-bold truncate text-zinc-200">{p.name}</span>
-                            <span className="text-[10px] text-zinc-400">{p.role}</span>
+                            <span className="text-xs font-bold truncate text-zinc-200 flex items-center gap-1.5">
+                              <span className="truncate">{p.name}</span>
+                              {p.isHandRaised && <Hand size={11} className="text-amber-400 shrink-0" />}
+                            </span>
+                            <span className="text-[10px] text-zinc-400">
+                              {p.role}
+                              {p.isHandRaised ? ' · hand raised' : ''}
+                            </span>
                           </div>
                         </div>
 
                         <div className="flex items-center gap-1 shrink-0">
+                          {p.id === 'me' && p.isHandRaised && (
+                            <button
+                              onClick={handleToggleHand}
+                              className="px-2 py-1 rounded-lg text-[10px] font-bold bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 cursor-pointer"
+                            >
+                              Lower
+                            </button>
+                          )}
                           {p.id !== 'me' && (
                             <>
                               <button
@@ -1900,9 +2505,73 @@ export default function MeetingApp() {
                   </div>
                 )}
 
+                {/* Drawer Content: Activities */}
+                {activeSideDrawer === 'activities' && (
+                  <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-2">
+                    <p className="text-[11px] text-zinc-400 leading-relaxed px-0.5">
+                      Run something together without leaving the call.
+                    </p>
+                    {[
+                      {
+                        id: 'whiteboard',
+                        icon: <Sparkles size={16} className="text-purple-300" />,
+                        title: 'Whiteboard',
+                        description: 'Sketch together on a shared canvas',
+                        onClick: () => setShowWhiteboard(true),
+                      },
+                      {
+                        id: 'polls',
+                        icon: <BarChart2 size={16} className="text-amber-300" />,
+                        title: 'Polls',
+                        description: `Ask the room a question${polls.length ? ` · ${polls.length} active` : ''}`,
+                        onClick: () => setActiveSideDrawer('polls'),
+                      },
+                      {
+                        id: 'breakout',
+                        icon: <Split size={16} className="text-indigo-300" />,
+                        title: 'Breakout rooms',
+                        description: 'Split participants into smaller groups',
+                        onClick: () => setShowBreakoutRooms(true),
+                      },
+                      {
+                        id: 'recording',
+                        icon: <Disc size={16} className={isRecording ? 'text-red-400' : 'text-zinc-300'} />,
+                        title: isRecording ? 'Stop recording' : 'Recording',
+                        description: isRecording
+                          ? `Recording for ${formatRecordingTime(recordingSeconds)}`
+                          : 'Save the meeting to your Drive',
+                        onClick: handleToggleRecording,
+                      },
+                      {
+                        id: 'captions',
+                        icon: <Captions size={16} className={captionsOn ? 'text-blue-300' : 'text-zinc-300'} />,
+                        title: captionsOn ? 'Turn off captions' : 'Live captions',
+                        description: captionsSupported
+                          ? 'Transcribe speech on screen as people talk'
+                          : 'Not available in this browser',
+                        onClick: () => captionsSupported && setCaptionsOn((prev) => !prev),
+                        disabled: !captionsSupported,
+                      },
+                    ].map((activity) => (
+                      <button
+                        key={activity.id}
+                        onClick={activity.onClick}
+                        disabled={activity.disabled}
+                        className="p-3 rounded-xl bg-zinc-800/60 border border-zinc-800 hover:bg-zinc-800 flex items-start gap-2.5 text-left cursor-pointer transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        <span className="mt-0.5 shrink-0">{activity.icon}</span>
+                        <span className="flex flex-col min-w-0">
+                          <span className="text-xs font-bold text-zinc-100">{activity.title}</span>
+                          <span className="text-[11px] text-zinc-400 leading-snug">{activity.description}</span>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
                 {/* Drawer Content: Info */}
                 {activeSideDrawer === 'info' && (
-                  <div className="flex-1 p-4 flex flex-col gap-3 text-xs text-zinc-300">
+                  <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3 text-xs text-zinc-300">
                     <div className="flex flex-col gap-1">
                       <span className="font-bold text-zinc-400 uppercase text-[10px]">Joining Info</span>
                       <span className="font-semibold text-white">{meetingTitle}</span>
@@ -1915,6 +2584,47 @@ export default function MeetingApp() {
                       <Copy size={13} />
                       <span>{isCopied ? 'Link Copied!' : 'Copy Joining Link'}</span>
                     </button>
+
+                    <div className="flex flex-col gap-2 pt-1 border-t border-zinc-800">
+                      <span className="font-bold text-zinc-400 uppercase text-[10px] pt-2">This call</span>
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-400">Duration</span>
+                        <span className="font-mono text-zinc-200">{formatRecordingTime(meetingSeconds)}</span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-400">Participants</span>
+                        <span className="text-zinc-200">{participants.length}</span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-400">Recording</span>
+                        <span className={isRecording ? 'text-red-400 font-semibold' : 'text-zinc-200'}>
+                          {isRecording ? `On · ${formatRecordingTime(recordingSeconds)}` : 'Off'}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-400">Captions</span>
+                        <span className="text-zinc-200">
+                          {!captionsSupported ? 'Unavailable' : captionsOn ? 'On' : 'Off'}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col gap-1.5 pt-1 border-t border-zinc-800">
+                      <span className="font-bold text-zinc-400 uppercase text-[10px] pt-2">Shortcuts</span>
+                      {[
+                        { keys: 'Ctrl + D', label: 'Mute / unmute' },
+                        { keys: 'Ctrl + E', label: 'Camera on / off' },
+                        { keys: 'Ctrl + Alt + H', label: 'Raise / lower hand' },
+                        { keys: 'Ctrl + Alt + C', label: 'Toggle chat' },
+                      ].map((shortcut) => (
+                        <div key={shortcut.keys} className="flex items-center justify-between gap-2">
+                          <span className="text-zinc-400">{shortcut.label}</span>
+                          <kbd className="px-1.5 py-0.5 rounded bg-black/40 border border-zinc-700 text-[10px] font-mono text-zinc-300 shrink-0">
+                            {shortcut.keys}
+                          </kbd>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>
@@ -1932,9 +2642,16 @@ export default function MeetingApp() {
             />
           </div>
 
-          {/* Bottom Call Control Toolbar */}
-          <div className="h-14 sm:h-16 bg-zinc-900 border-t border-zinc-800 px-2 sm:px-4 flex items-center justify-between shrink-0 z-20 gap-1 overflow-x-auto">
-            {/* Left Controls: Audio / Video / Virtual Cam / Noise Filter */}
+          {/* Bottom Call Control Toolbar.
+              Primary controls are always on screen; everything else collapses
+              into an overflow menu as the window narrows, so nothing is ever
+              pushed out of reach. */}
+          <div
+            className={`min-h-14 bg-zinc-900 border-t border-zinc-800 px-2 sm:px-3 py-2 flex flex-wrap items-center shrink-0 z-20 gap-1.5 gap-y-2 relative ${
+              isCompact ? 'justify-center' : 'justify-between'
+            }`}
+          >
+            {/* Left: mic, camera, virtual cam */}
             <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
               <button
                 onClick={() => setIsMicOn(!isMicOn)}
@@ -1943,7 +2660,7 @@ export default function MeetingApp() {
                     ? 'bg-zinc-800 hover:bg-zinc-700 text-white'
                     : 'bg-red-500 hover:bg-red-600 text-white shadow-lg shadow-red-500/20'
                 }`}
-                title={isMicOn ? 'Mute Microphone' : 'Unmute Microphone'}
+                title={isMicOn ? 'Mute Microphone (Ctrl+D)' : 'Unmute Microphone (Ctrl+D)'}
               >
                 {isMicOn ? <Mic size={isVeryCompact ? 16 : 18} /> : <MicOff size={isVeryCompact ? 16 : 18} />}
               </button>
@@ -1958,161 +2675,266 @@ export default function MeetingApp() {
                     ? 'bg-zinc-800 hover:bg-zinc-700 text-white'
                     : 'bg-red-500 hover:bg-red-600 text-white shadow-lg shadow-red-500/20'
                 }`}
-                title={isVideoOn ? 'Turn Camera Off' : 'Turn Camera On'}
+                title={isVideoOn ? 'Turn Camera Off (Ctrl+E)' : 'Turn Camera On (Ctrl+E)'}
               >
                 {isVideoOn ? <Video size={isVeryCompact ? 16 : 18} /> : <VideoOff size={isVeryCompact ? 16 : 18} />}
               </button>
 
-              <button
-                onClick={() => {
-                  setIsVideoOn(true);
-                  setUseVirtualCam(!useVirtualCam);
-                }}
-                className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl flex items-center justify-center transition-all cursor-pointer ${
-                  useVirtualCam ? 'bg-indigo-600 text-white' : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300'
-                }`}
-                title={useVirtualCam ? 'Switch to Physical Camera' : 'Switch to Virtual Studio Cam'}
-              >
-                <Sparkles size={isVeryCompact ? 16 : 18} />
-              </button>
+              {!isCompact && (
+                <button
+                  onClick={() => {
+                    setIsVideoOn(true);
+                    setUseVirtualCam(!useVirtualCam);
+                  }}
+                  className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl flex items-center justify-center transition-all cursor-pointer ${
+                    useVirtualCam ? 'bg-indigo-600 text-white' : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300'
+                  }`}
+                  title={useVirtualCam ? 'Switch to Physical Camera' : 'Switch to Virtual Studio Cam'}
+                >
+                  <Sparkles size={isVeryCompact ? 16 : 18} />
+                </button>
+              )}
             </div>
 
-            {/* Center Controls: Reactions, Screen Share, Whiteboard, Recording, Hand, End Call */}
+            {/* Center: presentation, captions, hand, reactions, leave */}
             <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
-              {/* Reactions Menu Toggle */}
               <div className="relative">
                 <button
                   onClick={() => setShowReactionsMenu(!showReactionsMenu)}
-                  className="p-2 sm:p-2.5 rounded-xl sm:rounded-2xl bg-zinc-800 hover:bg-zinc-700 text-white cursor-pointer transition-colors"
-                  title="Send Reaction"
+                  className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl cursor-pointer transition-colors ${
+                    showReactionsMenu ? 'bg-zinc-700 text-white' : 'bg-zinc-800 hover:bg-zinc-700 text-white'
+                  }`}
+                  title="Send a reaction"
                 >
                   <Smile size={isVeryCompact ? 16 : 18} />
                 </button>
 
                 {showReactionsMenu && (
-                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 p-1.5 sm:p-2 rounded-2xl bg-zinc-800 border border-zinc-700 shadow-xl flex items-center gap-1 sm:gap-1.5 z-50">
-                    {['👏', '👍', '❤️', '🎉', '😂', '👋', '🔥', '💡'].map((emoji) => (
-                      <button
-                        key={emoji}
-                        onClick={() => handleSendReaction(emoji)}
-                        className="p-1.5 text-lg hover:bg-zinc-700 rounded-xl cursor-pointer transition-transform hover:scale-125"
-                      >
-                        {emoji}
-                      </button>
-                    ))}
-                  </div>
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setShowReactionsMenu(false)} />
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 p-1.5 sm:p-2 rounded-2xl bg-zinc-800 border border-zinc-700 shadow-xl grid grid-cols-4 gap-1 z-50">
+                      {['👏', '👍', '❤️', '🎉', '😂', '👋', '🔥', '💡'].map((emoji) => (
+                        <button
+                          key={emoji}
+                          onClick={() => handleSendReaction(emoji)}
+                          className="p-1.5 text-lg hover:bg-zinc-700 rounded-xl cursor-pointer transition-transform hover:scale-125"
+                        >
+                          {emoji}
+                        </button>
+                      ))}
+                    </div>
+                  </>
                 )}
               </div>
 
-              {/* Screen Share Dropdown */}
               <div className="relative">
                 <button
-                  onClick={toggleScreenShare}
+                  onClick={() => {
+                    if (isScreenSharing) toggleScreenShare();
+                    else setShowScreenShareMenu((prev) => !prev);
+                  }}
                   className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl transition-all cursor-pointer ${
                     isScreenSharing
                       ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20'
                       : 'bg-zinc-800 hover:bg-zinc-700 text-white'
                   }`}
-                  title="Share Screen"
+                  title={isScreenSharing ? 'Stop presenting' : 'Present now'}
                 >
                   <Monitor size={isVeryCompact ? 16 : 18} />
                 </button>
+
+                {showScreenShareMenu && !isScreenSharing && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setShowScreenShareMenu(false)} />
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-44 p-1.5 rounded-xl bg-zinc-800 border border-zinc-700 shadow-2xl z-50 flex flex-col gap-0.5">
+                      <span className="px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-zinc-500">
+                        Present now
+                      </span>
+                      {([
+                        { id: 'entire', label: 'Your entire screen' },
+                        { id: 'window', label: 'A window' },
+                        { id: 'tab', label: 'A tab' },
+                      ] as const).map((option) => (
+                        <button
+                          key={option.id}
+                          onClick={() => {
+                            setShowScreenShareMenu(false);
+                            toggleScreenShare(option.id);
+                          }}
+                          className="px-2.5 py-2 rounded-lg text-left text-xs font-semibold text-zinc-200 hover:bg-zinc-700 cursor-pointer transition-colors"
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
               </div>
 
-              {/* Whiteboard */}
               <button
-                onClick={() => setShowWhiteboard(true)}
-                className="p-2 sm:p-2.5 rounded-xl sm:rounded-2xl bg-zinc-800 hover:bg-zinc-700 text-purple-300 cursor-pointer transition-colors"
-                title="Open Collaborative Whiteboard"
+                onClick={() => setCaptionsOn((prev) => !prev)}
+                disabled={!captionsSupported}
+                className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                  captionsOn ? 'bg-blue-600 text-white' : 'bg-zinc-800 hover:bg-zinc-700 text-white'
+                }`}
+                title={
+                  captionsSupported
+                    ? captionsOn
+                      ? 'Turn off captions'
+                      : 'Turn on captions'
+                    : 'Captions need a browser with speech recognition (Chrome or Edge)'
+                }
               >
-                <Sparkles size={isVeryCompact ? 16 : 18} />
+                <Captions size={isVeryCompact ? 16 : 18} />
               </button>
 
-              {/* Record Meeting Button */}
               <button
-                onClick={handleToggleRecording}
+                onClick={handleToggleHand}
                 className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl transition-all cursor-pointer ${
-                  isRecording
-                    ? 'bg-red-600 text-white animate-pulse shadow-lg shadow-red-600/30'
-                    : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300'
+                  isHandRaised ? 'bg-amber-500 text-white' : 'bg-zinc-800 hover:bg-zinc-700 text-white'
                 }`}
-                title={isRecording ? 'Stop Recording' : 'Record Meeting'}
-              >
-                <Disc size={isVeryCompact ? 16 : 18} />
-              </button>
-
-              {/* Raise Hand */}
-              <button
-                onClick={() => setIsHandRaised(!isHandRaised)}
-                className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl transition-all cursor-pointer ${
-                  isHandRaised
-                    ? 'bg-amber-500 text-white'
-                    : 'bg-zinc-800 hover:bg-zinc-700 text-white'
-                }`}
-                title="Raise Hand"
+                title={isHandRaised ? 'Lower hand (Ctrl+Alt+H)' : 'Raise hand (Ctrl+Alt+H)'}
               >
                 <Hand size={isVeryCompact ? 16 : 18} />
               </button>
 
-              {/* Breakout Rooms */}
-              <button
-                onClick={() => setShowBreakoutRooms(true)}
-                className="p-2 sm:p-2.5 rounded-xl sm:rounded-2xl bg-zinc-800 hover:bg-zinc-700 text-indigo-300 cursor-pointer transition-colors"
-                title="Breakout Rooms"
-              >
-                <Split size={isVeryCompact ? 16 : 18} />
-              </button>
+              {/* Overflow menu: recording, whiteboard, breakout, security */}
+              <div className="relative">
+                <button
+                  onClick={() => setShowMoreMenu((prev) => !prev)}
+                  className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl cursor-pointer transition-colors ${
+                    showMoreMenu ? 'bg-zinc-700 text-white' : 'bg-zinc-800 hover:bg-zinc-700 text-white'
+                  }`}
+                  title="More options"
+                >
+                  <MoreVertical size={isVeryCompact ? 16 : 18} />
+                </button>
 
-              {/* Leave Call Red Button */}
+                {showMoreMenu && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setShowMoreMenu(false)} />
+                    <div className="absolute bottom-full right-0 mb-2 w-56 p-1.5 rounded-xl bg-zinc-800 border border-zinc-700 shadow-2xl z-50 flex flex-col gap-0.5 max-h-[60vh] overflow-y-auto">
+                      {[
+                        {
+                          id: 'record',
+                          icon: <Disc size={14} className={isRecording ? 'text-red-400' : ''} />,
+                          label: isRecording ? `Stop recording (${formatRecordingTime(recordingSeconds)})` : 'Record meeting',
+                          onClick: handleToggleRecording,
+                        },
+                        {
+                          id: 'whiteboard',
+                          icon: <Sparkles size={14} className="text-purple-300" />,
+                          label: 'Open whiteboard',
+                          onClick: () => setShowWhiteboard(true),
+                        },
+                        {
+                          id: 'polls',
+                          icon: <BarChart2 size={14} className="text-amber-300" />,
+                          label: 'Polls',
+                          onClick: () => setActiveSideDrawer(activeSideDrawer === 'polls' ? null : 'polls'),
+                        },
+                        {
+                          id: 'breakout',
+                          icon: <Split size={14} className="text-indigo-300" />,
+                          label: 'Breakout rooms',
+                          onClick: () => setShowBreakoutRooms(true),
+                        },
+                        {
+                          id: 'activities',
+                          icon: <LayoutGrid size={14} className="text-blue-300" />,
+                          label: 'Activities',
+                          onClick: () => setActiveSideDrawer(activeSideDrawer === 'activities' ? null : 'activities'),
+                        },
+                        {
+                          id: 'virtual-cam',
+                          icon: <Sparkles size={14} className="text-indigo-300" />,
+                          label: useVirtualCam ? 'Use physical camera' : 'Use virtual studio cam',
+                          onClick: () => {
+                            setIsVideoOn(true);
+                            setUseVirtualCam(!useVirtualCam);
+                          },
+                          hidden: !isCompact,
+                        },
+                        {
+                          id: 'security',
+                          icon: <ShieldCheck size={14} className="text-emerald-400" />,
+                          label: 'Security & host controls',
+                          onClick: () => setShowSecurityModal(true),
+                        },
+                        {
+                          id: 'info',
+                          icon: <Info size={14} className="text-zinc-300" />,
+                          label: 'Meeting details',
+                          onClick: () => setActiveSideDrawer(activeSideDrawer === 'info' ? null : 'info'),
+                        },
+                      ]
+                        .filter((item) => item.hidden !== true)
+                        .map((item) => (
+                          <button
+                            key={item.id}
+                            onClick={() => {
+                              item.onClick();
+                              setShowMoreMenu(false);
+                            }}
+                            className="px-2.5 py-2 rounded-lg text-left text-xs font-semibold text-zinc-200 hover:bg-zinc-700 cursor-pointer flex items-center gap-2.5 transition-colors"
+                          >
+                            {item.icon}
+                            <span className="truncate">{item.label}</span>
+                          </button>
+                        ))}
+                    </div>
+                  </>
+                )}
+              </div>
+
               <button
                 onClick={handleEndCall}
                 className="px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl sm:rounded-2xl bg-red-600 hover:bg-red-500 text-white font-bold flex items-center gap-1.5 shadow-lg shadow-red-600/30 cursor-pointer transition-colors ml-1"
-                title="Leave Meeting"
+                title="Leave meeting"
               >
                 <PhoneOff size={isVeryCompact ? 16 : 18} />
-                <span className="text-xs hidden md:inline">End</span>
+                <span className="text-xs hidden md:inline">Leave</span>
               </button>
             </div>
 
-            {/* Right Controls: Drawers (Polls, Chat, People, Security) */}
+            {/* Right: panels. Chat and people stay reachable at every size. */}
             <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
-              <button
-                onClick={() => setActiveSideDrawer(activeSideDrawer === 'polls' ? null : 'polls')}
-                className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl cursor-pointer transition-colors ${
-                  activeSideDrawer === 'polls' ? 'bg-amber-500 text-white' : 'bg-zinc-800 hover:bg-zinc-700 text-amber-300'
-                }`}
-                title="Live Polls"
-              >
-                <BarChart2 size={isVeryCompact ? 16 : 18} />
-              </button>
-
               <button
                 onClick={() => setActiveSideDrawer(activeSideDrawer === 'chat' ? null : 'chat')}
                 className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl cursor-pointer transition-colors ${
                   activeSideDrawer === 'chat' ? 'bg-blue-600 text-white' : 'bg-zinc-800 hover:bg-zinc-700 text-white'
                 }`}
-                title="Chat"
+                title="Chat with everyone (Ctrl+Alt+C)"
               >
                 <MessageSquare size={isVeryCompact ? 16 : 18} />
               </button>
 
               <button
                 onClick={() => setActiveSideDrawer(activeSideDrawer === 'people' ? null : 'people')}
-                className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl cursor-pointer transition-colors ${
+                className={`relative p-2 sm:p-2.5 rounded-xl sm:rounded-2xl cursor-pointer transition-colors ${
                   activeSideDrawer === 'people' ? 'bg-blue-600 text-white' : 'bg-zinc-800 hover:bg-zinc-700 text-white'
                 }`}
-                title="Participants"
+                title="Show everyone"
               >
                 <Users size={isVeryCompact ? 16 : 18} />
+                {raisedHandCount > 0 && (
+                  <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-amber-500 text-[9px] font-bold text-white flex items-center justify-center">
+                    {raisedHandCount}
+                  </span>
+                )}
               </button>
 
-              <button
-                onClick={() => setShowSecurityModal(true)}
-                className="p-2 sm:p-2.5 rounded-xl sm:rounded-2xl bg-zinc-800 hover:bg-zinc-700 text-emerald-400 cursor-pointer transition-colors"
-                title="Security & Host Controls"
-              >
-                <ShieldCheck size={isVeryCompact ? 16 : 18} />
-              </button>
+              {!isCompact && (
+                <button
+                  onClick={() => setActiveSideDrawer(activeSideDrawer === 'activities' ? null : 'activities')}
+                  className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl cursor-pointer transition-colors ${
+                    activeSideDrawer === 'activities' ? 'bg-blue-600 text-white' : 'bg-zinc-800 hover:bg-zinc-700 text-white'
+                  }`}
+                  title="Activities"
+                >
+                  <PictureInPicture2 size={isVeryCompact ? 16 : 18} />
+                </button>
+              )}
             </div>
           </div>
         </div>

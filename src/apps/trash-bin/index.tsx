@@ -2,20 +2,40 @@ import React from 'react';
 import { Trash2, RotateCcw, AlertTriangle, ShieldCheck } from 'lucide-react';
 import { FileItem } from '../../platform/types';
 import { useSystemStore } from '../../shell/state/systemStore';
-import WindowStatusBar from '../../shell/window-manager/WindowStatusBar';
+import { useAppTheme } from '../../platform/theme/useAppTheme';
+import WindowStatus from '../../shell/window-manager/WindowStatusContext';
+
+/** Bytes as a human-readable size. */
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const value = bytes / 1024 ** exponent;
+  return `${value.toFixed(exponent === 0 ? 0 : 1)} ${units[exponent]}`;
+}
 
 export default function TrashApp() {
   const deletedFiles = useSystemStore((state) => state.deletedFiles);
   const handleRestoreFile = useSystemStore((state) => state.handleRestoreFile);
   const handleEmptyTrash = useSystemStore((state) => state.handleEmptyTrash);
-  const settings = useSystemStore((state) => state.settings);
+  const syncTrashFromBackend = useSystemStore((state) => state.syncTrashFromBackend);
+  const currentUser = useSystemStore((state) => state.currentUser);
 
-  const activeTheme = settings.theme || 'classic-light';
+  const activeTheme = useAppTheme('trash').chromeTheme;
 
-  // Approximate simulated storage weights of trashed caches
-  const calculateTotalSizeKB = () => {
-    return deletedFiles.length * 4.2; // 4.2KB average mock size
-  };
+  const [isRefreshing, setIsRefreshing] = React.useState(false);
+
+  // The server owns the trash; the local list is only a cache for offline use.
+  // Opening the window is the moment to reconcile the two.
+  React.useEffect(() => {
+    if (!currentUser) return;
+    setIsRefreshing(true);
+    void syncTrashFromBackend().finally(() => setIsRefreshing(false));
+  }, [currentUser, syncTrashFromBackend]);
+
+  // Real byte counts from file metadata, not an invented per-item average.
+  const totalBytes = deletedFiles.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
+  const knownSizes = deletedFiles.filter((file) => Number(file.size) > 0).length;
 
   const themeStyles = {
     'classic-light': {
@@ -100,7 +120,7 @@ export default function TrashApp() {
             {/* Warnings card */}
             <div className={ts.warnCard}>
               <AlertTriangle className="w-4 h-4 shrink-0" />
-              <span>Items emptied from the trash cannot be restored and are deleted permanently from LocalStorage.</span>
+              <span>Emptying the Trash erases these items permanently from your Drive storage. This cannot be undone.</span>
             </div>
 
             {/* List of elements */}
@@ -136,14 +156,24 @@ export default function TrashApp() {
         )}
       </div>
 
-      {/* STATUS BAR */}
-      <WindowStatusBar
-        id="trash-status-bar"
-        appId="trash"
-        leftInfo={<span>{deletedFiles.length} item{deletedFiles.length === 1 ? '' : 's'} in Trash</span>}
-        centerInfo={
+      {/* WINDOW STATUS BAR CONTENT */}
+      <WindowStatus
+        left={
+          <span>
+            {isRefreshing
+              ? 'Refreshing Trash…'
+              : `${deletedFiles.length} item${deletedFiles.length === 1 ? '' : 's'} in Trash`}
+          </span>
+        }
+        center={
           <span className="opacity-75">
-            Total Space Reclaimed: <span className="font-semibold">{calculateTotalSizeKB().toFixed(1)} KB</span>
+            {/* Only claims a figure it can actually account for. When some
+                items carry no size, it says so instead of quietly
+                under-reporting. */}
+            Space to reclaim: <span className="font-semibold">{formatBytes(totalBytes)}</span>
+            {deletedFiles.length > 0 && knownSizes < deletedFiles.length && (
+              <span className="opacity-70"> (from {knownSizes} of {deletedFiles.length} items)</span>
+            )}
           </span>
         }
       />

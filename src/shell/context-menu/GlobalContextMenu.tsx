@@ -1,6 +1,8 @@
 import React, { useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useContextMenuStore } from './contextMenuStore';
+import { themeFamily } from '../../platform/theme/themes';
+import { useShellTheme } from '../../platform/theme/useShellTheme';
 import { useSystemStore } from '../state/systemStore';
 import { ChevronRight } from 'lucide-react';
 
@@ -18,6 +20,10 @@ export default function GlobalContextMenu() {
 
   const theme = useSystemStore((state) => state.settings.theme);
   const activeTheme = theme || 'classic-light';
+  // Must stay above the `if (!isOpen) return null` below: this component only
+  // renders while the menu is open, so a hook after that point runs on some
+  // renders and not others.
+  const shell = useShellTheme();
 
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -69,48 +75,23 @@ export default function GlobalContextMenu() {
   const posY = Math.min(y, window.innerHeight - menuHeight - 10);
 
   // Theme-dependent style variants
-  const isLight = activeTheme === 'classic-light';
-  const isTerminal = activeTheme === 'retro-terminal';
+  const family = themeFamily(activeTheme);
+  const isLight = family === 'light';
+  const isTerminal = family === 'terminal';
 
-  const containerBgClass = isLight
-    ? 'bg-white/95 text-slate-800 border border-slate-200/90 shadow-[0_12px_40px_rgba(0,0,0,0.12)] ring-1 ring-black/5'
-    : isTerminal
-    ? 'bg-[#0c100c]/95 text-emerald-400 border border-emerald-500/30 shadow-[0_12px_40px_rgba(0,255,0,0.1)] ring-1 ring-emerald-500/20 font-mono'
-    : 'bg-slate-900/95 text-slate-100 border border-white/15 shadow-2xl ring-1 ring-black/40';
+  // The same material as the dock and its panels — a right-click menu is a
+  // floating shell surface like any other, and used to be its own opaque slab.
+  const containerBgClass = `${shell.panel} ${shell.text}`;
 
-  const titleClass = isLight
-    ? 'text-slate-500 border-b border-slate-200/80'
-    : isTerminal
-    ? 'text-emerald-500/70 border-b border-emerald-500/20'
-    : 'text-slate-400 border-b border-white/10';
+  const titleClass = `${shell.textSubtle} border-b ${shell.divider}`;
 
-  const dividerClass = isLight
-    ? 'bg-slate-200/80'
-    : isTerminal
-    ? 'bg-emerald-500/20'
-    : 'bg-white/10';
-
-  const itemHoverClass = isLight
-    ? 'hover:bg-slate-100/90 active:bg-slate-200/80 text-slate-700 hover:text-slate-900'
-    : isTerminal
-    ? 'hover:bg-emerald-500/20 active:bg-emerald-500/30 text-emerald-400 hover:text-emerald-200'
-    : 'hover:bg-white/10 active:bg-white/15 text-slate-200 hover:text-white';
-
+  const dividerClass = `border-t ${shell.divider}`;
+  const itemHoverClass = `${shell.hover} ${shell.pressed} ${shell.text}`;
   const dangerHoverClass = isLight
     ? 'hover:bg-red-50 text-red-600 hover:text-red-700'
     : 'hover:bg-red-500/20 text-red-400 hover:text-red-300';
-
-  const shortcutClass = isLight
-    ? 'text-slate-400'
-    : isTerminal
-    ? 'text-emerald-500/60'
-    : 'text-slate-400';
-
-  const chevronClass = isLight
-    ? 'text-slate-400'
-    : isTerminal
-    ? 'text-emerald-500/70'
-    : 'text-slate-400';
+  const shortcutClass = shell.textSubtle;
+  const chevronClass = shell.textSubtle;
 
   return (
     <AnimatePresence>
@@ -142,7 +123,7 @@ export default function GlobalContextMenu() {
               return (
                 <div
                   key={`divider-${index}`}
-                  className={`h-px my-1 mx-1 ${dividerClass}`}
+                  className={`my-1 mx-1 ${dividerClass}`}
                 />
               );
             }

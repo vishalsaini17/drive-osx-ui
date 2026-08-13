@@ -4,7 +4,9 @@ import { useSystemStore } from '../../shell/state/systemStore';
 import { useContextMenuStore, ContextMenuItem } from '../../shell/context-menu/contextMenuStore';
 import { FileService } from '../../platform/files/FileService';
 import { StorageService } from '../../platform/storage/StorageService';
-import WindowStatusBar from '../../shell/window-manager/WindowStatusBar';
+import WindowStatus from '../../shell/window-manager/WindowStatusContext';
+import { useAppMenu } from '../../platform/menus/AppMenuContext';
+import { separator } from '../../platform/menus/types';
 
 import Toolbar from './components/Toolbar';
 import RichEditor from './components/RichEditor';
@@ -384,6 +386,108 @@ export default function TextEditor() {
     updateContentWithHistory(docContent.replace(regex, replaceText));
   };
 
+  // Application menus. Actions live here as well as in the toolbar, so the
+  // menu bar is a complete route to every command.
+  useAppMenu('editor', [
+    {
+      id: 'file',
+      label: 'File',
+      items: [
+        { id: 'new', label: 'New Document', shortcut: 'Ctrl+N', onSelect: handleNew },
+        { id: 'open', label: 'Open…', shortcut: 'Ctrl+O', onSelect: () => setIsOpenDocModalOpen(true) },
+        separator(),
+        { id: 'save', label: 'Save', shortcut: 'Ctrl+S', onSelect: () => handleSave(false) },
+        { id: 'save-as', label: 'Save As…', shortcut: 'Ctrl+Shift+S', onSelect: handleSaveAs },
+        separator(),
+        {
+          kind: 'submenu',
+          id: 'export',
+          label: 'Export',
+          items: [
+            { id: 'export-pdf', label: 'PDF Document', onSelect: () => handleExport('pdf') },
+            { id: 'export-docx', label: 'Word Document (.docx)', onSelect: () => handleExport('docx') },
+            { id: 'export-html', label: 'Web Page (.html)', onSelect: () => handleExport('html') },
+            { id: 'export-txt', label: 'Plain Text (.txt)', onSelect: () => handleExport('txt') },
+          ],
+        },
+        separator(),
+        { id: 'autosave', label: 'Autosave', checked: autoSave, onSelect: () => setAutoSave(!autoSave) },
+      ],
+    },
+    {
+      id: 'edit',
+      label: 'Edit',
+      items: [
+        { id: 'undo', label: 'Undo', shortcut: 'Ctrl+Z', disabled: readOnly, onSelect: handleUndo },
+        { id: 'redo', label: 'Redo', shortcut: 'Ctrl+Y', disabled: readOnly, onSelect: handleRedo },
+        separator(),
+        { id: 'cut', label: 'Cut', shortcut: 'Ctrl+X', disabled: readOnly, onSelect: () => handleFormatCommand('cut') },
+        { id: 'copy', label: 'Copy', shortcut: 'Ctrl+C', onSelect: () => handleFormatCommand('copy') },
+        { id: 'paste', label: 'Paste', shortcut: 'Ctrl+V', disabled: readOnly, onSelect: () => handleFormatCommand('paste') },
+        { id: 'select-all', label: 'Select All', shortcut: 'Ctrl+A', onSelect: () => handleFormatCommand('selectAll') },
+        separator(),
+        { id: 'find', label: 'Find and Replace…', shortcut: 'Ctrl+F', onSelect: () => setIsFindReplaceOpen(true) },
+        separator(),
+        { id: 'read-only', label: 'Read Only', checked: readOnly, onSelect: () => setReadOnly(!readOnly) },
+      ],
+    },
+    {
+      id: 'view',
+      label: 'View',
+      items: [
+        { id: 'mode-rich', label: 'Rich Text', selected: editorMode === 'rich', onSelect: () => setEditorMode('rich') },
+        { id: 'mode-plain', label: 'Plain Text', selected: editorMode === 'plain', onSelect: () => setEditorMode('plain') },
+        separator(),
+        { id: 'word-wrap', label: 'Word Wrap', checked: wordWrap, onSelect: () => setWordWrap(!wordWrap) },
+      ],
+    },
+    {
+      id: 'format',
+      label: 'Format',
+      items: [
+        { id: 'bold', label: 'Bold', shortcut: 'Ctrl+B', disabled: readOnly, onSelect: () => handleFormatCommand('bold') },
+        { id: 'italic', label: 'Italic', shortcut: 'Ctrl+I', disabled: readOnly, onSelect: () => handleFormatCommand('italic') },
+        { id: 'underline', label: 'Underline', shortcut: 'Ctrl+U', disabled: readOnly, onSelect: () => handleFormatCommand('underline') },
+        { id: 'strike', label: 'Strikethrough', disabled: readOnly, onSelect: () => handleFormatCommand('strikeThrough') },
+        separator(),
+        {
+          kind: 'submenu',
+          id: 'align',
+          label: 'Align',
+          disabled: readOnly,
+          items: [
+            { id: 'align-left', label: 'Left', onSelect: () => handleFormatCommand('justifyLeft') },
+            { id: 'align-center', label: 'Centre', onSelect: () => handleFormatCommand('justifyCenter') },
+            { id: 'align-right', label: 'Right', onSelect: () => handleFormatCommand('justifyRight') },
+            { id: 'align-justify', label: 'Justify', onSelect: () => handleFormatCommand('justifyFull') },
+          ],
+        },
+        {
+          kind: 'submenu',
+          id: 'lists',
+          label: 'Lists',
+          disabled: readOnly,
+          items: [
+            { id: 'list-ul', label: 'Bulleted List', onSelect: () => handleFormatCommand('insertUnorderedList') },
+            { id: 'list-ol', label: 'Numbered List', onSelect: () => handleFormatCommand('insertOrderedList') },
+          ],
+        },
+        separator(),
+        { id: 'clear-format', label: 'Clear Formatting', disabled: readOnly, onSelect: () => handleFormatCommand('removeFormat') },
+      ],
+    },
+    {
+      id: 'insert',
+      label: 'Insert',
+      items: [
+        { id: 'ins-image', label: 'Image…', disabled: readOnly, onSelect: handleInsertImage },
+        { id: 'ins-table', label: 'Table', disabled: readOnly, onSelect: handleInsertTable },
+        { id: 'ins-link', label: 'Link…', disabled: readOnly, onSelect: handleInsertLink },
+        { id: 'ins-datetime', label: 'Date and Time', disabled: readOnly, onSelect: handleInsertDateTime },
+      ],
+    },
+  ]);
+
   return (
     <div className="h-full flex flex-col bg-white dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 font-sans text-sm overflow-hidden select-none">
       {/* 1. TOP TOOLBAR */}
@@ -501,11 +605,9 @@ export default function TextEditor() {
         />
       </div>
 
-      {/* 4. STATUS BAR FOOTER */}
-      <WindowStatusBar
-        id="text-editor-status-bar"
-        appId="editor"
-        leftInfo={
+      {/* 4. WINDOW STATUS BAR CONTENT */}
+      <WindowStatus
+        left={
           <div className="flex items-center gap-3">
             <span>{autoSaveStatus}</span>
             {readOnly && (
@@ -515,7 +617,7 @@ export default function TextEditor() {
             )}
           </div>
         }
-        rightInfo={
+        right={
           <div className="flex items-center gap-3 font-mono">
             <span>{wordCount} words</span>
             <span>{charCount} chars</span>

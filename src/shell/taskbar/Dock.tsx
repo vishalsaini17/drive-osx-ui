@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Calendar,
@@ -22,6 +22,13 @@ import CalendarClockPopup from '../system-tray/CalendarClockPopup';
 import SystemNotificationPopup from '../notifications/SystemNotificationPopup';
 import ApplicationMenuPopup from '../launcher/ApplicationMenuPopup';
 import MoreAppsPopup from '../launcher/MoreAppsPopup';
+import { useShellTheme } from '../../platform/theme/useShellTheme';
+import { coversDockZone, dockZoneHeight, useDockZoneStore } from './dockZone';
+
+/** Whether two id lists hold the same ids in the same order. */
+function sameOrder(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((id, i) => id === b[i]);
+}
 
 export default function Dock() {
   const [time, setTime] = useState<Date>(new Date());
@@ -35,6 +42,9 @@ export default function Dock() {
   const [windowWidth, setWindowWidth] = useState<number>(typeof window !== 'undefined' ? window.innerWidth : 1200);
   const [windowHeight, setWindowHeight] = useState<number>(typeof window !== 'undefined' ? window.innerHeight : 800);
   const [isCursorAtBottom, setIsCursorAtBottom] = useState<boolean>(false);
+  /** Mirrors `isCursorAtBottom` so the pointer listener can read it without
+   *  being re-created, and without dispatching an update per mouse move. */
+  const cursorAtBottom = useRef(false);
   
   const [dockAppOrder, setDockAppOrder] = useState<string[]>([]);
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -50,12 +60,15 @@ export default function Dock() {
   const handleCloseWindow = useSystemStore((state) => state.handleCloseWindow);
   const handleMinimizeWindow = useSystemStore((state) => state.handleMinimizeWindow);
   const activeWindowId = useSystemStore((state) => state.activeWindowId);
+  const shell = useShellTheme();
   const settings = useSystemStore((state) => state.settings);
   const setSettings = useSystemStore((state) => state.setSettings);
   const currentDesktop = useSystemStore((state) => state.currentDesktop);
   const currentUser = useSystemStore((state) => state.currentUser);
   const logout = useSystemStore((state) => state.logout);
   const openContextMenu = useContextMenuStore((state) => state.openContextMenu);
+  const gestureWindowId = useDockZoneStore((state) => state.gestureWindowId);
+  const gestureCoversDock = useDockZoneStore((state) => state.gestureCoversDock);
 
   const handleDockIconContextMenu = (e: React.MouseEvent, app: any) => {
     e.preventDefault();
@@ -143,32 +156,46 @@ export default function Dock() {
 
   const dockSize = settings.dockSize || 'md';
 
+  /**
+   * The dock's stored lists depend on *which* applications exist, never on
+   * their geometry. The store replaces the whole `windows` array whenever any
+   * window changes, so keying these effects on the array itself re-ran them —
+   * `localStorage` reads included — for changes they do not care about.
+   */
+  const appIdSignature = windows.map((w) => w.id).join('|');
+
   useEffect(() => {
-    const otherAppIds = windows.filter(w => w.id !== 'launcher').map(w => w.id);
+    const otherAppIds = windows
+      .filter((w) => w.id !== 'launcher')
+      .map((w) => w.id);
     const savedPinned = StorageService.get<string[] | null>('dock-pinned-apps', null);
     if (savedPinned) {
       let mergedPinned = savedPinned;
       if (!mergedPinned.includes('calendar')) mergedPinned = [...mergedPinned, 'calendar'];
       if (!mergedPinned.includes('meeting')) mergedPinned = [...mergedPinned, 'meeting'];
       if (!mergedPinned.includes('mail')) mergedPinned = [...mergedPinned, 'mail'];
-      setPinnedAppIds(mergedPinned);
+      setPinnedAppIds((prev) => (sameOrder(prev, mergedPinned) ? prev : mergedPinned));
       if (mergedPinned.length !== savedPinned.length) {
         StorageService.set('dock-pinned-apps', mergedPinned);
       }
     } else if (otherAppIds.length > 0) {
-      setPinnedAppIds(otherAppIds);
+      setPinnedAppIds((prev) => (sameOrder(prev, otherAppIds) ? prev : otherAppIds));
       StorageService.set('dock-pinned-apps', otherAppIds);
     }
+    // `windows` is read for its ids only, which `appIdSignature` stands in for.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appIdSignature]);
 
+  useEffect(() => {
     const handlePinsUpdated = () => {
       const updatedPinned = StorageService.get<string[] | null>('dock-pinned-apps', null);
       if (updatedPinned) {
-        setPinnedAppIds(updatedPinned);
+        setPinnedAppIds((prev) => (sameOrder(prev, updatedPinned) ? prev : updatedPinned));
       }
     };
     window.addEventListener('dock-pins-updated', handlePinsUpdated);
     return () => window.removeEventListener('dock-pins-updated', handlePinsUpdated);
-  }, [windows]);
+  }, []);
 
   const togglePin = (id: string) => {
     setPinnedAppIds(prev => {
@@ -186,7 +213,7 @@ export default function Dock() {
   useEffect(() => {
     const savedSequence = StorageService.get<string[]>('dock-app-sequence', []);
     const otherAppIds = windows.filter(w => w.id !== 'launcher').map(w => w.id);
-    
+
     const merged = [...savedSequence];
     otherAppIds.forEach(id => {
       if (!merged.includes(id)) {
@@ -194,9 +221,13 @@ export default function Dock() {
       }
     });
     const finalSequence = merged.filter(id => otherAppIds.includes(id));
-    
-    setDockAppOrder(finalSequence);
-  }, [windows]);
+
+    // A freshly built array is a new value to React even when it holds the
+    // same ids, so setting it unconditionally scheduled a render every time
+    // this effect ran.
+    setDockAppOrder((prev) => (sameOrder(prev, finalSequence) ? prev : finalSequence));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appIdSignature]);
 
   const handleDragStart = (e: React.DragEvent, id: string) => {
     if (id === 'launcher') return;
@@ -234,14 +265,21 @@ export default function Dock() {
     };
 
     const handleMouseMove = (e: MouseEvent) => {
-      const dockHeightFromBottom = dockSize === 'sm' ? 60 : (dockSize === 'lg' ? 95 : 82);
-      
-      // Reveal dock when cursor is within 10px from bottom edge
-      if (e.clientY >= window.innerHeight - 10) {
-        setIsCursorAtBottom(true);
-      } else if (e.clientY < window.innerHeight - (dockHeightFromBottom + 15)) {
-        setIsCursorAtBottom(false);
-      }
+      const dockHeightFromBottom = dockZoneHeight(dockSize);
+
+      // Reveal dock when cursor is within 10px from bottom edge.
+      let next = cursorAtBottom.current;
+      if (e.clientY >= window.innerHeight - 10) next = true;
+      else if (e.clientY < window.innerHeight - (dockHeightFromBottom + 15)) next = false;
+
+      // The pointer moves far more often than it crosses either threshold.
+      // Dispatching on every move relied on React discarding the unchanged
+      // value, which it cannot do while other updates are already queued
+      // against this component — so a busy frame turned each mouse move into
+      // a render.
+      if (next === cursorAtBottom.current) return;
+      cursorAtBottom.current = next;
+      setIsCursorAtBottom(next);
     };
 
     window.addEventListener('resize', handleResize);
@@ -378,14 +416,19 @@ export default function Dock() {
 
   const draggableApps = visibleApps.filter(app => app.id !== 'launcher');
 
-  const dockHeightFromBottom = dockSize === 'sm' ? 60 : (dockSize === 'lg' ? 95 : 82);
-
+  // A window in the dock's strip of the screen hides the dock — a maximized
+  // application is just the case where that is always true. `gestureCoversDock`
+  // covers the window currently being dragged or resized, whose position has
+  // not reached the store yet.
   const isDockOverlapped = windows.some((w) => {
     if (w.id === 'launcher' || !w.isOpen || w.isMinimized) return false;
     if (w.isMaximized) return true;
-    const windowBottom = w.y + w.h;
-    const dockZoneTop = windowHeight - dockHeightFromBottom;
-    return windowBottom > dockZoneTop;
+    // A window being dragged has not written its position to the store yet, so
+    // for that one window the live gesture is the only truthful source — used
+    // instead of the stored position, not in addition to it, so dragging a
+    // window back up out of the dock's strip reveals the dock immediately.
+    if (w.id === gestureWindowId) return gestureCoversDock;
+    return coversDockZone(w.y + w.h, dockSize, windowHeight);
   });
 
   const shouldHideDock =
@@ -446,7 +489,7 @@ export default function Dock() {
         {/* Dynamic Apps Pill with equal, responsive spacing */}
         <div 
           id="dock-apps-pill"
-          className={`pointer-events-auto flex items-center justify-center bg-[#7b6db5] border border-white/20 rounded-2xl shadow-xl shadow-purple-950/10 transition-all duration-300 ${activeSizes.dock}`}
+          className={`pointer-events-auto flex items-center justify-center rounded-[20px] transition-all duration-300 ${shell.panel} ${activeSizes.dock}`}
           onContextMenu={handleDockBarContextMenu}
         >
           {/* Launcher / App Directory (Fixed & Separated on the left side) */}
@@ -475,7 +518,7 @@ export default function Dock() {
 
           {/* Separator between Fixed System Launcher and Draggable User Apps */}
           {launcherApp && draggableApps.length > 0 && (
-            <div className={`w-[1px] bg-white/20 mx-1.5 self-center transition-all duration-300 ${activeSizes.sepHeight}`} />
+            <div className={`w-px mx-1.5 self-center border-l transition-all duration-300 ${shell.divider} ${activeSizes.sepHeight}`} />
           )}
 
           {/* Draggable user apps */}
@@ -515,8 +558,16 @@ export default function Dock() {
 
                 {/* Running/Focus Status Indicator Dot */}
                 {isActive && (
-                  <span 
-                    className={`absolute rounded-full transition-all duration-300 ${activeSizes.dot} ${activeSizes.dotBottom} bg-white shadow-[0_0_5px_rgba(255,255,255,0.95)]`} 
+                  <span
+                    /* Accent, and wider when focused: which window is running
+                       and which one has focus become two different readings. */
+                    className={`absolute rounded-full transition-all duration-300 ${activeSizes.dotBottom} ${
+                      activeWindowId === app.id ? 'w-4 h-1' : `${activeSizes.dot}`
+                    }`}
+                    style={{
+                      backgroundColor: shell.accentColor,
+                      boxShadow: `0 0 6px ${shell.accentColor}b3`,
+                    }}
                   />
                 )}
               </motion.div>
@@ -541,7 +592,7 @@ export default function Dock() {
                 }`}
                 title="More Apps"
               >
-                <MoreHorizontal size={activeSizes.iconSize + 2} className="text-white" strokeWidth={2.4} />
+                <MoreHorizontal size={activeSizes.iconSize + 2} className={shell.text} strokeWidth={2.4} />
               </motion.button>
             </div>
           )}
@@ -572,7 +623,7 @@ export default function Dock() {
         {/* 2. System and Status Pill - SYNCED DYNAMICALLY TO THE CHOSEN PRESET SIZE */}
         <div 
           id="dock-system-pill"
-          className={`pointer-events-auto flex items-center justify-center bg-[#7b6db5] border border-white/20 rounded-2xl shadow-xl shadow-purple-950/10 font-sans transition-all duration-300 ${activeSizes.dock}`}
+          className={`pointer-events-auto flex items-center justify-center rounded-[20px] font-sans transition-all duration-300 ${shell.panel} ${activeSizes.dock}`}
         >
           {/* Time & Date Group (Clickable to toggle Left Popup) */}
           <button 
@@ -581,17 +632,17 @@ export default function Dock() {
               setShowRightPopup(false);
               setShowAppDirectoryPopup(false);
             }}
-            className={`cursor-pointer hover:bg-white/10 active:bg-white/20 rounded-xl transition-all focus:outline-none ${
-              showPopup ? 'bg-white/10' : ''
+            className={`cursor-pointer rounded-xl transition-all focus:outline-none ${shell.hover} ${shell.pressed} ${
+              showPopup ? shell.card : ''
             } ${activeSizes.timeDateBtn}`}
             title="Calendar & Settings"
           >
-            <span className={`font-bold tracking-tight text-[#18181b] tabular-nums leading-none ${activeSizes.timeText}`}>{formatTime(time)}</span>
-            <span className={`font-semibold text-[#18181b]/70 tracking-tight leading-none ${activeSizes.dateText}`}>{formatDate(time)}</span>
+            <span className={`font-bold tracking-tight tabular-nums leading-none ${shell.text} ${activeSizes.timeText}`}>{formatTime(time)}</span>
+            <span className={`font-medium tracking-tight leading-none ${shell.textMuted} ${activeSizes.dateText}`}>{formatDate(time)}</span>
           </button>
 
           {/* Separator */}
-          <div className={`w-[1px] bg-[#18181b]/15 self-center transition-all duration-300 ${activeSizes.sepHeight}`} />
+          <div className={`w-px self-center border-l transition-all duration-300 ${shell.divider} ${activeSizes.sepHeight}`} />
 
           {/* System Icons Group */}
           <button 
@@ -600,17 +651,17 @@ export default function Dock() {
               setShowPopup(false);
               setShowAppDirectoryPopup(false);
             }}
-            className={`cursor-pointer hover:bg-white/10 active:bg-white/20 rounded-xl transition-all focus:outline-none ${
-              showRightPopup ? 'bg-white/10' : ''
+            className={`cursor-pointer rounded-xl transition-all focus:outline-none ${shell.hover} ${shell.pressed} ${
+              showRightPopup ? shell.card : ''
             } ${activeSizes.systemBtn} ${activeSizes.systemIconGap}`}
             title="System & Notifications Panel"
           >
             {/* Notification Icon */}
             {notificationsMuted ? (
-              <BellOff size={activeSizes.iconSize} strokeWidth={2.4} className="text-[#18181b]/50 transition-all shrink-0" />
+              <BellOff size={activeSizes.iconSize} strokeWidth={2.4} className={`transition-all shrink-0 ${shell.textSubtle}`} />
             ) : (
               <div className="relative shrink-0 flex items-center justify-center">
-                <Bell size={activeSizes.iconSize} strokeWidth={2.4} className="text-[#18181b] transition-all" />
+                <Bell size={activeSizes.iconSize} strokeWidth={2.4} className={`transition-all ${shell.text}`} />
                 {notifications.length > 0 && (
                   <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse" />
                 )}
@@ -618,7 +669,7 @@ export default function Dock() {
             )}
 
             {/* Workspace status */}
-            <div className="flex items-center gap-1.5 text-[#18181b] shrink-0">
+            <div className={`flex items-center gap-1.5 shrink-0 ${shell.text}`}>
               <Monitor size={activeSizes.monitorSize} strokeWidth={2.4} className="transition-all" />
               <span className={`font-extrabold tracking-tight transition-all ${activeSizes.statusText}`}>{currentDesktop}</span>
             </div>

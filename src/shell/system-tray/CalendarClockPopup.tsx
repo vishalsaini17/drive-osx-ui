@@ -14,7 +14,8 @@ import {
   X,
 } from 'lucide-react';
 import { useSystemStore } from '../state/systemStore';
-import { DockPopupPanel, DockPopupCard } from '../taskbar/DockPopupPanel';
+import { DockPopupPanel, DockPopupCard, DockPopupSectionLabel } from '../taskbar/DockPopupPanel';
+import { themeFamily } from '../../platform/theme/themes';
 
 interface CalendarClockPopupProps {
   onClose: () => void;
@@ -98,7 +99,7 @@ const ALL_WORLD_CLOCKS: WorldClockItem[] = [
 
 export default function CalendarClockPopup({ onClose, time }: CalendarClockPopupProps) {
   const theme = useSystemStore((state) => state.settings.theme);
-  const isLight = theme === 'classic-light';
+  const isLight = themeFamily(theme) === 'light';
 
   // World Clocks & Calendar Events from System Store
   const worldCities = useSystemStore((state) => state.worldCities);
@@ -211,6 +212,17 @@ export default function CalendarClockPopup({ onClose, time }: CalendarClockPopup
   // Today's events filtered from systemStore
   const todayEvents = calendarEvents.filter((e) => e.date === todayISO);
 
+  // Same rule as the notification list: grow with the content, cap only so the
+  // calendar grid below stays reachable. A fixed window made three events look
+  // like a scrollable overflow.
+  const eventListMaxHeight = React.useMemo(() => {
+    if (todayEvents.length === 0) return undefined;
+    const ROW_HEIGHT = 28;
+    const ROW_GAP = 4;
+    const estimate = todayEvents.length * ROW_HEIGHT + (todayEvents.length - 1) * ROW_GAP;
+    return `min(${estimate}px, 22vh)`;
+  }, [todayEvents.length]);
+
   const handleAddEvent = () => {
     if (!newEventText.trim()) return;
     addCalendarEvent({
@@ -252,7 +264,7 @@ export default function CalendarClockPopup({ onClose, time }: CalendarClockPopup
       <DockPopupCard>
         {/* Header row: Weather title + Location Selector toggle + Close button */}
         <div className="flex items-center justify-between text-xs sm:text-sm">
-          <span className={`font-bold ${isLight ? 'text-slate-900' : 'text-white/90'}`}>Weather</span>
+          <DockPopupSectionLabel>Weather</DockPopupSectionLabel>
           <div className="flex items-center gap-2">
             <button
               onClick={() => setShowLocationPicker(!showLocationPicker)}
@@ -282,7 +294,7 @@ export default function CalendarClockPopup({ onClose, time }: CalendarClockPopup
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: 'auto' }}
                 exit={{ opacity: 0, height: 0 }}
-                className={`rounded-[14px] p-2 flex flex-col gap-1 border overflow-hidden ${
+                className={`rounded-xl p-2 flex flex-col gap-1 border overflow-hidden ${
                   isLight ? 'bg-slate-100 border-slate-200' : 'bg-[#242327] border-white/10'
                 }`}
               >
@@ -339,7 +351,7 @@ export default function CalendarClockPopup({ onClose, time }: CalendarClockPopup
            ========================================================= */}
         <DockPopupCard>
           <div className="flex items-center justify-between text-sm">
-            <span className={`font-bold ${isLight ? 'text-slate-900' : 'text-white/90'}`}>World Clocks</span>
+            <DockPopupSectionLabel>World Clocks</DockPopupSectionLabel>
             <button
               onClick={() => {
                 openClockAppToAddCity();
@@ -399,9 +411,7 @@ export default function CalendarClockPopup({ onClose, time }: CalendarClockPopup
         <DockPopupCard className="gap-1">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-1.5">
-              <span className={`text-xs font-bold ${isLight ? 'text-slate-900' : 'text-white/90'}`}>
-                Today's Events
-              </span>
+              <DockPopupSectionLabel>Today's Events</DockPopupSectionLabel>
               <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
                 todayEvents.length > 0 
                   ? 'bg-blue-500/10 text-blue-500' 
@@ -444,7 +454,7 @@ export default function CalendarClockPopup({ onClose, time }: CalendarClockPopup
           )}
 
           {todayEvents.length > 0 ? (
-            <div className="flex flex-col gap-1 mt-1 max-h-[100px] overflow-y-auto pr-1">
+            <div className="flex flex-col gap-1 mt-1 overflow-y-auto pr-1" style={{ maxHeight: eventListMaxHeight }}>
               {todayEvents.map((evt) => (
                 <div
                   key={evt.id}

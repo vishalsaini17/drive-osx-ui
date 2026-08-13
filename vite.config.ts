@@ -23,6 +23,16 @@ export default defineConfig(() => {
           target: 'http://drive-osx-api:7000',
           changeOrigin: true,
         },
+        // Realtime gateway: meeting signalling and notification delivery.
+        // `ws: true` is what makes the dev server perform the HTTP upgrade —
+        // without it this path 404s and every socket fails to connect, which
+        // is why realtime worked behind the production nginx (which does proxy
+        // /ws) but never in development.
+        '/ws': {
+          target: 'ws://drive-osx-api:7000',
+          ws: true,
+          changeOrigin: true,
+        },
       },
     },
   };

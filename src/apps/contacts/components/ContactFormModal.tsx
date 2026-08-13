@@ -29,13 +29,11 @@ interface ContactFormModalProps {
   availableLabels?: string[];
 }
 
-const PRESET_AVATARS = [
-  'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=300&auto=format&fit=crop&q=80',
-  'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=300&auto=format&fit=crop&q=80',
-  'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=300&auto=format&fit=crop&q=80',
-  'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=300&auto=format&fit=crop&q=80',
-  'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=300&auto=format&fit=crop&q=80',
-];
+// There is deliberately no set of "preset avatars". This picker used to offer
+// stock photographs of real strangers, so a contact could end up illustrated
+// by a photograph of someone who is not them — the same fabricated-data
+// problem as the mock contact list that was removed. A contact's picture is
+// either a real URL the user provides, or a coloured monogram.
 
 const PRESET_GRADIENTS = [
   'bg-gradient-to-br from-indigo-500 to-purple-600',
@@ -168,18 +166,8 @@ export default function ContactFormModal({
                 </div>
               )}
 
-              {/* Preset Avatars Selector */}
+              {/* Monogram colour, used whenever there is no photo. */}
               <div className="flex gap-1 mt-1">
-                {PRESET_AVATARS.map((pUrl, idx) => (
-                  <button
-                    type="button"
-                    key={idx}
-                    onClick={() => setPhoto(pUrl)}
-                    className="w-5 h-5 rounded-full overflow-hidden border hover:scale-110 transition-transform cursor-pointer"
-                  >
-                    <img src={pUrl} alt="preset" className="w-full h-full object-cover" />
-                  </button>
-                ))}
                 <button
                   type="button"
                   onClick={() => setPhoto('')}
