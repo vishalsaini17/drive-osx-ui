@@ -1,2 +1,0 @@
-// dock core module
-export {};

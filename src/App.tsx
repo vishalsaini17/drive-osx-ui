@@ -1,25 +1,27 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
-import Wallpaper from './components/Wallpaper';
-import Dock from './components/Dock';
-import AppWindow from './components/AppWindow';
-import GlobalContextMenu from './components/GlobalContextMenu';
-import { useContextMenuStore, ContextMenuItem } from './services/contextMenuStore';
-import { StorageService } from './services/StorageService';
+import Wallpaper from './shell/desktop/Wallpaper';
+import Dock from './shell/taskbar/Dock';
+import AppWindow from './shell/window-manager/AppWindow';
+import GlobalContextMenu from './shell/context-menu/GlobalContextMenu';
+import { useContextMenuStore, ContextMenuItem } from './shell/context-menu/contextMenuStore';
+import { StorageService } from './platform/storage/StorageService';
 import { FolderPlus, FileText, Terminal as TerminalIcon, Image, RefreshCw, Settings as SettingsIcon, LogOut, ExternalLink, Info, Pin, Monitor } from 'lucide-react';
 
 // Import ApplicationRenderer
-import ApplicationRenderer from './applications';
+import ApplicationRenderer from './apps';
 
-import LoginScreen from './components/LoginScreen';
-import ForgotPasswordScreen from './components/ForgotPasswordScreen';
-import ResetPasswordScreen from './components/ResetPasswordScreen';
+import LoginScreen from './shell/auth/LoginScreen';
+import ForgotPasswordScreen from './shell/auth/ForgotPasswordScreen';
+import ResetPasswordScreen from './shell/auth/ResetPasswordScreen';
 
-import SystemToastNotifier from './components/SystemToastNotifier';
+import SystemToastNotifier from './shell/notifications/SystemToastNotifier';
+import SyncStatusIndicator from './shell/notifications/SyncStatusIndicator';
+import { onSessionEvent } from './platform/api/http';
 
 // Import Zustand Store
-import { useSystemStore, getAppIcon } from './systemStore';
-import { AppRegistry } from './core/AppRegistry';
+import { useSystemStore, getAppIcon } from './shell/state/systemStore';
+import { AppRegistry } from './platform/registry/AppRegistry';
 
 export default function App() {
   const initializeStore = useSystemStore((state) => state.initializeStore);
@@ -57,11 +59,22 @@ export default function App() {
     window.addEventListener('offline', handleOffline);
     window.addEventListener('online', handleOnline);
 
+    const unsubscribeSession = onSessionEvent((event) => {
+      if (event !== 'expired') return;
+      addNotification({
+        sender: 'Session',
+        text: 'Your session has expired. Please sign in again.',
+        type: 'warning',
+      });
+      navigate('/login');
+    });
+
     return () => {
       window.removeEventListener('offline', handleOffline);
       window.removeEventListener('online', handleOnline);
+      unsubscribeSession();
     };
-  }, [initializeStore, addNotification, setOfflineMode]);
+  }, [initializeStore, addNotification, setOfflineMode, navigate]);
 
   // Handle global auth-based redirects
   useEffect(() => {
@@ -102,6 +115,7 @@ export default function App() {
       </Routes>
       <GlobalContextMenu />
       <SystemToastNotifier />
+      <SyncStatusIndicator />
     </main>
   );
 }
