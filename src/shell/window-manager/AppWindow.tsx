@@ -13,7 +13,7 @@ import Modal from '../../design-system/components/Modal';
 import { coversDockZone, useDockZoneStore } from '../taskbar/dockZone';
 import { useAppTheme } from '../../platform/theme/useAppTheme';
 import { themeChrome } from '../../platform/theme/themes';
-import { Palette, Settings, X } from 'lucide-react';
+import { Settings, X } from 'lucide-react';
 
 /** Screen space the dock occupies, which a window may not be dropped behind. */
 function dockDeduction(dockSize: string | undefined): number {
@@ -66,8 +66,8 @@ export default function AppWindow({
   // Menus contributed by the application running in this window.
   const appMenus = useWindowMenus(app.id);
 
-  // This window's own theme preference. Every window has one, so the entry
-  // sits beside Preferences rather than being re-implemented per application.
+  // This window's own theme preference, also read by Preferences → Appearance
+  // (opened below) and used to pick this window's chrome further down.
   const appTheme = useAppTheme(app.id);
 
   const effectiveMinW = minW ?? app.minW ?? 300;
@@ -127,18 +127,6 @@ export default function AppWindow({
       ...(appEntries.length > 0 ? [separator('after-app')] : []),
       { kind: 'submenu' as const, id: windowMenu.id, label: windowMenu.label, items: windowMenu.items },
       {
-        kind: 'submenu' as const,
-        id: 'app-theme',
-        label: 'Theme',
-        icon: Palette,
-        items: appTheme.options.map((option) => ({
-          id: `app-theme-${option.value}`,
-          label: option.label,
-          selected: appTheme.choice === option.value,
-          onSelect: () => appTheme.setChoice(option.value),
-        })),
-      },
-      {
         id: 'preferences',
         label: 'Preferences…',
         shortcut: 'Ctrl+,',
@@ -148,7 +136,7 @@ export default function AppWindow({
       separator('before-help'),
       { kind: 'submenu' as const, id: helpMenu.id, label: helpMenu.label, items: helpMenu.items },
     ];
-  }, [appMenus, app, windows, openAppWindow, onMinimize, onMaximize, onClose, onFocus, appTheme]);
+  }, [appMenus, app, windows, openAppWindow, onMinimize, onMaximize, onClose, onFocus]);
 
   const handleTitleBarContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -321,10 +309,17 @@ export default function AppWindow({
   }, [app.id, endDockGesture]);
 
   const handleTitlePointerDown = (e: React.PointerEvent) => {
-    onFocus(app.id);
-
+    // A control button (minimize/maximize/close) handles itself on `click`
+    // and never needs the window focused first. Focusing here anyway used to
+    // race the button's own click: focus flipped `activeWindowId` and the URL
+    // to this window's route, and if the click was a close, the route sync
+    // effect could see the stale route on its next pass and call
+    // `openAppWindow`, silently reopening the window the user just closed.
     const target = e.target as HTMLElement;
     if (target.closest('.win-control-btn')) return;
+
+    onFocus(app.id);
+
     if (e.button !== 0) return; // Only left click
     // A maximized window fills the screen and has no position to change.
     // Double-clicking the title bar restores it first.
@@ -413,10 +408,17 @@ export default function AppWindow({
       }}
       onClick={(e) => {
         e.stopPropagation();
+        // A control button's own click (minimize/maximize/close) already ran
+        // by the time this bubbles here. Focusing on top of it was the other
+        // half of the reopen bug: closing an unfocused window fired `onClose`
+        // first, then this handler re-focused that same (now-closed) window,
+        // which the route sync effect could read as "open me back up".
+        if ((e.target as HTMLElement).closest('.win-control-btn')) return;
         onFocus(app.id);
       }}
       onPointerDown={(e) => {
         e.stopPropagation();
+        if ((e.target as HTMLElement).closest('.win-control-btn')) return;
         onFocus(app.id);
       }}
       className={`flex flex-col border ${
@@ -529,7 +531,12 @@ export default function AppWindow({
         </div>
       )}
 
-      <PreferencesDialog isOpen={isPreferencesOpen} onClose={() => setIsPreferencesOpen(false)} />
+      <PreferencesDialog
+        isOpen={isPreferencesOpen}
+        onClose={() => setIsPreferencesOpen(false)}
+        appId={app.id}
+        appTitle={app.title}
+      />
 
       {/* ABOUT APP MODAL */}
       <Modal

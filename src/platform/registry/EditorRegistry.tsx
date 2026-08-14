@@ -12,7 +12,7 @@ export const EDITOR_REGISTRY: EditorMapping[] = [
     appId: 'editor',
     mimeTypes: ['text/plain', 'text/markdown', 'text/html', 'text/css', 'text/javascript', 'application/json'],
     extensions: ['txt', 'md', 'html', 'css', 'js', 'ts', 'tsx', 'json', 'xml', 'yaml', 'yml', 'py', 'java', 'c', 'cpp', 'h', 'cs', 'go', 'rs', 'rb', 'php', 'sql', 'sh', 'bash', 'zsh', 'gitignore', 'env', 'ini', 'cfg', 'conf', 'log'],
-    label: 'Text Editor',
+    label: 'Code Editor',
   },
   {
     appId: 'pdf-viewer',

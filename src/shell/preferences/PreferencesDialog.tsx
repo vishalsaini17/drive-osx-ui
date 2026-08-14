@@ -8,13 +8,15 @@ import { SystemSettings } from '../../platform/types';
 import { AppRegistry } from '../../platform/registry/AppRegistry';
 import { useAppTheme } from '../../platform/theme/useAppTheme';
 import {
-  APP_THEME_CHOICES, globalThemeIsDark, type AppThemeChoice,
+  APP_THEME_CHOICES, type AppThemeChoice,
 } from '../../platform/theme/appTheme';
-import { themeForMode } from '../../platform/theme/themes';
 
 interface PreferencesDialogProps {
   isOpen: boolean;
   onClose: () => void;
+  /** The window this dialog was opened from, so Appearance → Theme controls its app. */
+  appId: string;
+  appTitle: string;
 }
 
 type Section = 'appearance' | 'windows' | 'applications' | 'system';
@@ -80,20 +82,17 @@ export function resolveTheme(mode: SystemSettings['themeMode'], explicit: System
   return explicit;
 }
 
-export default function PreferencesDialog({ isOpen, onClose }: PreferencesDialogProps) {
+export default function PreferencesDialog({ isOpen, onClose, appId, appTitle }: PreferencesDialogProps) {
   const settings = useSystemStore((state) => state.settings);
   const setSettings = useSystemStore((state) => state.setSettings);
   const [section, setSection] = useState<Section>('appearance');
+  const appTheme = useAppTheme(appId);
 
   if (!isOpen) return null;
 
   const update = (patch: Partial<SystemSettings>) => setSettings((prev) => ({ ...prev, ...patch }));
 
   const themeMode = settings.themeMode ?? 'light';
-  // Derived from the theme itself rather than from `themeMode`, so a theme set
-  // elsewhere (the Settings app, or the Retro Terminal toggle below) still
-  // shows the correct side selected here.
-  const globalIsDark = globalThemeIsDark(settings.theme);
   const windowMode = settings.defaultWindowMode ?? 'custom';
   const placement = settings.defaultWindowPlacement ?? 'app-default';
 
@@ -176,27 +175,27 @@ export default function PreferencesDialog({ isOpen, onClose }: PreferencesDialog
               <>
                 {row(
                   'Theme',
-                  'The appearance of the whole environment. Applications set to “Theme” follow this.',
+                  appTheme.describe(appTitle),
                   <div className="flex items-center gap-1">
-                    {([
-                      { id: 'light', label: 'Light', icon: Sun },
-                      { id: 'dark', label: 'Dark', icon: Moon },
-                    ] as const).map(({ id, label, icon: Icon }) => (
-                      <button
-                        key={id}
-                        onClick={() =>
-                          update({ themeMode: id, theme: themeForMode(settings.theme, id) })
-                        }
-                        className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold flex items-center gap-1.5 cursor-pointer transition-colors ${
-                          globalIsDark === (id === 'dark')
-                            ? 'bg-blue-600 text-white'
-                            : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
-                        }`}
-                      >
-                        <Icon size={12} />
-                        {label}
-                      </button>
-                    ))}
+                    {appTheme.options.map((option) => {
+                      const Icon = THEME_ICONS[option.value];
+                      return (
+                        <button
+                          key={option.value}
+                          onClick={() => appTheme.setChoice(option.value)}
+                          title={option.description}
+                          aria-pressed={appTheme.choice === option.value}
+                          className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold flex items-center gap-1.5 cursor-pointer transition-colors ${
+                            appTheme.choice === option.value
+                              ? 'bg-blue-600 text-white'
+                              : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                          }`}
+                        >
+                          <Icon size={12} />
+                          {option.label}
+                        </button>
+                      );
+                    })}
                   </div>
                 )}
 
@@ -372,7 +371,7 @@ export default function PreferencesDialog({ isOpen, onClose }: PreferencesDialog
                     <strong>Theme</strong> follows the global theme in Appearance;{' '}
                     <strong>System</strong> follows your operating system;{' '}
                     <strong>Light</strong> and <strong>Dark</strong> stay put. The same choice is
-                    on every window&rsquo;s menu under Theme.
+                    on each application&rsquo;s own Preferences &rarr; Appearance.
                   </div>
                 </div>
 

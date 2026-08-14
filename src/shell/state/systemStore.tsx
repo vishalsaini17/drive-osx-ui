@@ -28,6 +28,29 @@ function describeFileFailure(what: string, error: unknown): string {
   return `${what}. Please try again.`;
 }
 
+/**
+ * Folds a freshly-fetched folder listing into the existing flat `files`
+ * array without discarding what's cached for every OTHER folder.
+ *
+ * `syncFilesFromBackend` used to do `set({ files: mappedFiles })` — a full
+ * replace — even though `FileService.listChildren` only ever returns ONE
+ * folder's direct children. Since it was always called with `parentId: null`,
+ * that full replace silently wiped out any nested folder contents another
+ * part of the app (or this same function, called for a different folder)
+ * had loaded, which is why File Explorer could show a file Code Editor had
+ * just created and then, moments later, not show it: whichever fetch ran
+ * last threw away everyone else's data. Scoping the replace to just the
+ * fetched folder's own direct children — drop stale entries claiming that
+ * parent, upsert by id everything the fetch returned — makes every fetch
+ * additive instead of destructive, and still correctly drops files that were
+ * deleted or moved out of the folder since the last fetch.
+ */
+function mergeFolderChildren(existing: FileItem[], parentId: string | null, fresh: FileItem[]): FileItem[] {
+  const freshIds = new Set(fresh.map((f) => f.id));
+  const kept = existing.filter((f) => (f.parentId ?? null) !== parentId && !freshIds.has(f.id));
+  return [...kept, ...fresh];
+}
+
 const defaultNotifications: SystemNotification[] = [
   { id: 'n1', text: 'System optimization complete. Operating in local mode.', sender: 'System Terminal', time: 'Just now', type: 'info' },
   { id: 'n2', text: 'Drive OSX Offline Engine ready. Offline mode enabled.', sender: 'Network Manager', time: '2m ago', type: 'info' },
@@ -116,11 +139,11 @@ interface SystemState {
   openTextFileInEditor: (fileId: string, name: string, content: string, folderId?: string | null) => void;
   setEditorCurrentFolderId: (folderId: string | null) => void;
   resolveDefaultFolderId: (folderName: string) => string | null;
-  handleSaveTextFile: (fileId: string, updatedContent: string) => Promise<void>;
   handleDeleteFile: (deletedItem: FileItem) => Promise<void>;
   handleRestoreFile: (file: FileItem) => Promise<void>;
   handleEmptyTrash: () => Promise<void>;
-  syncFilesFromBackend: () => Promise<void>;
+  /** Fetches one folder's direct children (root, when omitted) and merges them into `files` — every other folder's already-cached contents are left alone. */
+  syncFilesFromBackend: (folderId?: string | null) => Promise<void>;
   /** Refreshes the trash from the server, which owns it. */
   syncTrashFromBackend: () => Promise<void>;
   setMessages: (updater: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[])) => void;
@@ -910,35 +933,11 @@ export const useSystemStore = create<SystemState>((set, get) => ({
 
   resolveDefaultFolderId: (folderName: string): string | null => {
     const state = get();
-    const folder = state.files.find((f) => f.type === 'folder' && f.name.toLowerCase() === folderName.toLowerCase());
+    // Root-scoped on purpose: `files` can now hold nested folders too (see
+    // `syncFilesFromBackend`), and a "default folder" like Documents always
+    // means the top-level one — a same-named nested folder must not win.
+    const folder = state.files.find((f) => f.type === 'folder' && f.parentId === null && f.name.toLowerCase() === folderName.toLowerCase());
     return folder?.id || null;
-  },
-
-  handleSaveTextFile: async (fileId, updatedContent) => {
-    set((state) => {
-      const updatedFiles = state.files.map(f => f.id === fileId ? { ...f, content: updatedContent } : f);
-      StorageService.set('webos-files', JSON.stringify(updatedFiles));
-      return {
-        files: updatedFiles,
-        editorFileContent: updatedContent
-      };
-    });
-
-    const { currentUser } = get();
-    if (currentUser) {
-      try {
-        await FileService.updateFile(fileId, { content: updatedContent });
-      } catch (error) {
-        // The edit is still in local state and in the offline queue, so it is
-        // not lost — but the user must know it is not on the server yet,
-        // rather than assuming a save that has not happened.
-        get().addNotification({
-          sender: 'Files',
-          text: describeFileFailure('Your changes could not be saved to the server', error),
-          type: 'warning',
-        });
-      }
-    }
   },
 
   handleDeleteFile: async (deletedItem) => {
@@ -1078,11 +1077,11 @@ export const useSystemStore = create<SystemState>((set, get) => ({
     }
   },
 
-  syncFilesFromBackend: async () => {
+  syncFilesFromBackend: async (folderId = null) => {
     const { currentUser } = get();
     if (!currentUser) return;
     try {
-      const files = await FileService.listChildren(null);
+      const files = await FileService.listChildren(folderId);
       const mappedFiles: FileItem[] = files.map((f: any) => ({
         id: f._id,
         name: f.name,
@@ -1097,8 +1096,11 @@ export const useSystemStore = create<SystemState>((set, get) => ({
         activityHistory: [],
         originalParentId: null,
       }));
-      StorageService.set('webos-files', mappedFiles);
-      set({ files: mappedFiles });
+      set((state) => {
+        const merged = mergeFolderChildren(state.files, folderId, mappedFiles);
+        StorageService.set('webos-files', merged);
+        return { files: merged };
+      });
     } catch (error) {
       // Keep the cached list rather than blanking the file manager, but say
       // that what is on screen may be out of date.

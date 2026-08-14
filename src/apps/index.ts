@@ -14,7 +14,7 @@ export const FileManager = lazy(() => import('./file-explorer'));
 export const Settings = lazy(() => import('./settings'));
 export const Messenger = lazy(() => import('./messages'));
 export const ClockApp = lazy(() => import('./clock'));
-export const TextEditor = lazy(() => import('./text-editor'));
+export const CodeEditor = lazy(() => import('./code-editor'));
 export const PaintApp = lazy(() => import('./paint-studio'));
 export const CalendarApp = lazy(() => import('./calendar'));
 export const MeetingApp = lazy(() => import('./osx-meet'));
@@ -25,6 +25,7 @@ export const SpreadsheetApp = lazy(() => import('./spreadsheet'));
 export const PresentationApp = lazy(() => import('./presentation'));
 export const PDFViewerApp = lazy(() => import('./pdf-viewer'));
 export const ContactsApp = lazy(() => import('./contacts'));
+export const WordBookApp = lazy(() => import('./wordbook'));
 
 /** Component type used across the registry, covering lazily loaded apps. */
 export type ApplicationComponent = React.ComponentType<any> | React.LazyExoticComponent<React.ComponentType<any>>;
@@ -37,7 +38,7 @@ export const APPLICATION_MAP: Record<string, ApplicationComponent> = {
   settings: Settings,
   messenger: Messenger,
   clock: ClockApp,
-  editor: TextEditor,
+  editor: CodeEditor,
   paint: PaintApp,
   calendar: CalendarApp,
   meeting: MeetingApp,
@@ -48,6 +49,7 @@ export const APPLICATION_MAP: Record<string, ApplicationComponent> = {
   presentation: PresentationApp,
   'pdf-viewer': PDFViewerApp,
   contacts: ContactsApp,
+  wordbook: WordBookApp,
 };
 
 export interface ApplicationRendererProps {

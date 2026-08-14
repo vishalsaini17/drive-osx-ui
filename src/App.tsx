@@ -325,11 +325,11 @@ function DesktopLayout() {
     const isInitialMount = prevPathRef.current === null;
     const pathChanged = !isInitialMount && prevPathRef.current !== currentPath;
 
-    prevPathRef.current = currentPath;
     prevActiveWindowRef.current = currentActiveWindow;
 
     // 1. Handle browser direct URL navigation or back/forward buttons
     if (isInitialMount || pathChanged) {
+      prevPathRef.current = currentPath;
       const appId = AppRegistry.getAppIdForPath(currentPath);
       if (appId) {
         const targetWin = windows.find(w => w.id === appId);
@@ -337,12 +337,20 @@ function DesktopLayout() {
           openAppWindow(appId);
         }
       } else if (currentPath !== '/') {
+        // We're about to navigate ourselves, so record the path this settles
+        // on rather than the one we're leaving. Recording `currentPath` here
+        // left `prevPathRef` one step behind the actual URL; the next render
+        // then saw the route we'd just set ourselves as a fresh external
+        // change, re-entered this branch, and could call `openAppWindow` on
+        // whatever app that route named — reopening a window someone had
+        // just closed if the close happened to leave that route behind.
+        prevPathRef.current = '/';
         navigate('/', { replace: true });
         focusWindow('');
       } else if (currentActiveWindow !== null) {
         focusWindow('');
       }
-    } 
+    }
     // 2. Handle internal OS state changes (opening, closing, or switching app windows)
     else {
       let expectedPath = '/';
@@ -354,6 +362,10 @@ function DesktopLayout() {
         }
       }
 
+      // Same reasoning as above: record the path we're settling on, not the
+      // one being left, so a self-triggered navigation isn't mistaken for an
+      // external one on the next pass.
+      prevPathRef.current = expectedPath;
       if (currentPath !== expectedPath) {
         navigate(expectedPath, { replace: true });
       }

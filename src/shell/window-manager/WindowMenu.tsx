@@ -288,12 +288,16 @@ export default function WindowMenu({ items, theme, buttonClassName = '' }: Windo
       close();
     };
 
-    document.addEventListener('pointerdown', onPointerDown);
+    // Capture phase: AppWindow's own pointerdown handler (used for window
+    // focus) calls stopPropagation() on every click inside the window, which
+    // would otherwise stop this listener from ever seeing clicks that land
+    // inside the same app window but outside the menu.
+    document.addEventListener('pointerdown', onPointerDown, true);
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('resize', onViewportChange);
     window.addEventListener('scroll', onViewportChange, true);
     return () => {
-      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('pointerdown', onPointerDown, true);
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('resize', onViewportChange);
       window.removeEventListener('scroll', onViewportChange, true);

@@ -18,6 +18,7 @@ import {
   FileSpreadsheet,
   Tv,
   Users,
+  BookOpen,
 } from 'lucide-react';
 
 // Import apps from application directory
@@ -29,7 +30,7 @@ import {
   Settings,
   Messenger,
   ClockApp,
-  TextEditor,
+  CodeEditor,
   PaintApp,
   TrashApp,
   CalendarApp,
@@ -40,6 +41,7 @@ import {
   PresentationApp,
   PDFViewerApp,
   ContactsApp,
+  WordBookApp,
   type ApplicationComponent,
 } from '../../apps';
 
@@ -268,10 +270,10 @@ const registry: Record<string, AppRegistryEntry> = {
   editor: {
     manifest: {
       id: 'editor',
-      title: 'Text Editor',
-      iconName: 'FileText',
+      title: 'Code Editor',
+      iconName: 'FileCode',
       category: 'productivity',
-      defaultWindow: { w: 680, h: 460, minW: 450, minH: 300, x: 180, y: 160 },
+      defaultWindow: { w: 960, h: 640, minW: 480, minH: 320, x: 180, y: 120 },
       permissions: ['filesystem'],
       settingsSchema: [
         { id: 'wordWrap', label: 'Enable Word Wrapping', type: 'toggle', defaultValue: true },
@@ -280,15 +282,14 @@ const registry: Record<string, AppRegistryEntry> = {
         { id: 'autoSave', label: 'Auto-save Files on Edit', type: 'toggle', defaultValue: true }
       ]
     },
-    component: TextEditor,
+    component: CodeEditor,
     renderIcon: (className = "w-full h-full") => (
-      <div className={`${className} bg-[#ff4f3e] rounded-[22%] flex items-center justify-center relative border border-white/10 shadow-md overflow-hidden group`}>
+      <div className={`${className} bg-[#1e1e1e] rounded-[22%] flex items-center justify-center relative border border-white/10 shadow-md overflow-hidden group`}>
         <div className="absolute inset-0 bg-white/5 opacity-0 group-hover:opacity-100 transition-opacity duration-200" />
-        <svg viewBox="0 0 24 24" className="w-[50%] h-[50%] fill-none stroke-white stroke-[2.2]" strokeLinecap="round" strokeLinejoin="round">
-          <path d="m15 4 5 5-11 11H4v-5l11-11Z" className="fill-white/10" />
-          <path d="m19 2-1 2-2-1 1-2 2 1Z" className="fill-white stroke-none" />
-          <circle cx="4.5" cy="19.5" r="1.5" className="fill-white stroke-none" />
-          <path d="M11 2h1M3 10h1M20 15h1M15 22h1" strokeWidth="2.5" />
+        <svg viewBox="0 0 24 24" className="w-[55%] h-[55%] fill-none stroke-[#4fc3f7] stroke-[2.2]" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M8 6 2 12l6 6" />
+          <path d="M16 6l6 6-6 6" />
+          <path d="M13 4 11 20" stroke="#89ddff" />
         </svg>
       </div>
     )
@@ -532,6 +533,32 @@ const registry: Record<string, AppRegistryEntry> = {
         <Users className="w-[52%] h-[52%] text-white" strokeWidth={2.2} />
       </div>
     )
+  },
+  wordbook: {
+    manifest: {
+      id: 'wordbook',
+      title: 'Word Book',
+      iconName: 'BookOpen',
+      category: 'productivity',
+      defaultWindow: { w: 980, h: 720, minW: 640, minH: 480, x: 160, y: 40 },
+      permissions: ['filesystem'],
+      settingsSchema: [
+        {
+          id: 'paginationMode',
+          label: 'Pagination',
+          type: 'select',
+          options: ['Automatic', 'Manual'],
+          defaultValue: 'Automatic',
+        },
+      ],
+    },
+    component: WordBookApp,
+    renderIcon: (className = "w-full h-full") => (
+      <div className={`${className} bg-gradient-to-tr from-violet-600 to-fuchsia-700 rounded-[22%] flex items-center justify-center relative border border-white/20 shadow-md overflow-hidden group`}>
+        <div className="absolute inset-0 bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity duration-200" />
+        <BookOpen className="w-[52%] h-[52%] text-white" strokeWidth={2.2} />
+      </div>
+    )
   }
 };
 
@@ -554,6 +581,7 @@ const appRoutes: Record<string, string> = {
   presentation: 'presentation',
   'pdf-viewer': 'pdf-viewer',
   contacts: 'contacts',
+  wordbook: 'wordbook',
 };
 
 export const AppRegistry = {

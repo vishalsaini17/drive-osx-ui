@@ -62,10 +62,25 @@ import FilePreviewModal from './components/FilePreviewModal';
 import PropertiesModal from './components/PropertiesModal';
 import OpenWithModal from './components/OpenWithModal';
 
+/**
+ * Marks a drag as an internal File Explorer item drag rather than an OS/browser
+ * file drag. Set on every `dragstart` here and checked via `dataTransfer.types`
+ * (readable during `dragover`, unlike `getData`) so the canvas can tell the two
+ * apart before a drop even happens — including drags that started in a
+ * different File Explorer window, since `dataTransfer` is native to the
+ * browser drag gesture and isn't scoped to any one component instance.
+ */
+const INTERNAL_DRAG_TYPE = 'application/x-drive-osx-file-item';
+
+function dragHasType(e: React.DragEvent, type: string): boolean {
+  return Array.from(e.dataTransfer.types || []).includes(type);
+}
+
 export default function FileManager() {
   // Central store integration
   const files = useSystemStore((state) => state.files);
   const setFiles = useSystemStore((state) => state.setFiles);
+  const syncFilesFromBackend = useSystemStore((state) => state.syncFilesFromBackend);
   const deletedFiles = useSystemStore((state) => state.deletedFiles || []);
   const handleDeleteFile = useSystemStore((state) => state.handleDeleteFile);
   const handleRestoreFile = useSystemStore((state) => state.handleRestoreFile);
@@ -104,6 +119,9 @@ export default function FileManager() {
   // Drag and drop state
   const [isDragOverCanvas, setIsDragOverCanvas] = useState<boolean>(false);
   const [draggedItemId, setDraggedItemId] = useState<string | null>(null);
+  // Which folder tile an internal drag is currently hovering, so it can show
+  // itself as the drop target the way a desktop file manager does.
+  const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
 
   useEffect(() => {
     if (fmPrefs?.defaultView) {
@@ -111,61 +129,47 @@ export default function FileManager() {
     }
   }, [fmPrefs?.defaultView]);
 
+  // Fetches the CURRENT folder's own direct children on every navigation,
+  // not just once at mount. `files` used to be filled exclusively by a
+  // one-time root-only fetch here, so anything nested — created, renamed, or
+  // moved from another app entirely (e.g. Code Editor's own Explorer tree)
+  // — was invisible unless this component happened to have optimistically
+  // spliced it in itself. `syncFilesFromBackend` fetches whichever folder id
+  // it's given and merges the result into the shared `files` array without
+  // discarding what's cached for every other folder, so this stays correct
+  // no matter which app last touched the tree.
   useEffect(() => {
     if (!currentUser) return;
-    let cancelled = false;
-    const load = async () => {
-      try {
-        const backendFiles = await FileService.listChildren(null);
-        if (cancelled) return;
-        const mapped: FileItem[] = backendFiles.map((f: any) => ({
-          id: f._id,
-          name: f.name,
-          type: f.type,
-          content: f.content || '',
-          parentId: f.parentId,
-          createdAt: f.createdAt,
-          starred: f.starred || false,
-          category: f.mimeType?.split('/')[0] as any,
-          sharedWith: [],
-          publicLink: undefined,
-          activityHistory: [],
-          originalParentId: null,
-        }));
+    void syncFilesFromBackend(currentFolderId);
+  }, [currentUser, currentFolderId, syncFilesFromBackend]);
 
-        const folderMap: Record<string, string> = {};
-        mapped.forEach((f) => {
-          if (f.type === 'folder' && DEFAULT_FOLDER_NAMES.includes(f.name)) {
-            folderMap[f.name.toLowerCase()] = f.id;
-          }
-        });
-        setDefaultFolderIdMap(folderMap);
-
-        const existingIds = new Set(mapped.map((f) => f.id));
-        setPinnedFolderIds((prev) => {
-          const cleaned = prev.filter((id) => {
-            if (id.startsWith('folder-')) {
-              const name = id.replace('folder-', '');
-              return existingIds.has(folderMap[name] || '');
-            }
-            return existingIds.has(id);
-          });
-          if (cleaned.length !== prev.length) {
-            StorageService.set('sidebar-pinned-folders', cleaned);
-          }
-          return cleaned;
-        });
-
-        setFiles(mapped);
-      } catch (error) {
-        console.warn('Failed to load files from backend:', error);
+  // Derived from `files` itself (rather than a one-off local variable) so it
+  // stays correct as the shared file list changes, not just at mount.
+  useEffect(() => {
+    const folderMap: Record<string, string> = {};
+    files.forEach((f) => {
+      if (f.type === 'folder' && f.parentId === null && DEFAULT_FOLDER_NAMES.includes(f.name)) {
+        folderMap[f.name.toLowerCase()] = f.id;
       }
-    };
-    load();
-    return () => {
-      cancelled = true;
-    };
-  }, [currentUser]);
+    });
+    setDefaultFolderIdMap(folderMap);
+
+    const existingIds = new Set(files.map((f) => f.id));
+    setPinnedFolderIds((prev) => {
+      const cleaned = prev.filter((id) => {
+        if (id.startsWith('folder-')) {
+          const name = id.replace('folder-', '');
+          return existingIds.has(folderMap[name] || '');
+        }
+        return existingIds.has(id);
+      });
+      if (cleaned.length !== prev.length) {
+        StorageService.set('sidebar-pinned-folders', cleaned);
+      }
+      return cleaned;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [files]);
 
   // Pinned sidebar folders state
   const [pinnedFolderIds, setPinnedFolderIds] = useState<string[]>([]);
@@ -603,11 +607,17 @@ export default function FileManager() {
     e.target.value = '';
   };
 
-  // Drag & Drop external file upload onto explorer area
+  // Drag & Drop external file upload onto explorer area.
+  // Gated on `Files` being among the drag's types, which is what the browser
+  // reports for a real OS/desktop drag — an internal item drag (this window or
+  // another File Explorer window) carries INTERNAL_DRAG_TYPE instead, so it
+  // never lights up the upload overlay.
   const handleCanvasDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    setIsDragOverCanvas(true);
+    if (dragHasType(e, 'Files')) {
+      setIsDragOverCanvas(true);
+    }
   };
 
   const handleCanvasDragLeave = (e: React.DragEvent) => {
@@ -620,6 +630,18 @@ export default function FileManager() {
     e.preventDefault();
     e.stopPropagation();
     setIsDragOverCanvas(false);
+
+    // An internal item dropped on empty canvas space is a move into whatever
+    // folder this window currently has open, not an upload.
+    if (dragHasType(e, INTERNAL_DRAG_TYPE)) {
+      const itemId = e.dataTransfer.getData(INTERNAL_DRAG_TYPE) || draggedItemId;
+      if (itemId && !isTrashFolder) {
+        void moveItemToFolder(itemId, currentFolderId);
+      } else {
+        setDraggedItemId(null);
+      }
+      return;
+    }
 
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       const filesUploaded = Array.from(e.dataTransfer.files);
@@ -663,19 +685,35 @@ export default function FileManager() {
     }
   };
 
-  // Drag internal item to move into target folder or sidebar
+  // Drag internal item to move into target folder or sidebar.
+  // Both the custom type (used to detect an internal drag before drop) and
+  // `text/plain` (harmless, kept for anything reading the drag outside this
+  // component) carry the item id, since either window involved is just a
+  // handler attached somewhere in the same document as far as native
+  // drag-and-drop is concerned.
   const handleItemDragStart = (e: React.DragEvent, item: FileItem) => {
     setDraggedItemId(item.id);
+    e.dataTransfer.setData(INTERNAL_DRAG_TYPE, item.id);
     e.dataTransfer.setData('text/plain', item.id);
+    e.dataTransfer.effectAllowed = 'move';
   };
 
-  const handleFolderDrop = async (e: React.DragEvent, targetFolderId: string | null) => {
-    e.preventDefault();
-    e.stopPropagation();
+  const handleItemDragEnd = () => {
+    setDraggedItemId(null);
+    setDragOverFolderId(null);
+  };
 
-    if (!draggedItemId) return;
-    const sourceItem = files.find((f) => f.id === draggedItemId);
-    if (!sourceItem || sourceItem.id === targetFolderId) return;
+  /**
+   * Moves one item into `targetFolderId`, used by every drop target (canvas,
+   * folder tiles/rows, sidebar places and pinned folders) so they all share one
+   * validation + persistence path.
+   */
+  const moveItemToFolder = async (itemId: string, targetFolderId: string | null) => {
+    const sourceItem = files.find((f) => f.id === itemId);
+    if (!sourceItem || sourceItem.id === targetFolderId || sourceItem.parentId === targetFolderId) {
+      setDraggedItemId(null);
+      return;
+    }
 
     // Prevent moving folder inside itself
     if (sourceItem.type === 'folder' && targetFolderId !== null) {
@@ -691,19 +729,48 @@ export default function FileManager() {
     }
 
     const updated = files.map((f) =>
-      f.id === draggedItemId ? { ...f, parentId: targetFolderId } : f
+      f.id === itemId ? { ...f, parentId: targetFolderId } : f
     );
     setFiles(updated);
     setDraggedItemId(null);
 
     if (currentUser) {
       try {
-        await FileService.moveFile(draggedItemId, targetFolderId);
+        await FileService.moveFile(itemId, targetFolderId);
       } catch (error) {
         console.warn('Failed to move file on backend:', error);
         setFiles(files);
       }
     }
+  };
+
+  const handleFolderDrop = async (e: React.DragEvent, targetFolderId: string | null) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    // Read the id from the drag itself rather than local `draggedItemId` state:
+    // when the drag started in a different File Explorer window, this
+    // component's own state was never set, but `dataTransfer` is populated by
+    // the browser and is readable here regardless of which window the drag
+    // began in.
+    const itemId = e.dataTransfer.getData(INTERNAL_DRAG_TYPE) || draggedItemId;
+    setDragOverFolderId(null);
+    if (!itemId) return;
+    await moveItemToFolder(itemId, targetFolderId);
+  };
+
+  // Marks a folder tile as the active drop target while an internal item drags
+  // over it. Only for internal drags — an external OS file dragged over a
+  // folder tile isn't a supported "upload straight into this folder" gesture,
+  // so it shouldn't light the tile up.
+  const handleFolderDragEnter = (e: React.DragEvent, folderId: string) => {
+    if (!dragHasType(e, INTERNAL_DRAG_TYPE)) return;
+    e.preventDefault();
+    setDragOverFolderId(folderId);
+  };
+
+  const handleFolderDragLeave = (folderId: string) => {
+    setDragOverFolderId((current) => (current === folderId ? null : current));
   };
 
   // Size and Type string formatters
@@ -1236,6 +1303,7 @@ export default function FileManager() {
           onClick: () => {
             setSearchQuery('');
             setSelectedFileIds([]);
+            void syncFilesFromBackend(currentFolderId);
           },
         },
       ];
@@ -1245,7 +1313,11 @@ export default function FileManager() {
 
   // Open Selected App via OpenWith Modal
   const handleOpenWithApp = (appKey: string, item: FileItem) => {
-    if (appKey === 'text-editor') {
+    // 'text-editor' is OpenWithModal's own manual-pick key; 'editor' is the
+    // real AppRegistry id that double-click (via getAppForFile/EDITOR_REGISTRY)
+    // actually passes here — without this second check double-clicking a
+    // text/code file silently did nothing, since neither branch below matched it.
+    if (appKey === 'text-editor' || appKey === 'editor') {
       openTextFileInEditor(item.id, item.name, item.content || '', currentFolderId);
     } else if (appKey === 'image-viewer' || appKey === 'audio-player' || appKey === 'video-player' || appKey === 'code-viewer') {
       setActivePreviewItem(item);
@@ -1506,6 +1578,7 @@ export default function FileManager() {
               onClick={() => {
                 setSearchQuery('');
                 setSelectedFileIds([]);
+                void syncFilesFromBackend(currentFolderId);
               }}
               className="p-1.5 rounded-md hover:bg-black/5 cursor-pointer"
               title="Refresh Folder"
@@ -1883,6 +1956,7 @@ export default function FileManager() {
         {/* MIDDLE EXPLORER CANVAS AREA */}
         <div
           ref={explorerAreaRef}
+          id="file-explorer-canvas"
           onDragOver={handleCanvasDragOver}
           onDragLeave={handleCanvasDragLeave}
           onDrop={handleCanvasDrop}
@@ -1921,12 +1995,16 @@ export default function FileManager() {
                 const isSelected = selectedFileIds.includes(item.id);
                 const isBeingRenamed = renamingId === item.id;
                 const isClipboardCut = clipboard && clipboard.id === item.id && clipboard.action === 'cut';
+                const isDropTarget = item.type === 'folder' && dragOverFolderId === item.id;
 
                 return (
                   <div
                     key={item.id}
                     draggable
                     onDragStart={(e) => handleItemDragStart(e, item)}
+                    onDragEnd={handleItemDragEnd}
+                    onDragEnter={(e) => item.type === 'folder' && handleFolderDragEnter(e, item.id)}
+                    onDragLeave={() => item.type === 'folder' && handleFolderDragLeave(item.id)}
                     onDragOver={(e) => e.preventDefault()}
                     onDrop={(e) => item.type === 'folder' && handleFolderDrop(e, item.id)}
                     onClick={(e) => {
@@ -1946,7 +2024,9 @@ export default function FileManager() {
                     onContextMenu={(e) => handleContextMenu(e, item)}
                     className={`p-3.5 rounded-xl border flex flex-col items-center justify-center text-center cursor-pointer group transition-all relative ${
                       isSelected ? ts.gridCardSelected : ts.gridCard
-                    } ${isClipboardCut ? 'opacity-40 border-dashed border-purple-500/50' : ''}`}
+                    } ${isClipboardCut ? 'opacity-40 border-dashed border-purple-500/50' : ''} ${
+                      isDropTarget ? 'ring-2 ring-purple-500 bg-purple-500/10' : ''
+                    }`}
                   >
                     {/* Star badge */}
                     {item.starred && (
@@ -2046,12 +2126,16 @@ export default function FileManager() {
                     const isSelected = selectedFileIds.includes(item.id);
                     const isBeingRenamed = renamingId === item.id;
                 const isClipboardCut = clipboard && clipboard.id === item.id && clipboard.action === 'cut';
+                    const isDropTarget = item.type === 'folder' && dragOverFolderId === item.id;
 
                     return (
                       <tr
                         key={item.id}
                         draggable
                         onDragStart={(e) => handleItemDragStart(e, item)}
+                        onDragEnd={handleItemDragEnd}
+                        onDragEnter={(e) => item.type === 'folder' && handleFolderDragEnter(e, item.id)}
+                        onDragLeave={() => item.type === 'folder' && handleFolderDragLeave(item.id)}
                         onDragOver={(e) => e.preventDefault()}
                         onDrop={(e) => item.type === 'folder' && handleFolderDrop(e, item.id)}
                         onClick={(e) => {
@@ -2073,7 +2157,9 @@ export default function FileManager() {
                         onContextMenu={(e) => handleContextMenu(e, item)}
                         className={`text-xs ${ts.listRow} ${
                           isSelected ? ts.listRowSelected + ' ' + ts.gridCardSelected : ''
-                        } ${isClipboardCut ? 'opacity-40 bg-purple-500/5' : ''}`}
+                        } ${isClipboardCut ? 'opacity-40 bg-purple-500/5' : ''} ${
+                          isDropTarget ? 'ring-2 ring-inset ring-purple-500 bg-purple-500/10' : ''
+                        }`}
                       >
                         <td className="p-2.5 pl-4 flex items-center gap-2 font-medium">
                           {renderFileIcon(item, 'small')}
