@@ -1193,23 +1193,43 @@ export default function FileManager() {
   const handleSaveRename = async () => {
     if (!renamingId) return;
     const cleanName = renameText.trim();
-    if (!cleanName) {
+    const target = files.find((f) => f.id === renamingId);
+    if (!cleanName || !target) {
+      setRenamingId(null);
+      return;
+    }
+    if (cleanName === target.name) {
       setRenamingId(null);
       return;
     }
 
-    const updatedFiles = files.map((f) =>
-      f.id === renamingId ? { ...f, name: cleanName } : f
+    // Catch the common case immediately instead of round-tripping to the
+    // server first — matches the backend's own check (case-insensitive,
+    // scoped to the same folder, not type-specific: a file and a folder
+    // can't share a name any more than two files can).
+    const conflict = files.find(
+      (f) => f.id !== renamingId && (f.parentId ?? null) === (target.parentId ?? null) && f.name.toLowerCase() === cleanName.toLowerCase()
     );
-    setFiles(updatedFiles);
+    if (conflict) {
+      alert(`"${cleanName}" already exists in this folder. Please choose a different name.`);
+      setRenamingId(null);
+      return;
+    }
+
+    const previousName = target.name;
+    setFiles((prev) => prev.map((f) => (f.id === renamingId ? { ...f, name: cleanName } : f)));
     setRenamingId(null);
 
-    if (currentUser) {
-      try {
-        await FileService.updateFile(renamingId, { name: cleanName });
-      } catch (error) {
-        console.warn('Failed to rename file on backend:', error);
-      }
+    if (!currentUser) return;
+    try {
+      await FileService.updateFile(renamingId, { name: cleanName });
+    } catch (error) {
+      // The optimistic rename above must not silently stick around if the
+      // server rejected it — e.g. a conflict with a file another client
+      // created that wasn't visible in this local list yet.
+      setFiles((prev) => prev.map((f) => (f.id === renamingId ? { ...f, name: previousName } : f)));
+      const message = error instanceof Error ? error.message : 'Please try again.';
+      alert(`Could not rename to "${cleanName}": ${message}`);
     }
   };
 
