@@ -456,7 +456,14 @@ export default function AppWindow({
 
         {/* Center: application icon and name */}
         <div className="flex items-center justify-center gap-1.5 text-[11px] font-semibold tracking-wide truncate max-w-[260px]">
-          <div className="w-4 h-4 flex items-center justify-center shrink-0">
+          {/* The icon's bounding box is already vertically centered against the
+              text's box (both share this row's `items-center`), but most icon
+              artwork reads visually "heavier" toward the bottom than a font's
+              glyphs do — ascender space in the text's line-height sits above
+              its cap-height, while the icon fills its box edge-to-edge. Left
+              alone the icon looks a hair low next to the text; -translate-y-px
+              nudges it back to its optical center. */}
+          <div className="w-4 h-4 flex items-center justify-center shrink-0 -translate-y-px">
             {getAppIcon(app.id, 'w-4 h-4')}
           </div>
           <span className="truncate">{app.title}</span>

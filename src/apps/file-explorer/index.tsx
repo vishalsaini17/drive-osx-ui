@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
 import {
   Folder,
   ArrowLeft,
@@ -45,7 +45,8 @@ import {
   FileArchive,
   Layers,
   FolderUp,
-  ChevronDown
+  ChevronDown,
+  MoreHorizontal
 } from 'lucide-react';
 import { FileItem } from '../../platform/types';
 import { useSystemStore } from '../../shell/state/systemStore';
@@ -245,9 +246,11 @@ export default function FileManager() {
   const folderInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const explorerAreaRef = useRef<HTMLDivElement>(null);
+  const leftToolbarRef = useRef<HTMLDivElement>(null);
 
   const [containerWidth, setContainerWidth] = useState<number>(800);
   const [explorerWidth, setExplorerWidth] = useState<number>(600);
+  const [leftToolbarWidth, setLeftToolbarWidth] = useState<number>(800);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -268,6 +271,22 @@ export default function FileManager() {
       }
     });
     observer.observe(explorerAreaRef.current);
+    return () => observer.disconnect();
+  }, []);
+
+  // Tracks the actual space available to the left action-button group (New
+  // Folder / Cut / Copy / Paste / Rename / Delete / …) — not the whole
+  // window, since that also has to share the row with the search box and the
+  // right-hand filter/view controls. Flexbox reports this directly once the
+  // group is a `min-w-0 flex-1` sibling instead of something that wraps.
+  useEffect(() => {
+    if (!leftToolbarRef.current) return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setLeftToolbarWidth(entry.contentRect.width);
+      }
+    });
+    observer.observe(leftToolbarRef.current);
     return () => observer.disconnect();
   }, []);
 
@@ -1185,6 +1204,188 @@ export default function FileManager() {
     useContextMenuStore.getState().closeContextMenu();
   };
 
+  // Left toolbar overflow ---------------------------------------------------
+  // Below a certain width the action buttons (New Folder, Cut, Copy, Paste,
+  // Rename, Delete, …) no longer fit on one line. Rather than wrapping onto a
+  // second row, trailing buttons that don't fit collapse into a "More
+  // actions" overflow menu — the row itself stays a single line at every
+  // width. `estimateActionWidth` is a deliberately rough per-character
+  // estimate (there's no cheap way to get exact rendered widths without an
+  // extra measurement pass) but only needs to be in the right ballpark: being
+  // a little conservative just moves the cutoff a few px earlier than
+  // strictly necessary, never causes actual clipping.
+  interface LeftToolbarAction {
+    id: string;
+    label: string;
+    icon: React.ReactNode;
+    menuIcon: React.ReactNode;
+    onClick: () => void;
+    disabled?: boolean;
+    danger?: boolean;
+    dividerBefore?: boolean;
+    wide?: boolean;
+    hasChevron?: boolean;
+    submenu?: ContextMenuItem[];
+  }
+
+  const leftToolbarActions: LeftToolbarAction[] = [
+    {
+      id: 'new-folder',
+      label: 'New Folder',
+      icon: <FolderPlus className="w-3.5 h-3.5 text-amber-500 shrink-0" />,
+      menuIcon: <FolderPlus size={15} className="text-amber-500" />,
+      onClick: handleCreateFolder,
+      wide: true,
+    },
+    {
+      id: 'new-text',
+      label: 'New Text',
+      icon: <Plus className="w-3.5 h-3.5 text-blue-500 shrink-0" />,
+      menuIcon: <Plus size={15} className="text-blue-500" />,
+      onClick: handleCreateFile,
+      wide: true,
+    },
+    {
+      id: 'upload',
+      label: 'Upload',
+      icon: <Upload className="w-3.5 h-3.5 shrink-0" />,
+      menuIcon: <Upload size={15} className="text-emerald-500" />,
+      onClick: handleUploadClick,
+      dividerBefore: true,
+      wide: true,
+      hasChevron: true,
+      submenu: [
+        { id: 'upload-file', label: 'Upload File', icon: <FileUp size={15} className="text-emerald-400" />, onClick: handleUploadClick },
+        { id: 'upload-folder', label: 'Upload Folder', icon: <FolderUp size={15} className="text-emerald-400" />, onClick: handleUploadFolderClick },
+      ],
+    },
+    {
+      id: 'cut',
+      label: 'Cut',
+      icon: <Scissors className="w-3.5 h-3.5 shrink-0" />,
+      menuIcon: <Scissors size={15} className="text-slate-400" />,
+      onClick: () => selectedItem && handleCut(selectedItem),
+      disabled: !selectedItem,
+      dividerBefore: true,
+    },
+    {
+      id: 'copy',
+      label: 'Copy',
+      icon: <Copy className="w-3.5 h-3.5 shrink-0" />,
+      menuIcon: <Copy size={15} className="text-slate-400" />,
+      onClick: () => selectedItem && handleCopy(selectedItem),
+      disabled: !selectedItem,
+    },
+    {
+      id: 'paste',
+      label: 'Paste',
+      icon: <Clipboard className="w-3.5 h-3.5 shrink-0" />,
+      menuIcon: <Clipboard size={15} className="text-slate-400" />,
+      onClick: handlePaste,
+      disabled: !clipboard,
+    },
+    {
+      id: 'duplicate',
+      label: 'Duplicate',
+      icon: <Copy className="w-3.5 h-3.5 text-purple-500 shrink-0" />,
+      menuIcon: <Copy size={15} className="text-purple-500" />,
+      onClick: () => selectedItem && handleDuplicate(selectedItem),
+      disabled: !selectedItem,
+    },
+    {
+      id: 'rename',
+      label: 'Rename',
+      icon: <Edit3 className="w-3.5 h-3.5 text-sky-500 shrink-0" />,
+      menuIcon: <Edit3 size={15} className="text-sky-500" />,
+      onClick: () => selectedItem && handleStartRename(selectedItem),
+      disabled: !selectedItem,
+      dividerBefore: true,
+    },
+    {
+      id: 'delete',
+      label: 'Delete',
+      icon: <Trash2 className="w-3.5 h-3.5 shrink-0" />,
+      menuIcon: <Trash2 size={15} className="text-rose-500" />,
+      onClick: () => selectedItem && handleDeleteItem(selectedItem),
+      disabled: !selectedItem,
+      danger: true,
+    },
+  ];
+
+  // Real measured widths, not guessed ones: a per-character estimate turned
+  // out to be off by enough (accumulated over 9 buttons) to trigger the
+  // overflow menu even at widths where everything actually fits. Every
+  // button is always mounted with a ref; when hidden it's `display: none`
+  // rather than unmounted, so — combined with the "show everything, measure,
+  // then trim" cycle below — a button's width, once known for the current
+  // label mode, never needs re-measuring just because it's not currently
+  // visible.
+  const leftButtonRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const [leftMeasuredWidths, setLeftMeasuredWidths] = useState<number[] | null>(null);
+
+  // Label visibility (isCompactRibbon) changes every button's own width, so
+  // previously-measured widths go stale — clear them to force a fresh
+  // "show everything" measuring pass below.
+  useEffect(() => {
+    setLeftMeasuredWidths(null);
+  }, [isCompactRibbon]);
+
+  useLayoutEffect(() => {
+    if (leftMeasuredWidths !== null) return;
+    const widths = leftButtonRefs.current.map((el) => el?.offsetWidth ?? 0);
+    if (widths.some((w) => w === 0)) return; // not all buttons mounted yet
+    setLeftMeasuredWidths(widths);
+  });
+
+  const leftToolbarVisibleCount = useMemo(() => {
+    const total = leftToolbarActions.length;
+    // Still measuring (or about to): render every button so the layout
+    // effect above has something to measure.
+    if (!leftMeasuredWidths) return total;
+
+    const ROW_GAP = 6; // gap-1.5 on the toolbar row
+    const DIVIDER_W = 5; // the 1px separators (w-[1px] + mx-0.5 margin each side)
+    const OVERFLOW_BTN_W = 32;
+
+    const widthUpTo = (count: number): number => {
+      let running = 0;
+      for (let i = 0; i < count; i++) {
+        let addition = leftMeasuredWidths[i] ?? 0;
+        if (i > 0) addition += ROW_GAP;
+        if (leftToolbarActions[i].dividerBefore) addition += DIVIDER_W + ROW_GAP;
+        running += addition;
+      }
+      return running;
+    };
+
+    if (widthUpTo(total) <= leftToolbarWidth) return total;
+
+    const overflowReserve = ROW_GAP + DIVIDER_W + ROW_GAP + OVERFLOW_BTN_W;
+    let count = total;
+    while (count > 0 && widthUpTo(count) + overflowReserve > leftToolbarWidth) {
+      count -= 1;
+    }
+    return count;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leftMeasuredWidths, leftToolbarWidth]);
+
+  const handleLeftToolbarOverflowClick = (e: React.MouseEvent) => {
+    const hidden = leftToolbarActions.slice(leftToolbarVisibleCount);
+    openContextMenu(
+      e,
+      hidden.map((action) => ({
+        id: action.id,
+        label: action.label,
+        icon: action.menuIcon,
+        disabled: action.disabled,
+        danger: action.danger,
+        onClick: action.onClick,
+        submenu: action.submenu,
+      })),
+      'More Actions'
+    );
+  };
+
   // Restore item from Trash
   const handleRestoreItem = (item: FileItem) => {
     handleRestoreFile(item);
@@ -1813,94 +2014,142 @@ export default function FileManager() {
 
         {/* Toolbar Action Ribbon */}
         <div className="flex items-center justify-between border-t border-black/5 bg-black/5 py-1 px-3 flex-wrap gap-1">
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <button
-              onClick={handleCreateFolder}
-              className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold rounded hover:bg-white/35 cursor-pointer"
-              title="New Folder"
-            >
-              <FolderPlus className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-              {!isCompactRibbon && <span>New Folder</span>}
-            </button>
-            <button
-              onClick={handleCreateFile}
-              className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold rounded hover:bg-white/35 cursor-pointer"
-              title="New Text File"
-            >
-              <Plus className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-              {!isCompactRibbon && <span>New Text</span>}
-            </button>
+          {/* `flex-nowrap` + `min-w-0 flex-1`: the group never wraps onto a
+              second line — instead leftToolbarVisibleCount, computed against
+              this container's actual measured width, decides how many
+              buttons render inline before the rest fold into the "More
+              Actions" overflow menu below. */}
+          <div ref={leftToolbarRef} className="flex items-center gap-1.5 flex-nowrap min-w-0 flex-1 overflow-hidden">
+            {leftToolbarVisibleCount > 0 && (
+              <button
+                ref={(el) => { leftButtonRefs.current[0] = el; }}
+                onClick={handleCreateFolder}
+                className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold rounded hover:bg-white/35 cursor-pointer shrink-0"
+                title="New Folder"
+              >
+                <FolderPlus className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                {!isCompactRibbon && <span>New Folder</span>}
+              </button>
+            )}
+            {leftToolbarVisibleCount > 1 && (
+              <button
+                ref={(el) => { leftButtonRefs.current[1] = el; }}
+                onClick={handleCreateFile}
+                className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold rounded hover:bg-white/35 cursor-pointer shrink-0"
+                title="New Text File"
+              >
+                <Plus className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                {!isCompactRibbon && <span>New Text</span>}
+              </button>
+            )}
 
-            <span className="h-4 w-[1px] bg-black/10 mx-0.5" />
+            {leftToolbarVisibleCount > 2 && (
+              <>
+                <span className="h-4 w-[1px] bg-black/10 mx-0.5 shrink-0" />
+                <button
+                  ref={(el) => { leftButtonRefs.current[2] = el; }}
+                  onClick={handleUploadMenuClick}
+                  className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold rounded hover:bg-white/35 text-emerald-600 hover:text-emerald-700 cursor-pointer shrink-0"
+                  title="Upload a file or folder"
+                >
+                  <Upload className="w-3.5 h-3.5 shrink-0" />
+                  {!isCompactRibbon && <span>Upload</span>}
+                  <ChevronDown className="w-3 h-3 shrink-0" />
+                </button>
+              </>
+            )}
 
-            <button
-              onClick={handleUploadMenuClick}
-              className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold rounded hover:bg-white/35 text-emerald-600 hover:text-emerald-700 cursor-pointer"
-              title="Upload a file or folder"
-            >
-              <Upload className="w-3.5 h-3.5 shrink-0" />
-              {!isCompactRibbon && <span>Upload</span>}
-              <ChevronDown className="w-3 h-3 shrink-0" />
-            </button>
+            {leftToolbarVisibleCount > 3 && (
+              <>
+                <span className="h-4 w-[1px] bg-black/10 mx-0.5 shrink-0" />
+                <button
+                  ref={(el) => { leftButtonRefs.current[3] = el; }}
+                  onClick={() => selectedItem && handleCut(selectedItem)}
+                  disabled={!selectedItem}
+                  className="flex items-center gap-1.5 px-2 py-1 text-[11px] font-semibold rounded hover:bg-white/35 disabled:opacity-35 cursor-pointer shrink-0"
+                >
+                  <Scissors className="w-3.5 h-3.5 shrink-0" />
+                  {!isCompactRibbon && <span>Cut</span>}
+                </button>
+              </>
+            )}
 
-            <span className="h-4 w-[1px] bg-black/10 mx-0.5" />
+            {leftToolbarVisibleCount > 4 && (
+              <button
+                ref={(el) => { leftButtonRefs.current[4] = el; }}
+                onClick={() => selectedItem && handleCopy(selectedItem)}
+                disabled={!selectedItem}
+                className="flex items-center gap-1.5 px-2 py-1 text-[11px] font-semibold rounded hover:bg-white/35 disabled:opacity-35 cursor-pointer shrink-0"
+              >
+                <Copy className="w-3.5 h-3.5 shrink-0" />
+                {!isCompactRibbon && <span>Copy</span>}
+              </button>
+            )}
 
-            <button
-              onClick={() => selectedItem && handleCut(selectedItem)}
-              disabled={!selectedItem}
-              className="flex items-center gap-1.5 px-2 py-1 text-[11px] font-semibold rounded hover:bg-white/35 disabled:opacity-35 cursor-pointer"
-            >
-              <Scissors className="w-3.5 h-3.5 shrink-0" />
-              {!isCompactRibbon && <span>Cut</span>}
-            </button>
+            {leftToolbarVisibleCount > 5 && (
+              <button
+                ref={(el) => { leftButtonRefs.current[5] = el; }}
+                onClick={handlePaste}
+                disabled={!clipboard}
+                className="flex items-center gap-1.5 px-2 py-1 text-[11px] font-semibold rounded hover:bg-white/35 disabled:opacity-35 cursor-pointer shrink-0"
+              >
+                <Clipboard className="w-3.5 h-3.5 shrink-0" />
+                {!isCompactRibbon && <span>Paste</span>}
+              </button>
+            )}
 
-            <button
-              onClick={() => selectedItem && handleCopy(selectedItem)}
-              disabled={!selectedItem}
-              className="flex items-center gap-1.5 px-2 py-1 text-[11px] font-semibold rounded hover:bg-white/35 disabled:opacity-35 cursor-pointer"
-            >
-              <Copy className="w-3.5 h-3.5 shrink-0" />
-              {!isCompactRibbon && <span>Copy</span>}
-            </button>
+            {leftToolbarVisibleCount > 6 && (
+              <button
+                ref={(el) => { leftButtonRefs.current[6] = el; }}
+                onClick={() => selectedItem && handleDuplicate(selectedItem)}
+                disabled={!selectedItem}
+                className="flex items-center gap-1.5 px-2 py-1 text-[11px] font-semibold rounded hover:bg-white/35 disabled:opacity-35 cursor-pointer shrink-0"
+                title="Duplicate selection"
+              >
+                <Copy className="w-3.5 h-3.5 text-purple-500 shrink-0" />
+                {!isCompactRibbon && <span>Duplicate</span>}
+              </button>
+            )}
 
-            <button
-              onClick={handlePaste}
-              disabled={!clipboard}
-              className="flex items-center gap-1.5 px-2 py-1 text-[11px] font-semibold rounded hover:bg-white/35 disabled:opacity-35 cursor-pointer"
-            >
-              <Clipboard className="w-3.5 h-3.5 shrink-0" />
-              {!isCompactRibbon && <span>Paste</span>}
-            </button>
+            {leftToolbarVisibleCount > 7 && (
+              <>
+                <span className="h-4 w-[1px] bg-black/10 mx-0.5 shrink-0" />
+                <button
+                  ref={(el) => { leftButtonRefs.current[7] = el; }}
+                  onClick={() => selectedItem && handleStartRename(selectedItem)}
+                  disabled={!selectedItem}
+                  className="flex items-center gap-1.5 px-2 py-1 text-[11px] font-semibold rounded hover:bg-white/35 disabled:opacity-35 cursor-pointer shrink-0"
+                >
+                  <Edit3 className="w-3.5 h-3.5 text-sky-500 shrink-0" />
+                  {!isCompactRibbon && <span>Rename</span>}
+                </button>
+              </>
+            )}
 
-            <button
-              onClick={() => selectedItem && handleDuplicate(selectedItem)}
-              disabled={!selectedItem}
-              className="flex items-center gap-1.5 px-2 py-1 text-[11px] font-semibold rounded hover:bg-white/35 disabled:opacity-35 cursor-pointer"
-              title="Duplicate selection"
-            >
-              <Copy className="w-3.5 h-3.5 text-purple-500 shrink-0" />
-              {!isCompactRibbon && <span>Duplicate</span>}
-            </button>
+            {leftToolbarVisibleCount > 8 && (
+              <button
+                ref={(el) => { leftButtonRefs.current[8] = el; }}
+                onClick={() => selectedItem && handleDeleteItem(selectedItem)}
+                disabled={!selectedItem}
+                className="flex items-center gap-1.5 px-2 py-1 text-[11px] font-semibold rounded hover:bg-white/35 text-rose-500 disabled:opacity-35 cursor-pointer shrink-0"
+              >
+                <Trash2 className="w-3.5 h-3.5 shrink-0" />
+                {!isCompactRibbon && <span>Delete</span>}
+              </button>
+            )}
 
-            <span className="h-4 w-[1px] bg-black/10 mx-0.5" />
-
-            <button
-              onClick={() => selectedItem && handleStartRename(selectedItem)}
-              disabled={!selectedItem}
-              className="flex items-center gap-1.5 px-2 py-1 text-[11px] font-semibold rounded hover:bg-white/35 disabled:opacity-35 cursor-pointer"
-            >
-              <Edit3 className="w-3.5 h-3.5 text-sky-500 shrink-0" />
-              {!isCompactRibbon && <span>Rename</span>}
-            </button>
-
-            <button
-              onClick={() => selectedItem && handleDeleteItem(selectedItem)}
-              disabled={!selectedItem}
-              className="flex items-center gap-1.5 px-2 py-1 text-[11px] font-semibold rounded hover:bg-white/35 text-rose-500 disabled:opacity-35 cursor-pointer"
-            >
-              <Trash2 className="w-3.5 h-3.5 shrink-0" />
-              {!isCompactRibbon && <span>Delete</span>}
-            </button>
+            {leftToolbarVisibleCount < leftToolbarActions.length && (
+              <>
+                <span className="h-4 w-[1px] bg-black/10 mx-0.5 shrink-0" />
+                <button
+                  onClick={handleLeftToolbarOverflowClick}
+                  className="flex items-center gap-1 px-2 py-1.5 rounded hover:bg-white/35 cursor-pointer shrink-0"
+                  title="More Actions"
+                >
+                  <MoreHorizontal className="w-4 h-4" />
+                </button>
+              </>
+            )}
           </div>
 
           {/* VIEW MODE & TYPE FILTER TOGGLES */}
