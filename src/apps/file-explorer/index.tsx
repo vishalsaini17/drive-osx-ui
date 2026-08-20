@@ -1424,13 +1424,20 @@ export default function FileManager() {
   };
 
   // Open Selected App via OpenWith Modal
-  const handleOpenWithApp = (appKey: string, item: FileItem) => {
+  const handleOpenWithApp = async (appKey: string, item: FileItem) => {
     // 'text-editor' is OpenWithModal's own manual-pick key; 'editor' is the
     // real AppRegistry id that double-click (via getAppForFile/EDITOR_REGISTRY)
     // actually passes here — without this second check double-clicking a
     // text/code file silently did nothing, since neither branch below matched it.
     if (appKey === 'text-editor' || appKey === 'editor') {
-      openTextFileInEditor(item.id, item.name, item.content || '', currentFolderId);
+      // `item.content` comes from the folder listing, which never includes
+      // content (FileService.listChildren doesn't pass includeContent=true —
+      // it would be wasteful to fetch every file's bytes just to render a
+      // grid of names and icons). Any resync of this folder therefore blanks
+      // it back to ''. Fetch the real content here so a file saved from the
+      // editor still shows its text the next time it's opened from Explorer.
+      const full = await FileService.getFile(item.id);
+      openTextFileInEditor(item.id, item.name, full?.content ?? item.content ?? '', currentFolderId);
     } else if (appKey === 'image-viewer' || appKey === 'audio-player' || appKey === 'video-player' || appKey === 'code-viewer') {
       setActivePreviewItem(item);
     } else if (appKey === 'properties') {
