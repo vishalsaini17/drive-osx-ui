@@ -75,6 +75,16 @@ import OpenWithModal from './components/OpenWithModal';
  */
 const INTERNAL_DRAG_TYPE = 'application/x-drive-osx-file-item';
 
+/**
+ * Sidebar destinations that aren't real backend folders — Trash, Recent,
+ * Starred, and each "Shared with me" entry are all client-side views derived
+ * by filtering the already-synced `files` array. `syncFilesFromBackend`
+ * expects an actual folder id (or null for root); passing one of these
+ * through to `GET /files/children/:id` gets rejected as an invalid folder id
+ * and only produces a spurious error toast, never any usable data.
+ */
+const VIRTUAL_FOLDER_IDS = new Set(['trash', 'recent', 'starred', 'shared-alex', 'shared-sarah', 'shared-team']);
+
 function dragHasType(e: React.DragEvent, type: string): boolean {
   return Array.from(e.dataTransfer.types || []).includes(type);
 }
@@ -155,6 +165,7 @@ export default function FileManager() {
   // no matter which app last touched the tree.
   useEffect(() => {
     if (!currentUser) return;
+    if (currentFolderId && VIRTUAL_FOLDER_IDS.has(currentFolderId)) return;
     void syncFilesFromBackend(currentFolderId);
   }, [currentUser, currentFolderId, syncFilesFromBackend]);
 
@@ -577,9 +588,22 @@ export default function FileManager() {
   };
 
   // Toggle Star / Favorite
-  const handleToggleStar = (item: FileItem) => {
-    const updated = files.map((f) => (f.id === item.id ? { ...f, starred: !f.starred } : f));
-    setFiles(updated);
+  //
+  // Must round-trip through the backend, not just flip local state: this used
+  // to only update `files` in memory, so the star was never actually saved.
+  // The moment any real folder synced again — e.g. navigating away from
+  // Starred to any other folder — `syncFilesFromBackend` merged in that
+  // folder's fresh (still-unstarred) data from the server and silently wiped
+  // the star back off, which is exactly the "unstars itself when I navigate
+  // away" bug this fixes.
+  const handleToggleStar = async (item: FileItem) => {
+    try {
+      const result = await FileService.toggleStar(item.id);
+      setFiles((prev) => prev.map((f) => (f.id === item.id ? { ...f, starred: result.starred } : f)));
+    } catch (error) {
+      console.error('Failed to toggle star:', error);
+      alert(`Could not update the starred state of "${item.name}". Please try again.`);
+    }
   };
 
   // Upload trigger & execution
@@ -1707,7 +1731,7 @@ export default function FileManager() {
   } else if (currentFolderId === 'recent') {
     currentItems = files.filter((f) => f.type === 'file');
   } else if (currentFolderId === 'starred') {
-    currentItems = files.filter((f) => f.starred || f.name.includes('todo') || f.name.includes('readme'));
+    currentItems = files.filter((f) => f.starred);
   } else if (currentFolderId === 'shared-alex') {
     currentItems = [
       { id: 'sa-1', name: 'UI Prototype Guidelines.pdf', type: 'file', content: 'Alex Morgan shared this document with you.', parentId: 'shared-alex', createdAt: 'Yesterday' },
