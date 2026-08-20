@@ -104,25 +104,7 @@ export interface WindowState {
   zIndex: number;
 }
 
-export interface SharedPermission {
-  user: string;
-  role: 'viewer' | 'editor';
-  addedAt: string;
-}
-
-export interface PublicLinkConfig {
-  enabled: boolean;
-  code: string;
-  role: 'viewer' | 'editor';
-  expiresAt?: string;
-}
-
-export interface ActivityLogItem {
-  id: string;
-  action: string;
-  user: string;
-  timestamp: string;
-}
+export type ResourceRole = 'owner' | 'editor' | 'commenter' | 'viewer';
 
 export interface FileItem {
   id: string;
@@ -133,9 +115,6 @@ export interface FileItem {
   createdAt: string;
   starred?: boolean;
   category?: 'documents' | 'images' | 'audio' | 'video' | 'code' | 'archives' | 'other';
-  sharedWith?: SharedPermission[];
-  publicLink?: PublicLinkConfig;
-  activityHistory?: ActivityLogItem[];
   originalParentId?: string | null;
   /**
    * Size in bytes, as reported by the server. Optional because a file created
@@ -143,6 +122,12 @@ export interface FileItem {
    * must treat a missing size as unknown rather than as zero.
    */
   size?: number;
+  /** True when anyone other than the owner currently has access. Drives the shared-item badge. */
+  isShared?: boolean;
+  /** The signed-in user's resolved access level for this item. */
+  effectiveRole?: ResourceRole;
+  /** Present only on items reached through "Shared with me". */
+  sharedRole?: ResourceRole;
 }
 
 export interface ChatMessage {

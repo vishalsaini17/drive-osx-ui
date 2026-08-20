@@ -29,6 +29,8 @@ export interface FileVersion {
   createdAt: string;
 }
 
+export type ResourceRole = 'owner' | 'editor' | 'commenter' | 'viewer';
+
 export interface FileItemResponse {
   id: string;
   /** Legacy alias still read by some applications. */
@@ -51,6 +53,41 @@ export interface FileItemResponse {
   versions?: FileVersion[];
   /** Set on records that exist only locally, awaiting synchronisation. */
   pendingSync?: boolean;
+  /** True when anyone other than the owner currently has access. */
+  isShared?: boolean;
+  /** The signed-in user's resolved access level for this item. */
+  effectiveRole?: ResourceRole;
+  /** Present only on `listSharedWithMe` results. */
+  sharedRole?: ResourceRole;
+}
+
+export interface ShareView {
+  id: string;
+  fileId: string;
+  principalType: 'user' | 'team' | 'organization' | 'link';
+  principalId: string | null;
+  principalName: string | null;
+  role: ResourceRole;
+  message: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+  sharedBy: string;
+}
+
+export interface EligibleUser {
+  id: string;
+  name: string;
+  email: string;
+  username: string;
+  avatarUrl: string | null;
+}
+
+export interface FileActivityEntry {
+  id: string;
+  action: string;
+  actorName: string | null;
+  createdAt: string;
+  metadata: Record<string, unknown>;
 }
 
 const OFFLINE_PREFIX = 'offline-';
@@ -415,21 +452,30 @@ export class FileServiceClass {
   }
 
   // ------------------------------------------------------------ sharing
+  /**
+   * `target.userId` is preferred whenever the caller already resolved a
+   * specific person (e.g. picked from `searchEligibleUsers` suggestions) so
+   * the share is created for the exact account the user selected, not a
+   * re-lookup of typed text.
+   */
   async shareWithUser(
     fileId: string,
-    usernameOrEmail: string,
-    role: 'viewer' | 'commenter' | 'editor' = 'viewer',
+    target: { userId?: string; usernameOrEmail?: string },
+    role: ResourceRole = 'viewer',
   ): Promise<void> {
-    await http.post(`/shares/files/${fileId}/users`, { usernameOrEmail, role });
+    await http.post(`/shares/files/${fileId}/users`, { ...target, role });
   }
 
-  async createShareLink(fileId: string, role: 'viewer' | 'commenter' | 'editor' = 'viewer'): Promise<string> {
-    const data = await http.post<{ token: string }>(`/shares/files/${fileId}/links`, { role });
+  async createShareLink(fileId: string, role: ResourceRole = 'viewer', expiresAt?: string): Promise<string> {
+    const data = await http.post<{ token: string }>(`/shares/files/${fileId}/links`, {
+      role,
+      ...(expiresAt ? { expiresAt } : {}),
+    });
     return data.token;
   }
 
-  async listShares(fileId: string): Promise<Array<Record<string, unknown>>> {
-    const data = await http.get<{ shares: Array<Record<string, unknown>> }>(`/shares/files/${fileId}`);
+  async listShares(fileId: string): Promise<ShareView[]> {
+    const data = await http.get<{ shares: ShareView[] }>(`/shares/files/${fileId}`);
     return data.shares;
   }
 
@@ -440,6 +486,23 @@ export class FileServiceClass {
 
   async revokeShare(shareId: string): Promise<void> {
     await http.delete(`/shares/${shareId}`);
+  }
+
+  /** Public — no session required. Used by the `/s/:token` landing page. */
+  async resolveShareLink(token: string): Promise<{ file: FileItemResponse; role: ResourceRole }> {
+    return http.get<{ file: FileItemResponse; role: ResourceRole }>(`/shares/links/${token}`, { anonymous: true });
+  }
+
+  async searchEligibleUsers(fileId: string, query: string): Promise<EligibleUser[]> {
+    const data = await http.get<{ users: EligibleUser[] }>(`/shares/files/${fileId}/eligible-users`, {
+      query: { q: query },
+    });
+    return data.users;
+  }
+
+  async listFileActivity(fileId: string): Promise<FileActivityEntry[]> {
+    const data = await http.get<{ activity: FileActivityEntry[] }>(`/shares/files/${fileId}/activity`);
+    return data.activity;
   }
 }
 

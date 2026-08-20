@@ -73,6 +73,8 @@ interface SystemState {
   editorFileName: string | null;
   editorFileContent: string;
   editorCurrentFolderId: string | null;
+  /** The folder id File Explorer's window currently reflects in its URL (`/folder/:folderId`), null for `/folder` (root). */
+  fileManagerCurrentFolderId: string | null;
   messages: ChatMessage[];
   
   // Auth state & actions
@@ -138,6 +140,7 @@ interface SystemState {
   handleResizeWindow: (id: string, w: number, h: number) => void;
   openTextFileInEditor: (fileId: string, name: string, content: string, folderId?: string | null) => void;
   setEditorCurrentFolderId: (folderId: string | null) => void;
+  setFileManagerCurrentFolderId: (folderId: string | null) => void;
   resolveDefaultFolderId: (folderName: string) => string | null;
   handleDeleteFile: (deletedItem: FileItem) => Promise<void>;
   handleRestoreFile: (file: FileItem) => Promise<void>;
@@ -210,6 +213,7 @@ export const useSystemStore = create<SystemState>((set, get) => ({
   editorFileName: null,
   editorFileContent: '',
   editorCurrentFolderId: null,
+  fileManagerCurrentFolderId: null,
   messages: [
     {
       id: 'msg-init',
@@ -725,7 +729,12 @@ export const useSystemStore = create<SystemState>((set, get) => ({
 
       return {
         windows: updated,
-        activeWindowId: isCurrentActiveClosed ? nextActiveId : state.activeWindowId
+        activeWindowId: isCurrentActiveClosed ? nextActiveId : state.activeWindowId,
+        // Closing File Explorer drops which folder it was showing, so the
+        // next open (via the desktop icon, dock, etc. — not a /folder/:id
+        // link) starts fresh at root instead of silently resuming wherever
+        // this session last left off.
+        ...(id === 'fileManager' ? { fileManagerCurrentFolderId: null } : null),
       };
     });
   },
@@ -932,6 +941,10 @@ export const useSystemStore = create<SystemState>((set, get) => ({
     set({ editorCurrentFolderId: folderId });
   },
 
+  setFileManagerCurrentFolderId: (folderId) => {
+    set((state) => (state.fileManagerCurrentFolderId === folderId ? state : { fileManagerCurrentFolderId: folderId }));
+  },
+
   resolveDefaultFolderId: (folderName: string): string | null => {
     const state = get();
     // Root-scoped on purpose: `files` can now hold nested folders too (see
@@ -1093,10 +1106,9 @@ export const useSystemStore = create<SystemState>((set, get) => ({
         size: f.size,
         starred: f.starred || false,
         category: f.mimeType?.split('/')[0] as any,
-        sharedWith: [],
-        publicLink: undefined,
-        activityHistory: [],
         originalParentId: null,
+        isShared: f.isShared || false,
+        effectiveRole: f.effectiveRole,
       }));
       set((state) => {
         const merged = mergeFolderChildren(state.files, folderId, mappedFiles);

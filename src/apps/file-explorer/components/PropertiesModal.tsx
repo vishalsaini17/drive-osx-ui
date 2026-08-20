@@ -8,7 +8,6 @@ import {
   HardDrive,
   User,
   Shield,
-  Clock,
   Star,
   Download,
   Share2,
@@ -138,32 +137,13 @@ export default function PropertiesModal({
               <Shield className="w-3 h-3 text-purple-500" /> Shared Access
             </span>
             <div className="text-[11px]">
-              {item.sharedWith && item.sharedWith.length > 0 ? (
-                <span className="text-emerald-600 dark:text-emerald-400 font-semibold">
-                  Shared with {item.sharedWith.length} people
-                </span>
+              {item.isShared ? (
+                <span className="text-emerald-600 dark:text-emerald-400 font-semibold">Shared with others</span>
               ) : (
                 <span className="text-zinc-500">Private to you</span>
               )}
             </div>
           </div>
-
-          {/* Activity Log Preview */}
-          {item.activityHistory && item.activityHistory.length > 0 && (
-            <div className="p-3 rounded-xl bg-zinc-50 dark:bg-zinc-800/60 border border-zinc-200/60 dark:border-zinc-800 flex flex-col gap-2">
-              <span className="text-[10px] text-zinc-400 uppercase font-bold flex items-center gap-1">
-                <Clock className="w-3 h-3 text-purple-500" /> Recent Activity
-              </span>
-              <div className="flex flex-col gap-1.5 text-[11px]">
-                {item.activityHistory.slice(0, 3).map((act) => (
-                  <div key={act.id} className="flex justify-between text-zinc-600 dark:text-zinc-300">
-                    <span>{act.action}</span>
-                    <span className="text-[10px] text-zinc-400">{act.timestamp}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
 
         {/* Footer Actions */}

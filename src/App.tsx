@@ -16,6 +16,7 @@ import ApplicationRenderer from './apps';
 import LoginScreen from './shell/auth/LoginScreen';
 import ForgotPasswordScreen from './shell/auth/ForgotPasswordScreen';
 import ResetPasswordScreen from './shell/auth/ResetPasswordScreen';
+import ShareLinkPage from './shell/auth/ShareLinkPage';
 
 import SystemToastNotifier from './shell/notifications/SystemToastNotifier';
 import SyncStatusIndicator from './shell/notifications/SyncStatusIndicator';
@@ -99,7 +100,8 @@ export default function App() {
         location.pathname !== '/login' &&
         location.pathname !== '/register' &&
         location.pathname !== '/forgot-password' &&
-        location.pathname !== '/reset-password'
+        location.pathname !== '/reset-password' &&
+        !location.pathname.startsWith('/s/')
       ) {
         navigate('/login');
       }
@@ -120,8 +122,13 @@ export default function App() {
         <Route path="/register" element={<LoginScreen />} />
         <Route path="/forgot-password" element={<ForgotPasswordScreen />} />
         <Route path="/reset-password" element={<ResetPasswordScreen />} />
+        <Route path="/s/:token" element={<ShareLinkPage />} />
         <Route path="/desktop" element={<Navigate to="/" replace />} />
         <Route path="/" element={<DesktopLayout />} />
+        {/* File Explorer is the only app whose route carries a sub-path —
+            the folder currently open, so a reload or a direct link lands
+            back in the same folder instead of always resetting to root. */}
+        <Route path="/folder/:folderId" element={<DesktopLayout />} />
         <Route path="/:appRoute" element={<DesktopLayout />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
@@ -140,6 +147,8 @@ function DesktopLayout() {
   const openAppWindow = useSystemStore((state) => state.openAppWindow);
   const focusWindow = useSystemStore((state) => state.focusWindow);
   const setFiles = useSystemStore((state) => state.setFiles);
+  const fileManagerCurrentFolderId = useSystemStore((state) => state.fileManagerCurrentFolderId);
+  const setFileManagerCurrentFolderId = useSystemStore((state) => state.setFileManagerCurrentFolderId);
   const logout = useSystemStore((state) => state.logout);
   const clampWindowsToViewport = useSystemStore((state) => state.clampWindowsToViewport);
   const openContextMenu = useContextMenuStore((state) => state.openContextMenu);
@@ -325,6 +334,7 @@ function DesktopLayout() {
     const isInitialMount = prevPathRef.current === null;
     const pathChanged = !isInitialMount && prevPathRef.current !== currentPath;
 
+    const previousActiveWindow = prevActiveWindowRef.current;
     prevActiveWindowRef.current = currentActiveWindow;
 
     // 1. Handle browser direct URL navigation or back/forward buttons
@@ -332,6 +342,12 @@ function DesktopLayout() {
       prevPathRef.current = currentPath;
       const appId = AppRegistry.getAppIdForPath(currentPath);
       if (appId) {
+        // A direct load of, or Back/Forward into, `/folder/:folderId` (or
+        // bare `/folder`) must seed which folder File Explorer opens to —
+        // otherwise it always starts at root regardless of the URL.
+        if (appId === 'fileManager') {
+          setFileManagerCurrentFolderId(AppRegistry.getFolderIdFromPath(currentPath));
+        }
         const targetWin = windows.find(w => w.id === appId);
         if (!targetWin?.isOpen || currentActiveWindow !== appId) {
           openAppWindow(appId);
@@ -351,14 +367,31 @@ function DesktopLayout() {
         focusWindow('');
       }
     }
-    // 2. Handle internal OS state changes (opening, closing, or switching app windows)
+    // 2. Handle internal OS state changes (opening, closing, or switching app
+    // windows — this also fires on a plain folder change inside an already-
+    // open File Explorer, since fileManagerCurrentFolderId is a dependency
+    // below even though neither the path nor the active window moved yet).
     else {
+      // Read live, not the `activeWindowId`/`windows`/`fileManagerCurrentFolderId`
+      // captured by this render: StrictMode double-invokes effects on mount
+      // without an intervening render, so a branch-1 pass that just called
+      // openAppWindow()/setFileManagerCurrentFolderId() moments ago has
+      // already updated the store, but this closure's own copies are still
+      // the pre-update ones. Deciding from those stale values here read
+      // `activeWindowId` as still null and overwrote the path branch 1 had
+      // just set with '/' — the file-manager reload regression this fixes.
+      const liveState = useSystemStore.getState();
+      const liveActiveWindow = liveState.activeWindowId;
       let expectedPath = '/';
 
-      if (currentActiveWindow) {
-        const activeApp = windows.find(w => w.id === currentActiveWindow);
+      if (liveActiveWindow) {
+        const activeApp = liveState.windows.find(w => w.id === liveActiveWindow);
         if (activeApp && activeApp.isOpen) {
-          expectedPath = AppRegistry.getPathForApp(currentActiveWindow) || '/';
+          expectedPath =
+            AppRegistry.getPathForApp(
+              liveActiveWindow,
+              liveActiveWindow === 'fileManager' ? liveState.fileManagerCurrentFolderId : undefined
+            ) || '/';
         }
       }
 
@@ -367,12 +400,29 @@ function DesktopLayout() {
       // external one on the next pass.
       prevPathRef.current = expectedPath;
       if (currentPath !== expectedPath) {
-        navigate(expectedPath, { replace: true });
+        // Folder-to-folder navigation within an already-focused File Explorer
+        // gets its own history entry, so browser Back/Forward walks through
+        // the folders visited — same as any address-bar-driven app. Every
+        // other transition here (opening/closing/switching windows) keeps
+        // replacing, as before, so window-management churn doesn't spam
+        // browser history.
+        const isFolderHopWithinFileManager =
+          liveActiveWindow === 'fileManager' && previousActiveWindow === 'fileManager';
+        navigate(expectedPath, isFolderHopWithinFileManager ? undefined : { replace: true });
       }
     }
     // `windows` is read only for `id` and `isOpen`, which the signature covers.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.pathname, activeWindowId, openWindowSignature, navigate, openAppWindow, focusWindow]);
+  }, [
+    location.pathname,
+    activeWindowId,
+    openWindowSignature,
+    fileManagerCurrentFolderId,
+    navigate,
+    openAppWindow,
+    focusWindow,
+    setFileManagerCurrentFolderId,
+  ]);
 
   return (
     <div 

@@ -46,7 +46,10 @@ import {
   Layers,
   FolderUp,
   ChevronDown,
-  MoreHorizontal
+  MoreHorizontal,
+  FolderX,
+  Loader2,
+  AlertCircle
 } from 'lucide-react';
 import { FileItem } from '../../platform/types';
 import { useSystemStore } from '../../shell/state/systemStore';
@@ -83,7 +86,7 @@ const INTERNAL_DRAG_TYPE = 'application/x-drive-osx-file-item';
  * through to `GET /files/children/:id` gets rejected as an invalid folder id
  * and only produces a spurious error toast, never any usable data.
  */
-const VIRTUAL_FOLDER_IDS = new Set(['trash', 'recent', 'starred', 'shared-alex', 'shared-sarah', 'shared-team']);
+const VIRTUAL_FOLDER_IDS = new Set(['trash', 'recent', 'starred', 'shared-with-me']);
 
 function dragHasType(e: React.DragEvent, type: string): boolean {
   return Array.from(e.dataTransfer.types || []).includes(type);
@@ -94,6 +97,7 @@ export default function FileManager() {
   const files = useSystemStore((state) => state.files);
   const setFiles = useSystemStore((state) => state.setFiles);
   const syncFilesFromBackend = useSystemStore((state) => state.syncFilesFromBackend);
+  const syncTrashFromBackend = useSystemStore((state) => state.syncTrashFromBackend);
   const deletedFiles = useSystemStore((state) => state.deletedFiles || []);
   const handleDeleteFile = useSystemStore((state) => state.handleDeleteFile);
   const handleRestoreFile = useSystemStore((state) => state.handleRestoreFile);
@@ -103,6 +107,8 @@ export default function FileManager() {
   const settings = useSystemStore((state) => state.settings);
   const setSettings = useSystemStore((state) => state.setSettings);
   const currentUser = useSystemStore((state) => state.currentUser);
+  const urlFolderId = useSystemStore((state) => state.fileManagerCurrentFolderId);
+  const setUrlFolderId = useSystemStore((state) => state.setFileManagerCurrentFolderId);
 
   const activeTheme = useAppTheme('fileManager').chromeTheme;
 
@@ -169,6 +175,77 @@ export default function FileManager() {
     void syncFilesFromBackend(currentFolderId);
   }, [currentUser, currentFolderId, syncFilesFromBackend]);
 
+  // --- URL sync (/folder and /folder/:folderId) --------------------------
+  //
+  // `App.tsx` reflects whichever folder this component is showing in the
+  // browser URL, and seeds `fileManagerCurrentFolderId` from the URL on a
+  // direct load or a Back/Forward navigation. The two effects below keep
+  // `currentFolderId` (this component's own state, driving everything else
+  // in the file — history, breadcrumbs, uploads, etc.) and that shared store
+  // field in sync in both directions, without echoing a change either side
+  // just made back at the other. `lastSyncedFolderIdRef` is what makes that
+  // possible: it's the folder id both sides last agreed on, so each effect
+  // only acts on a value it hasn't already seen.
+  const lastSyncedFolderIdRef = useRef<string | null>(null);
+  const [folderNotFoundId, setFolderNotFoundId] = useState<string | null>(null);
+
+  // This component's own navigation (clicking a folder, breadcrumbs, the
+  // in-app Back/Forward buttons) → tell the shell so it can update the URL.
+  useEffect(() => {
+    if (currentFolderId === lastSyncedFolderIdRef.current) return;
+    lastSyncedFolderIdRef.current = currentFolderId;
+    setUrlFolderId(currentFolderId);
+  }, [currentFolderId, setUrlFolderId]);
+
+  // A URL the shell didn't get from us — a direct link, a reload, or the
+  // browser's actual Back/Forward buttons — → adopt that folder here. Real
+  // (non-virtual) ids are verified against the backend first, so a bad id in
+  // the URL lands on a clear "not found" state instead of silently opening
+  // the wrong folder or an empty grid.
+  useEffect(() => {
+    if (urlFolderId === lastSyncedFolderIdRef.current) return;
+
+    // The ref is only updated once we've actually committed to a folder
+    // (below), not here at the top. Marking it "handled" before the async
+    // check below resolves would mean StrictMode's dev-mode double-invoke —
+    // which runs this effect's cleanup, cancelling the in-flight check,
+    // before immediately running the effect again — leaves the ref already
+    // matching `urlFolderId` on that second pass, so it short-circuits and
+    // the folder never actually gets adopted. Every exit path below sets the
+    // ref itself, right where it stops being redone.
+    if (urlFolderId === null || VIRTUAL_FOLDER_IDS.has(urlFolderId)) {
+      lastSyncedFolderIdRef.current = urlFolderId;
+      setFolderNotFoundId(null);
+      navigateToFolder(urlFolderId);
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const file = await FileService.getFile(urlFolderId);
+        if (cancelled) return;
+        if (!file || file.type !== 'folder') {
+          lastSyncedFolderIdRef.current = urlFolderId;
+          setFolderNotFoundId(urlFolderId);
+          return;
+        }
+        lastSyncedFolderIdRef.current = urlFolderId;
+        setFolderNotFoundId(null);
+        navigateToFolder(urlFolderId);
+      } catch {
+        if (!cancelled) {
+          lastSyncedFolderIdRef.current = urlFolderId;
+          setFolderNotFoundId(urlFolderId);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlFolderId]);
+
   // Derived from `files` itself (rather than a one-off local variable) so it
   // stays correct as the shared file list changes, not just at mount.
   //
@@ -194,6 +271,72 @@ export default function FileManager() {
 
   // Pinned sidebar folders state
   const [pinnedFolderIds, setPinnedFolderIds] = useState<string[]>([]);
+
+  // "Shared with me" virtual folder — items other people have shared with the
+  // current user, loaded on demand since it isn't part of the user's own tree.
+  const [sharedWithMeItems, setSharedWithMeItems] = useState<FileItem[]>([]);
+  const [sharedWithMeLoading, setSharedWithMeLoading] = useState(false);
+  const [sharedWithMeError, setSharedWithMeError] = useState<string | null>(null);
+
+  const loadSharedWithMe = async (signal: { cancelled: boolean }) => {
+    setSharedWithMeLoading(true);
+    setSharedWithMeError(null);
+    try {
+      const items = await FileService.listSharedWithMe();
+      if (signal.cancelled) return;
+      setSharedWithMeItems(
+        items.map((f: any) => ({
+          id: f._id ?? f.id,
+          name: f.name,
+          type: f.type,
+          content: f.content || '',
+          parentId: 'shared-with-me',
+          createdAt: f.createdAt,
+          size: f.size,
+          starred: f.starred || false,
+          category: f.mimeType?.split('/')[0] as any,
+          originalParentId: f.parentId,
+          isShared: f.isShared || false,
+          sharedRole: f.sharedRole,
+        })),
+      );
+    } catch (error) {
+      if (!signal.cancelled) {
+        const message = error instanceof Error ? error.message : 'Please try again.';
+        setSharedWithMeError(`Could not load items shared with you. ${message}`);
+      }
+    } finally {
+      if (!signal.cancelled) setSharedWithMeLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (currentFolderId !== 'shared-with-me' || !currentUser) return;
+    const signal = { cancelled: false };
+    void loadSharedWithMe(signal);
+    return () => {
+      signal.cancelled = true;
+    };
+  }, [currentFolderId, currentUser]);
+
+  /**
+   * Trash and "Shared with me" are backed by their own endpoints, not
+   * `/files/children/:id` — routing every virtual folder through
+   * `syncFilesFromBackend` the way a real folder id does makes the request
+   * 400 ("Invalid folder id") and silently fails, which is what the refresh
+   * button and the canvas's "Refresh" context-menu item were both doing.
+   */
+  const handleRefresh = () => {
+    setSearchQuery('');
+    setSelectedFileIds([]);
+    if (currentFolderId === 'trash') {
+      void syncTrashFromBackend();
+    } else if (currentFolderId === 'shared-with-me') {
+      void loadSharedWithMe({ cancelled: false });
+    } else if (!currentFolderId || !VIRTUAL_FOLDER_IDS.has(currentFolderId)) {
+      void syncFilesFromBackend(currentFolderId);
+    }
+  };
 
   useEffect(() => {
     if (!currentUser) return;
@@ -455,9 +598,7 @@ export default function FileManager() {
       'recent': 'Recent',
       'starred': 'Starred',
       'trash': 'Trash / Recycle Bin',
-      'shared-alex': 'Alex Morgan',
-      'shared-sarah': 'Sarah Chen',
-      'shared-team': 'Design Team',
+      'shared-with-me': 'Shared with me',
     };
     return map[folderId] || 'Folder';
   };
@@ -480,9 +621,7 @@ export default function FileManager() {
       recent: 'Recent',
       starred: 'Starred',
       trash: 'Trash Bin',
-      'shared-alex': 'Alex Morgan',
-      'shared-sarah': 'Sarah Chen',
-      'shared-team': 'Design Team',
+      'shared-with-me': 'Shared with me',
     };
     if (specialLabels[currentFolderId]) {
       return `/${specialLabels[currentFolderId]}`;
@@ -504,9 +643,7 @@ export default function FileManager() {
       recent: 'Recent',
       starred: 'Starred',
       trash: 'Trash Bin',
-      'shared-alex': 'Alex Morgan',
-      'shared-sarah': 'Sarah Chen',
-      'shared-team': 'Design Team',
+      'shared-with-me': 'Shared with me',
     };
     if (specialLabels[currentFolderId]) {
       return [...breadcrumbs, { name: specialLabels[currentFolderId], id: currentFolderId }];
@@ -1537,6 +1674,12 @@ export default function FileManager() {
       }
 
       const isPinned = pinnedFolderIds.includes(item.id);
+      // Undefined effectiveRole means the backend didn't attach one (e.g. an
+      // owned item outside a listChildren response) — default to permissive;
+      // the server enforces the real rule regardless, this only hides buttons
+      // that would fail anyway.
+      const canWrite = !item.effectiveRole || item.effectiveRole === 'owner' || item.effectiveRole === 'editor';
+      const canShare = !item.effectiveRole || item.effectiveRole === 'owner';
 
       const fileItems: ContextMenuItem[] = [
         {
@@ -1567,6 +1710,7 @@ export default function FileManager() {
           id: 'share',
           label: 'Share...',
           icon: <Share2 size={15} className="text-indigo-400" />,
+          disabled: !canShare,
           onClick: () => setActiveShareItem(item),
         },
       ];
@@ -1598,6 +1742,7 @@ export default function FileManager() {
           id: 'move-to',
           label: 'Move To...',
           icon: <Scissors size={15} className="text-slate-400" />,
+          disabled: !canWrite,
           onClick: () => setActiveMoveItem(item),
         },
         {
@@ -1619,6 +1764,7 @@ export default function FileManager() {
           label: 'Rename',
           icon: <Edit3 size={15} className="text-slate-400" />,
           shortcut: 'F2',
+          disabled: !canWrite,
           onClick: () => handleStartRename(item),
         },
         {
@@ -1627,6 +1773,7 @@ export default function FileManager() {
           icon: <Trash2 size={15} className="text-red-400" />,
           danger: true,
           shortcut: 'Del',
+          disabled: !canWrite,
           onClick: () => handleDeleteItem(item),
         },
         { divider: true },
@@ -1711,11 +1858,7 @@ export default function FileManager() {
           label: 'Refresh',
           icon: <RefreshCw size={15} className="text-slate-400" />,
           shortcut: 'F5',
-          onClick: () => {
-            setSearchQuery('');
-            setSelectedFileIds([]);
-            void syncFilesFromBackend(currentFolderId);
-          },
+          onClick: handleRefresh,
         },
       ];
       openContextMenu(e, folderItems, 'Folder Actions');
@@ -1752,20 +1895,8 @@ export default function FileManager() {
     currentItems = files.filter((f) => f.type === 'file');
   } else if (currentFolderId === 'starred') {
     currentItems = files.filter((f) => f.starred);
-  } else if (currentFolderId === 'shared-alex') {
-    currentItems = [
-      { id: 'sa-1', name: 'UI Prototype Guidelines.pdf', type: 'file', content: 'Alex Morgan shared this document with you.', parentId: 'shared-alex', createdAt: 'Yesterday' },
-      { id: 'sa-2', name: 'Brand Assets', type: 'folder', parentId: 'shared-alex', createdAt: '3 days ago' },
-    ];
-  } else if (currentFolderId === 'shared-sarah') {
-    currentItems = [
-      { id: 'ss-1', name: 'Q3 Financial Review.docx', type: 'file', content: 'Sarah Chen shared quarterly review.', parentId: 'shared-sarah', createdAt: '1 week ago' },
-    ];
-  } else if (currentFolderId === 'shared-team') {
-    currentItems = [
-      { id: 'st-1', name: 'Design System Guidelines', type: 'folder', parentId: 'shared-team', createdAt: '2 weeks ago' },
-      { id: 'st-2', name: 'Sprint Board.txt', type: 'file', content: 'Active sprint tasks for design team.', parentId: 'shared-team', createdAt: 'Today' },
-    ];
+  } else if (currentFolderId === 'shared-with-me') {
+    currentItems = sharedWithMeItems;
   } else {
     currentItems = files.filter((f) => f.parentId === currentFolderId);
   }
@@ -1993,11 +2124,7 @@ export default function FileManager() {
               <ArrowUp className="w-4 h-4" />
             </button>
             <button
-              onClick={() => {
-                setSearchQuery('');
-                setSelectedFileIds([]);
-                void syncFilesFromBackend(currentFolderId);
-              }}
+              onClick={handleRefresh}
               className="p-1.5 rounded-md hover:bg-black/5 cursor-pointer"
               title="Refresh Folder"
             >
@@ -2326,6 +2453,7 @@ export default function FileManager() {
             { id: 'home', label: 'Home', icon: Home, targetFolderId: null },
             { id: 'recent', label: 'Recent', icon: Clock, targetFolderId: 'recent' },
             { id: 'starred', label: 'Starred', icon: Star, targetFolderId: 'starred' },
+            { id: 'shared-with-me', label: 'Shared with me', icon: Users, targetFolderId: 'shared-with-me' },
             { id: 'trash', label: 'Trash Bin', icon: Trash2, targetFolderId: 'trash' },
           ].map((item) => {
             const isActive =
@@ -2384,40 +2512,6 @@ export default function FileManager() {
             );
           })}
 
-          <div className="my-2 mx-1 border-t border-neutral-300/80 dark:border-white/10" />
-
-          {/* SHARED WITH ME */}
-          {!isCompactSidebar && (
-            <div className="px-3 py-1 text-[11px] font-semibold text-neutral-400 uppercase tracking-wider flex items-center justify-between">
-              <span>Shared with me</span>
-              <Share2 className="w-3.5 h-3.5 text-neutral-400" />
-            </div>
-          )}
-
-          {[
-            { id: 'shared-alex', name: 'Alex Morgan', icon: User },
-            { id: 'shared-sarah', name: 'Sarah Chen', icon: User },
-            { id: 'shared-team', name: 'Design Team', icon: Users },
-          ].map((person) => {
-            const isActive = currentFolderId === person.id;
-            const IconComponent = person.icon;
-
-            return (
-              <button
-                key={person.id}
-                onClick={() => handleSidebarClick(person.id)}
-                className={`w-full text-left px-3 py-2 rounded-xl transition-colors flex items-center gap-3 text-[13.5px] cursor-pointer ${
-                  isActive ? ts.sidebarBtnActive : ts.sidebarBtn
-                } ${isCompactSidebar ? 'justify-center px-0 py-2.5' : ''}`}
-                title={isCompactSidebar ? person.name : undefined}
-              >
-                <div className="w-[18px] h-[18px] rounded-full bg-blue-500/20 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0 text-[10px] font-bold">
-                  <IconComponent className="w-3 h-3 stroke-[2]" />
-                </div>
-                {!isCompactSidebar && <span className="truncate">{person.name}</span>}
-              </button>
-            );
-          })}
         </div>
 
         {/* MIDDLE EXPLORER CANVAS AREA */}
@@ -2438,7 +2532,36 @@ export default function FileManager() {
             </div>
           )}
 
-          {sortedItems.length === 0 ? (
+          {folderNotFoundId ? (
+            <div className="flex-1 flex flex-col items-center justify-center opacity-60 text-xs select-none p-4 text-center gap-1">
+              <FolderX className="w-12 h-12 stroke-[1.2] mb-2 text-current" />
+              <span className="font-semibold text-sm">Folder not found</span>
+              <span className="max-w-xs opacity-70">
+                This folder doesn't exist, was deleted, or you don't have access to it.
+              </span>
+              <button
+                onClick={() => navigateToFolder(null)}
+                className="mt-3 px-4 py-2 bg-purple-600 text-white font-bold rounded-xl text-xs hover:bg-purple-500 transition-colors cursor-pointer"
+              >
+                Go to Home
+              </button>
+            </div>
+          ) : currentFolderId === 'shared-with-me' && sharedWithMeLoading ? (
+            <div className="flex-1 flex flex-col items-center justify-center opacity-60 text-xs select-none p-4 text-center gap-2">
+              <Loader2 className="w-8 h-8 animate-spin text-current" />
+              <span>Loading what's been shared with you...</span>
+            </div>
+          ) : currentFolderId === 'shared-with-me' && sharedWithMeError ? (
+            <div className="flex-1 flex flex-col items-center justify-center opacity-70 text-xs select-none p-4 text-center gap-1">
+              <AlertCircle className="w-10 h-10 mb-1 text-rose-500" />
+              <span className="font-semibold text-sm text-rose-500">{sharedWithMeError}</span>
+            </div>
+          ) : sortedItems.length === 0 && currentFolderId === 'shared-with-me' ? (
+            <div className="flex-1 flex flex-col items-center justify-center opacity-40 text-xs select-none p-4 text-center">
+              <Users className="w-12 h-12 stroke-[1.2] mb-3 text-current" />
+              <span>Nothing has been shared with you yet.</span>
+            </div>
+          ) : sortedItems.length === 0 ? (
             <div className="flex-1 flex flex-col items-center justify-center opacity-40 text-xs select-none p-4 text-center">
               <Folder className="w-12 h-12 stroke-[1.2] mb-3 text-current" />
               <span>This folder is empty.</span>
@@ -2498,6 +2621,13 @@ export default function FileManager() {
                     {/* Star badge */}
                     {item.starred && (
                       <Star className="w-3.5 h-3.5 text-amber-500 fill-amber-500 absolute top-2 right-2" />
+                    )}
+
+                    {/* Shared badge */}
+                    {item.isShared && (
+                      <span className="absolute top-2 left-2" title="Shared with others">
+                        <Users className="w-3.5 h-3.5 text-blue-500" />
+                      </span>
                     )}
 
                     <div className="mb-2.5 group-hover:scale-105 transition-transform select-none">
@@ -2649,6 +2779,11 @@ export default function FileManager() {
                             </span>
                           )}
                           {item.starred && <Star className="w-3 h-3 text-amber-500 fill-amber-500 shrink-0" />}
+                          {item.isShared && (
+                            <span title="Shared with others">
+                              <Users className="w-3 h-3 text-blue-500 shrink-0" />
+                            </span>
+                          )}
                         </td>
                         {containerWidth >= 380 && <td className="p-2.5">{getItemTypeString(item)}</td>}
                         {containerWidth >= 500 && <td className="p-2.5">{item.createdAt}</td>}
@@ -2819,10 +2954,9 @@ export default function FileManager() {
         fileItem={activeShareItem}
         isOpen={!!activeShareItem}
         onClose={() => setActiveShareItem(null)}
-        onUpdateItem={(updated) => {
-          const updatedFiles = files.map((f) => (f.id === updated.id ? updated : f));
-          setFiles(updatedFiles);
-          setActiveShareItem(updated);
+        onSharedChanged={(fileId, isShared) => {
+          setFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, isShared } : f)));
+          setActiveShareItem((prev) => (prev && prev.id === fileId ? { ...prev, isShared } : prev));
         }}
       />
 

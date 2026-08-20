@@ -601,14 +601,30 @@ export const AppRegistry = {
     return registry[id]?.component;
   },
 
-  getPathForApp(id: string): string | undefined {
+  /** `folderId`, when given, is only honored for `fileManager` (`/folder/:folderId`) — every other app's route is a bare static path. */
+  getPathForApp(id: string, folderId?: string | null): string | undefined {
     const route = appRoutes[id];
-    return route ? `/${route}` : undefined;
+    if (!route) return undefined;
+    if (id === 'fileManager' && folderId) return `/${route}/${folderId}`;
+    return `/${route}`;
   },
 
   getAppIdForPath(pathname: string): string | undefined {
     const route = pathname.replace(/^\//, '').replace(/\/$/, '');
-    return Object.entries(appRoutes).find(([, value]) => value === route)?.[0];
+    const exact = Object.entries(appRoutes).find(([, value]) => value === route)?.[0];
+    if (exact) return exact;
+    // `/folder/:folderId` is the only route with a sub-path — everything
+    // else in `appRoutes` is matched exactly above.
+    const [firstSegment] = route.split('/');
+    return firstSegment === appRoutes.fileManager ? 'fileManager' : undefined;
+  },
+
+  /** The `:folderId` segment of `/folder/:folderId`, or null for `/folder` (root) or any other route. */
+  getFolderIdFromPath(pathname: string): string | null {
+    const route = pathname.replace(/^\//, '').replace(/\/$/, '');
+    const [firstSegment, folderId] = route.split('/');
+    if (firstSegment !== appRoutes.fileManager) return null;
+    return folderId || null;
   },
 
   getAppIcon(id: string, className?: string): React.ReactNode {
