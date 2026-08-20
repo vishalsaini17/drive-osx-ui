@@ -118,6 +118,18 @@ export default function FileManager() {
   // Details pane
   const [showDetailsPane, setShowDetailsPane] = useState<boolean>(false);
 
+  // Upload progress, shown in the window's status bar while a batch (from
+  // uploadFiles or uploadFolderFiles) is in flight.
+  const [uploadProgress, setUploadProgress] = useState<{
+    total: number;
+    completed: number;
+    currentFileName: string;
+    currentPercent: number;
+  } | null>(null);
+  const uploadOverallPercent = uploadProgress
+    ? Math.min(100, Math.round(((uploadProgress.completed + uploadProgress.currentPercent / 100) / uploadProgress.total) * 100))
+    : 0;
+
   // Drag and drop state
   const [isDragOverCanvas, setIsDragOverCanvas] = useState<boolean>(false);
   const [draggedItemId, setDraggedItemId] = useState<string | null>(null);
@@ -147,6 +159,16 @@ export default function FileManager() {
 
   // Derived from `files` itself (rather than a one-off local variable) so it
   // stays correct as the shared file list changes, not just at mount.
+  //
+  // This used to also prune `pinnedFolderIds` down to whatever's currently in
+  // `files` — but `files` is only ever a partial cache of the folders this
+  // session has actually browsed into (see mergeFolderChildren above), never
+  // the full tree. A pinned folder the user hasn't happened to navigate into
+  // yet would get silently unpinned the moment any unrelated folder synced,
+  // then reappear on refresh once loadPinned() re-fetched the real list from
+  // the backend — which is already authoritative (files.repository.ts's
+  // listPinned() filters out deleted/inaccessible folders server-side), so
+  // there was never a need to re-validate it against this local cache.
   useEffect(() => {
     const folderMap: Record<string, string> = {};
     files.forEach((f) => {
@@ -155,21 +177,6 @@ export default function FileManager() {
       }
     });
     setDefaultFolderIdMap(folderMap);
-
-    const existingIds = new Set(files.map((f) => f.id));
-    setPinnedFolderIds((prev) => {
-      const cleaned = prev.filter((id) => {
-        if (id.startsWith('folder-')) {
-          const name = id.replace('folder-', '');
-          return existingIds.has(folderMap[name] || '');
-        }
-        return existingIds.has(id);
-      });
-      if (cleaned.length !== prev.length) {
-        StorageService.set('sidebar-pinned-folders', cleaned);
-      }
-      return cleaned;
-    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [files]);
 
@@ -564,15 +571,31 @@ export default function FileManager() {
   // A data URL for images, text otherwise — used only for the local list's
   // thumbnail/preview. The durable copy lives in object storage on the
   // backend, which never returns inline content for an uploaded file.
+  //
+  // Both branches are capped: reading a large upload's *entire* contents into
+  // a JS string just for a placeholder preview (a 50MB text file becomes a
+  // ~100MB UTF-16 string, held in component state for the rest of the
+  // session) was enough to crash the tab on large uploads even though the
+  // upload itself — a streamed XHR, not buffered as a JS string — succeeded
+  // on the server. A truncated text preview mirrors the backend's own
+  // contentText cap (files.service.ts slices to 100_000 chars); a large image
+  // just skips the inline thumbnail rather than materializing a giant data URL.
+  const MAX_TEXT_PREVIEW_BYTES = 100_000;
+  const MAX_IMAGE_PREVIEW_BYTES = 5 * 1024 * 1024;
   const readFilePreview = (file: File): Promise<string> =>
     new Promise((resolve) => {
+      const isImage = file.type.startsWith('image/');
+      if (isImage && file.size > MAX_IMAGE_PREVIEW_BYTES) {
+        resolve('');
+        return;
+      }
       const reader = new FileReader();
       reader.onload = (event) => resolve((event.target?.result as string) || '');
       reader.onerror = () => resolve('');
-      if (file.type.startsWith('image/')) {
+      if (isImage) {
         reader.readAsDataURL(file);
       } else {
-        reader.readAsText(file);
+        reader.readAsText(file.slice(0, MAX_TEXT_PREVIEW_BYTES));
       }
     });
 
@@ -618,14 +641,19 @@ export default function FileManager() {
    */
   const uploadFiles = async (filesToUpload: File[], parentId: string | null) => {
     const knownNames = initKnownNames();
+    setUploadProgress({ total: filesToUpload.length, completed: 0, currentFileName: '', currentPercent: 0 });
 
     for (const file of filesToUpload) {
       const fileName = reserveName(knownNames, parentId, file.name);
       const uploadFile = fileName === file.name ? file : new File([file], fileName, { type: file.type });
+      setUploadProgress((prev) => (prev ? { ...prev, currentFileName: fileName, currentPercent: 0 } : prev));
 
       try {
         const localPreview = await readFilePreview(uploadFile);
-        const created = await FileService.upload(uploadFile, { parentId: parentId ?? undefined });
+        const created = await FileService.upload(uploadFile, {
+          parentId: parentId ?? undefined,
+          onProgress: (percent) => setUploadProgress((prev) => (prev ? { ...prev, currentPercent: percent } : prev)),
+        });
         const uploadedFile: FileItem = {
           id: created.id || created._id,
           name: created.name,
@@ -633,13 +661,18 @@ export default function FileManager() {
           content: created.content || localPreview,
           parentId: created.parentId,
           createdAt: created.createdAt,
+          size: created.size,
         };
         setFiles((prev) => [...prev, uploadedFile]);
       } catch (error) {
         console.error(`Failed to upload "${fileName}":`, error);
         alert(`Failed to upload "${fileName}". Please try again.`);
+      } finally {
+        setUploadProgress((prev) => (prev ? { ...prev, completed: prev.completed + 1 } : prev));
       }
     }
+
+    setUploadProgress(null);
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -696,6 +729,7 @@ export default function FileManager() {
   ) => {
     const knownNames = initKnownNames();
     const folderIdByPath = new Map<string, string | null>();
+    setUploadProgress({ total: filesToUpload.length, completed: 0, currentFileName: '', currentPercent: 0 });
 
     const ensureFolderPath = async (relativePath: string): Promise<string | null> => {
       const segments = relativePath.split('/');
@@ -721,12 +755,16 @@ export default function FileManager() {
     };
 
     for (const file of filesToUpload) {
+      setUploadProgress((prev) => (prev ? { ...prev, currentFileName: file.name, currentPercent: 0 } : prev));
       try {
         const targetFolderId = await ensureFolderPath(file.webkitRelativePath || file.name);
         const fileName = reserveName(knownNames, targetFolderId, file.name);
         const uploadFile = fileName === file.name ? file : new File([file], fileName, { type: file.type });
         const localPreview = await readFilePreview(uploadFile);
-        const created = await FileService.upload(uploadFile, { parentId: targetFolderId ?? undefined });
+        const created = await FileService.upload(uploadFile, {
+          parentId: targetFolderId ?? undefined,
+          onProgress: (percent) => setUploadProgress((prev) => (prev ? { ...prev, currentPercent: percent } : prev)),
+        });
         const uploadedFile: FileItem = {
           id: created.id || created._id,
           name: created.name,
@@ -734,13 +772,18 @@ export default function FileManager() {
           content: created.content || localPreview,
           parentId: created.parentId,
           createdAt: created.createdAt,
+          size: created.size,
         };
         setFiles((prev) => [...prev, uploadedFile]);
       } catch (error) {
         console.error(`Failed to upload "${file.name}":`, error);
         alert(`Failed to upload "${file.name}". Please try again.`);
+      } finally {
+        setUploadProgress((prev) => (prev ? { ...prev, completed: prev.completed + 1 } : prev));
       }
     }
+
+    setUploadProgress(null);
   };
 
   // Drag & Drop external file upload onto explorer area.
@@ -877,6 +920,17 @@ export default function FileManager() {
     if (item.type === 'folder') {
       const childrenCount = files.filter((f) => f.parentId === item.id).length;
       return `${childrenCount} item${childrenCount === 1 ? '' : 's'}`;
+    }
+    // `size` is the server-reported byte count and must win whenever it's
+    // known — `item.content` is only ever a possibly-truncated local preview
+    // (see readFilePreview) or entirely absent (folder listings never
+    // include content), so deriving "size" from its length silently produces
+    // the wrong number for anything but a small file the client happened to
+    // read in full.
+    if (typeof item.size === 'number') {
+      if (item.size < 1024) return `${item.size} B`;
+      if (item.size < 1024 * 1024) return `${(item.size / 1024).toFixed(1)} KB`;
+      return `${(item.size / (1024 * 1024)).toFixed(1)} MB`;
     }
     if (item.content) {
       const bytes = item.content.length;
@@ -1515,8 +1569,8 @@ export default function FileManager() {
         valA = files.filter((f) => f.parentId === a.id).length;
         valB = files.filter((f) => f.parentId === b.id).length;
       } else {
-        valA = a.content ? a.content.length : 0;
-        valB = b.content ? b.content.length : 0;
+        valA = typeof a.size === 'number' ? a.size : a.content ? a.content.length : 0;
+        valB = typeof b.size === 'number' ? b.size : b.content ? b.content.length : 0;
       }
     }
 
@@ -2425,6 +2479,20 @@ export default function FileManager() {
               <span className="opacity-50">Select an item to view properties</span>
             )}
           </div>
+        }
+        right={
+          uploadProgress ? (
+            <div id="status-bar-upload-progress" className="flex items-center gap-2 shrink-0">
+              <span className="truncate max-w-[220px]">
+                Uploading {Math.min(uploadProgress.completed + 1, uploadProgress.total)} of {uploadProgress.total}
+                {uploadProgress.currentFileName ? ` — ${uploadProgress.currentFileName}` : ''}
+              </span>
+              <div className="w-24 h-1.5 rounded-full bg-black/10 overflow-hidden">
+                <div className="h-full bg-blue-500 transition-[width] duration-150" style={{ width: `${uploadOverallPercent}%` }} />
+              </div>
+              <span className="tabular-nums w-9 text-right">{uploadOverallPercent}%</span>
+            </div>
+          ) : undefined
         }
       />
 

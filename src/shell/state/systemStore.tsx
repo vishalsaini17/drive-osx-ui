@@ -1090,6 +1090,7 @@ export const useSystemStore = create<SystemState>((set, get) => ({
         content: f.content || '',
         parentId: f.parentId,
         createdAt: f.createdAt,
+        size: f.size,
         starred: f.starred || false,
         category: f.mimeType?.split('/')[0] as any,
         sharedWith: [],

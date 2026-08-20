@@ -99,7 +99,8 @@ export default function FilePreviewModal({
             <div className="truncate">
               <h3 className="text-sm font-bold truncate">{item.name}</h3>
               <p className="text-[10px] text-zinc-400 uppercase font-semibold">
-                {item.createdAt} • {item.content ? `${item.content.length} bytes` : 'System File'}
+                {item.createdAt} •{' '}
+                {typeof item.size === 'number' ? `${item.size} bytes` : item.content ? `${item.content.length} bytes` : 'System File'}
               </p>
             </div>
           </div>

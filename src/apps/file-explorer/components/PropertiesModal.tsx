@@ -39,9 +39,14 @@ export default function PropertiesModal({
 }: PropertiesModalProps) {
   if (!isOpen || !item) return null;
 
+  // `size` is the server-reported byte count; `item.content` is only ever a
+  // possibly-truncated local preview or entirely absent, so it must never be
+  // used to compute size when the real value is known.
   const sizeString =
     item.type === 'folder'
       ? 'Folder Container'
+      : typeof item.size === 'number'
+      ? `${(item.size / 1024).toFixed(1)} KB (${item.size} bytes)`
       : item.content
       ? `${(item.content.length / 1024).toFixed(1)} KB (${item.content.length} bytes)`
       : '0 B';
