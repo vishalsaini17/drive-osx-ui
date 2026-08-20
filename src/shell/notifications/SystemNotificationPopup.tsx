@@ -27,6 +27,7 @@ export default function SystemNotificationPopup({
   const notifications = useSystemStore((state) => state.notifications);
   const removeNotification = useSystemStore((state) => state.removeNotification);
   const clearNotifications = useSystemStore((state) => state.clearNotifications);
+  const openConversation = useSystemStore((state) => state.openConversation);
 
   const shell = useShellTheme();
   const family = themeFamily(theme);
@@ -132,7 +133,15 @@ export default function SystemNotificationPopup({
               return (
                 <div
                   key={n.id}
+                  onClick={() => {
+                    if (n.conversationId) {
+                      openConversation(n.conversationId);
+                      onClose();
+                    }
+                  }}
                   className={`p-2 rounded-xl flex items-start gap-2 group relative transition-colors ${
+                    n.conversationId ? 'cursor-pointer' : ''
+                  } ${
                     isError
                       ? isLight
                         ? 'bg-red-50/90 border border-red-200 hover:bg-red-100/90'

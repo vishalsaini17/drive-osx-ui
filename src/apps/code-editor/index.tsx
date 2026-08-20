@@ -21,6 +21,7 @@ import StatusBar from './components/StatusBar';
 import SettingsEditor from './components/SettingsEditor';
 import { languageForFileName } from './editor/languages';
 import { MONACO_THEME_IDS, EditorThemeName } from './editor/themes';
+import { getWorkbenchVars } from './editor/workbenchTheme';
 import { monaco } from './editor/monacoSetup';
 import { formatWithPrettier, prettierSupportsLanguage } from './plugins/prettierFormat';
 import { lintJavaScript, eslintSupportsLanguage } from './plugins/eslintLint';
@@ -79,6 +80,7 @@ export default function CodeEditor() {
   const breadcrumbsEnabled = prefs.breadcrumbsEnabled ?? true;
   const themeName: EditorThemeName = prefs.editorTheme ?? 'Classic Light';
   const monacoTheme = MONACO_THEME_IDS[themeName] ?? 'vs';
+  const workbenchVars = getWorkbenchVars(themeName);
   const tabSizeLabel = prefs.tabSize ?? '2 spaces';
   const tabSize = tabSizeLabel === '4 spaces' ? 4 : 2;
   const insertSpaces = tabSizeLabel !== 'Tabs';
@@ -771,8 +773,12 @@ export default function CodeEditor() {
   ]);
 
   return (
-    <>
-      <AppShell className="bg-[#1e1e1e] text-white">
+    // `contents` keeps this div out of AppShell's own flex layout while still
+    // letting the CSS custom properties it sets cascade to every descendant —
+    // including the Open File/Open Folder modals below, which render outside
+    // AppShell as siblings, not children.
+    <div className="contents" style={workbenchVars as React.CSSProperties}>
+      <AppShell className="bg-[var(--wb-surface)] text-[var(--wb-fg)]">
         <div id="editor-workbench" className="flex-1 min-h-0 flex">
           <ActivityBar
             active={sidebarVisible ? activePanel : null}
@@ -794,11 +800,11 @@ export default function CodeEditor() {
                 />
               ) : (
                 <div className="flex-1 flex flex-col items-center justify-center gap-3 px-5 text-center">
-                  <FolderOpen className="w-6 h-6 text-white/20" />
-                  <p className="text-[12px] text-white/40">You have not yet opened a folder.</p>
+                  <FolderOpen className="w-6 h-6 text-[var(--wb-fg)]/20" />
+                  <p className="text-[12px] text-[var(--wb-fg)]/40">You have not yet opened a folder.</p>
                   <button
                     onClick={() => setIsOpenFolderModalOpen(true)}
-                    className="px-3 py-1.5 bg-[#0e639c] hover:bg-[#1177bb] text-white text-[12px] font-medium rounded cursor-pointer"
+                    className="px-3 py-1.5 bg-[var(--wb-accent-soft)] hover:bg-[var(--wb-accent-hover)] text-[var(--wb-on-accent)] text-[12px] font-medium rounded cursor-pointer"
                   >
                     Open Folder
                   </button>
@@ -928,6 +934,6 @@ export default function CodeEditor() {
       </AppShell>
       <OpenFileModal isOpen={isOpenModalOpen} onClose={() => setIsOpenModalOpen(false)} allFiles={files} onSelectFile={(f) => void handleSelectOpenFile(f)} />
       <OpenFolderModal isOpen={isOpenFolderModalOpen} onClose={() => setIsOpenFolderModalOpen(false)} onOpenFolder={handleOpenFolder} />
-    </>
+    </div>
   );
 }

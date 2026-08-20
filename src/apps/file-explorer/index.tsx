@@ -43,7 +43,9 @@ import {
   CheckSquare,
   Square,
   FileArchive,
-  Layers
+  Layers,
+  FolderUp,
+  ChevronDown
 } from 'lucide-react';
 import { FileItem } from '../../platform/types';
 import { useSystemStore } from '../../shell/state/systemStore';
@@ -233,6 +235,7 @@ export default function FileManager() {
   const renameInputRef = useRef<HTMLInputElement>(null);
   const pathInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const explorerAreaRef = useRef<HTMLDivElement>(null);
 
@@ -558,53 +561,186 @@ export default function FileManager() {
     fileInputRef.current?.click();
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const filesSelected = e.target.files;
-    if (!filesSelected || filesSelected.length === 0) return;
-
-    let updatedFilesList = [...files];
-
-    Array.from(filesSelected).forEach((f: any) => {
+  // A data URL for images, text otherwise — used only for the local list's
+  // thumbnail/preview. The durable copy lives in object storage on the
+  // backend, which never returns inline content for an uploaded file.
+  const readFilePreview = (file: File): Promise<string> =>
+    new Promise((resolve) => {
       const reader = new FileReader();
-      const isImage = f.type.startsWith('image/');
-
-      reader.onload = (event) => {
-        const content = (event.target?.result as string) || '';
-
-        let fileName = f.name;
-        let count = 1;
-        while (updatedFilesList.some((item) => item.parentId === currentFolderId && item.name === fileName)) {
-          const dotIndex = f.name.lastIndexOf('.');
-          if (dotIndex !== -1) {
-            const base = f.name.substring(0, dotIndex);
-            const ext = f.name.substring(dotIndex);
-            fileName = `${base} (${count++})${ext}`;
-          } else {
-            fileName = `${f.name} (${count++})`;
-          }
-        }
-
-        const uploadedFile: FileItem = {
-          id: `file-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-          name: fileName,
-          type: 'file',
-          content: content,
-          parentId: isTrashFolder ? null : currentFolderId,
-          createdAt: new Date().toLocaleDateString(),
-        };
-
-        updatedFilesList = [...updatedFilesList, uploadedFile];
-        setFiles(updatedFilesList);
-      };
-
-      if (isImage) {
-        reader.readAsDataURL(f);
+      reader.onload = (event) => resolve((event.target?.result as string) || '');
+      reader.onerror = () => resolve('');
+      if (file.type.startsWith('image/')) {
+        reader.readAsDataURL(file);
       } else {
-        reader.readAsText(f);
+        reader.readAsText(file);
       }
     });
 
+  // Snapshot of every name already in use per parent, seeded from current
+  // state and grown as this upload reserves names — so two files in the same
+  // batch, or a file colliding with something already in the folder, both
+  // get an "(1)" suffix instead of silently overwriting on the server.
+  const initKnownNames = (): Map<string, Set<string>> => {
+    const map = new Map<string, Set<string>>();
+    for (const f of files) {
+      const key = f.parentId ?? '__root__';
+      if (!map.has(key)) map.set(key, new Set());
+      map.get(key)!.add(f.name);
+    }
+    return map;
+  };
+
+  const reserveName = (knownNames: Map<string, Set<string>>, parentId: string | null, desiredName: string): string => {
+    const key = parentId ?? '__root__';
+    let used = knownNames.get(key);
+    if (!used) {
+      used = new Set();
+      knownNames.set(key, used);
+    }
+    let name = desiredName;
+    let count = 1;
+    while (used.has(name)) {
+      const dotIndex = desiredName.lastIndexOf('.');
+      name =
+        dotIndex !== -1
+          ? `${desiredName.substring(0, dotIndex)} (${count++})${desiredName.substring(dotIndex)}`
+          : `${desiredName} (${count++})`;
+    }
+    used.add(name);
+    return name;
+  };
+
+  /**
+   * Uploads each file to the backend and adds the resulting record to local
+   * state. Must go through FileService: a file that only lives in local
+   * React state disappears the next time this folder (or Recents) re-syncs
+   * from the server, which has no record of it — that was the bug here.
+   */
+  const uploadFiles = async (filesToUpload: File[], parentId: string | null) => {
+    const knownNames = initKnownNames();
+
+    for (const file of filesToUpload) {
+      const fileName = reserveName(knownNames, parentId, file.name);
+      const uploadFile = fileName === file.name ? file : new File([file], fileName, { type: file.type });
+
+      try {
+        const localPreview = await readFilePreview(uploadFile);
+        const created = await FileService.upload(uploadFile, { parentId: parentId ?? undefined });
+        const uploadedFile: FileItem = {
+          id: created.id || created._id,
+          name: created.name,
+          type: 'file',
+          content: created.content || localPreview,
+          parentId: created.parentId,
+          createdAt: created.createdAt,
+        };
+        setFiles((prev) => [...prev, uploadedFile]);
+      } catch (error) {
+        console.error(`Failed to upload "${fileName}":`, error);
+        alert(`Failed to upload "${fileName}". Please try again.`);
+      }
+    }
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const filesSelected = e.target.files;
+    if (!filesSelected || filesSelected.length === 0) return;
+    const selected = Array.from(filesSelected);
     e.target.value = '';
+    void uploadFiles(selected, isTrashFolder ? null : currentFolderId);
+  };
+
+  const handleUploadFolderClick = () => {
+    folderInputRef.current?.click();
+  };
+
+  // Offers "Upload File" / "Upload Folder" from a single button, reusing the
+  // global context menu as an anchored dropdown rather than a right-click.
+  const handleUploadMenuClick = (e: React.MouseEvent) => {
+    openContextMenu(
+      e,
+      [
+        {
+          id: 'upload-file',
+          label: 'Upload File',
+          icon: <FileUp size={15} className="text-emerald-400" />,
+          onClick: handleUploadClick,
+        },
+        {
+          id: 'upload-folder',
+          label: 'Upload Folder',
+          icon: <FolderUp size={15} className="text-emerald-400" />,
+          onClick: handleUploadFolderClick,
+        },
+      ],
+      'Upload'
+    );
+  };
+
+  const handleFolderUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const filesSelected = e.target.files;
+    if (!filesSelected || filesSelected.length === 0) return;
+    const selected = Array.from(filesSelected) as Array<File & { webkitRelativePath: string }>;
+    e.target.value = '';
+    void uploadFolderFiles(selected, isTrashFolder ? null : currentFolderId);
+  };
+
+  // Folder upload: the browser hands back every file inside the chosen
+  // folder(s) flattened, each carrying `webkitRelativePath` (e.g.
+  // "MyFolder/sub/notes.txt"). The directory structure it implies is rebuilt
+  // by creating one real (backend-persisted) folder per unique path segment,
+  // then uploading each file into the folder its path resolves to.
+  const uploadFolderFiles = async (
+    filesToUpload: Array<File & { webkitRelativePath: string }>,
+    rootParentId: string | null
+  ) => {
+    const knownNames = initKnownNames();
+    const folderIdByPath = new Map<string, string | null>();
+
+    const ensureFolderPath = async (relativePath: string): Promise<string | null> => {
+      const segments = relativePath.split('/');
+      segments.pop(); // drop the filename itself, keep only folder segments
+      let parentId = rootParentId;
+      let pathSoFar = '';
+      for (const segment of segments) {
+        pathSoFar = pathSoFar ? `${pathSoFar}/${segment}` : segment;
+        let folderId = folderIdByPath.get(pathSoFar);
+        if (folderId === undefined) {
+          const folderName = reserveName(knownNames, parentId, segment);
+          const created = await FileService.createFile({ name: folderName, type: 'folder', parentId });
+          folderId = created.id || created._id;
+          setFiles((prev) => [
+            ...prev,
+            { id: folderId as string, name: created.name, type: 'folder', parentId: created.parentId, createdAt: created.createdAt },
+          ]);
+          folderIdByPath.set(pathSoFar, folderId);
+        }
+        parentId = folderId;
+      }
+      return parentId;
+    };
+
+    for (const file of filesToUpload) {
+      try {
+        const targetFolderId = await ensureFolderPath(file.webkitRelativePath || file.name);
+        const fileName = reserveName(knownNames, targetFolderId, file.name);
+        const uploadFile = fileName === file.name ? file : new File([file], fileName, { type: file.type });
+        const localPreview = await readFilePreview(uploadFile);
+        const created = await FileService.upload(uploadFile, { parentId: targetFolderId ?? undefined });
+        const uploadedFile: FileItem = {
+          id: created.id || created._id,
+          name: created.name,
+          type: 'file',
+          content: created.content || localPreview,
+          parentId: created.parentId,
+          createdAt: created.createdAt,
+        };
+        setFiles((prev) => [...prev, uploadedFile]);
+      } catch (error) {
+        console.error(`Failed to upload "${file.name}":`, error);
+        alert(`Failed to upload "${file.name}". Please try again.`);
+      }
+    }
   };
 
   // Drag & Drop external file upload onto explorer area.
@@ -644,44 +780,7 @@ export default function FileManager() {
     }
 
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      const filesUploaded = Array.from(e.dataTransfer.files);
-      let updatedList = [...files];
-
-      filesUploaded.forEach((f: any) => {
-        const reader = new FileReader();
-        const isImage = f.type.startsWith('image/');
-
-        reader.onload = (event) => {
-          const content = (event.target?.result as string) || '';
-          let fileName = f.name;
-          let count = 1;
-          while (updatedList.some((item) => item.parentId === currentFolderId && item.name === fileName)) {
-            const dotIndex = f.name.lastIndexOf('.');
-            if (dotIndex !== -1) {
-              const base = f.name.substring(0, dotIndex);
-              const ext = f.name.substring(dotIndex);
-              fileName = `${base} (${count++})${ext}`;
-            } else {
-              fileName = `${f.name} (${count++})`;
-            }
-          }
-
-          const newFile: FileItem = {
-            id: `file-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-            name: fileName,
-            type: 'file',
-            content: content,
-            parentId: isTrashFolder ? null : currentFolderId,
-            createdAt: new Date().toLocaleDateString(),
-          };
-
-          updatedList = [...updatedList, newFile];
-          setFiles(updatedList);
-        };
-
-        if (isImage) reader.readAsDataURL(f);
-        else reader.readAsText(f);
-      });
+      void uploadFiles(Array.from(e.dataTransfer.files), isTrashFolder ? null : currentFolderId);
     }
   };
 
@@ -1275,9 +1374,22 @@ export default function FileManager() {
         },
         {
           id: 'upload',
-          label: 'Upload File',
+          label: 'Upload',
           icon: <Upload size={15} className="text-emerald-400" />,
-          onClick: handleUploadClick,
+          submenu: [
+            {
+              id: 'upload-file',
+              label: 'Upload File',
+              icon: <FileUp size={15} className="text-emerald-400" />,
+              onClick: handleUploadClick,
+            },
+            {
+              id: 'upload-folder',
+              label: 'Upload Folder',
+              icon: <FolderUp size={15} className="text-emerald-400" />,
+              onClick: handleUploadFolderClick,
+            },
+          ],
         },
         { divider: true },
         {
@@ -1661,12 +1773,13 @@ export default function FileManager() {
             <span className="h-4 w-[1px] bg-black/10 mx-0.5" />
 
             <button
-              onClick={handleUploadClick}
+              onClick={handleUploadMenuClick}
               className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold rounded hover:bg-white/35 text-emerald-600 hover:text-emerald-700 cursor-pointer"
-              title="Upload files"
+              title="Upload a file or folder"
             >
               <Upload className="w-3.5 h-3.5 shrink-0" />
               {!isCompactRibbon && <span>Upload</span>}
+              <ChevronDown className="w-3 h-3 shrink-0" />
             </button>
 
             <span className="h-4 w-[1px] bg-black/10 mx-0.5" />
@@ -2313,6 +2426,22 @@ export default function FileManager() {
         ref={fileInputRef}
         type="file"
         onChange={handleFileUpload}
+        className="hidden"
+        multiple
+      />
+
+      {/* Hidden Folder Input — webkitdirectory limits the native picker to
+          directories; the browser still hands back every file inside it.
+          Set via the DOM directly since it isn't part of React's JSX typings
+          for <input>. */}
+      <input
+        ref={(el) => {
+          folderInputRef.current = el;
+          el?.setAttribute('webkitdirectory', '');
+          el?.setAttribute('directory', '');
+        }}
+        type="file"
+        onChange={handleFolderUpload}
         className="hidden"
         multiple
       />

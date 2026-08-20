@@ -257,7 +257,7 @@ export default function SearchPanel({ rootId, rootName, getDirtyOpenFileIds, onO
       onClick={onClick}
       title={title}
       className={`w-6 h-6 flex items-center justify-center rounded text-[11px] font-bold cursor-pointer ${
-        active ? 'bg-[#007acc]/40 text-white ring-1 ring-[#007acc]' : 'text-white/40 hover:text-white hover:bg-white/10'
+        active ? 'bg-[var(--wb-accent)]/40 text-[var(--wb-fg)] ring-1 ring-[var(--wb-accent)]' : 'text-[var(--wb-fg)]/40 hover:text-[var(--wb-fg)] hover:bg-[var(--wb-fg)]/10'
       }`}
     >
       {label}
@@ -266,27 +266,27 @@ export default function SearchPanel({ rootId, rootName, getDirtyOpenFileIds, onO
 
   return (
     <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-      <div className="px-3 pt-1 pb-2 shrink-0 border-b border-black/20">
+      <div className="px-3 pt-1 pb-2 shrink-0 border-b border-[var(--wb-border-subtle)]">
         <div className="flex items-center justify-end mb-1">
           <button
             onClick={() => setShowReplace((v) => !v)}
             title="Toggle Replace"
-            className={`p-1 rounded cursor-pointer ${showReplace ? 'text-white bg-white/10' : 'text-white/40 hover:text-white hover:bg-white/10'}`}
+            className={`p-1 rounded cursor-pointer ${showReplace ? 'text-[var(--wb-fg)] bg-[var(--wb-fg)]/10' : 'text-[var(--wb-fg)]/40 hover:text-[var(--wb-fg)] hover:bg-[var(--wb-fg)]/10'}`}
           >
             <Replace className="w-3.5 h-3.5" />
           </button>
         </div>
 
-        <div className="flex items-center gap-1 bg-[#3c3c3c] rounded px-2 py-1 mb-1">
-          <Search className="w-3.5 h-3.5 text-white/40 shrink-0" />
+        <div className="flex items-center gap-1 bg-[var(--wb-control-bg)] rounded px-2 py-1 mb-1">
+          <Search className="w-3.5 h-3.5 text-[var(--wb-fg)]/40 shrink-0" />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={`Search in ${rootName}`}
-            className="flex-1 bg-transparent text-[12px] text-white placeholder:text-white/30 outline-none min-w-0"
+            className="flex-1 bg-transparent text-[12px] text-[var(--wb-fg)] placeholder:text-[var(--wb-fg)]/30 outline-none min-w-0"
           />
           {query && (
-            <button onClick={() => setQuery('')} className="text-white/40 hover:text-white cursor-pointer shrink-0">
+            <button onClick={() => setQuery('')} className="text-[var(--wb-fg)]/40 hover:text-[var(--wb-fg)] cursor-pointer shrink-0">
               <X className="w-3 h-3" />
             </button>
           )}
@@ -298,19 +298,19 @@ export default function SearchPanel({ rootId, rootName, getDirtyOpenFileIds, onO
         </div>
 
         {showReplace && (
-          <div className="flex items-center gap-1 bg-[#3c3c3c] rounded px-2 py-1">
-            <Replace className="w-3.5 h-3.5 text-white/40 shrink-0" />
+          <div className="flex items-center gap-1 bg-[var(--wb-control-bg)] rounded px-2 py-1">
+            <Replace className="w-3.5 h-3.5 text-[var(--wb-fg)]/40 shrink-0" />
             <input
               value={replaceValue}
               onChange={(e) => setReplaceValue(e.target.value)}
               placeholder="Replace"
-              className="flex-1 bg-transparent text-[12px] text-white placeholder:text-white/30 outline-none min-w-0"
+              className="flex-1 bg-transparent text-[12px] text-[var(--wb-fg)] placeholder:text-[var(--wb-fg)]/30 outline-none min-w-0"
             />
             <button
               onClick={() => void handleReplaceAll()}
               disabled={!replaceValue || results.length === 0 || replacing}
               title="Replace All"
-              className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-[#0e639c] hover:bg-[#1177bb] disabled:opacity-30 disabled:cursor-not-allowed text-white cursor-pointer shrink-0"
+              className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-[var(--wb-accent-soft)] hover:bg-[var(--wb-accent-hover)] disabled:opacity-30 disabled:cursor-not-allowed text-[var(--wb-on-accent)] cursor-pointer shrink-0"
             >
               Replace All
             </button>
@@ -318,7 +318,7 @@ export default function SearchPanel({ rootId, rootName, getDirtyOpenFileIds, onO
         )}
       </div>
 
-      <div className="px-3 py-1.5 text-[11px] text-white/40 shrink-0 border-b border-black/10 flex items-center gap-1.5">
+      <div className="px-3 py-1.5 text-[11px] text-[var(--wb-fg)]/40 shrink-0 border-b border-[var(--wb-border-subtle)] flex items-center gap-1.5">
         {status === 'searching' || replacing ? (
           <>
             <Loader2 className="w-3 h-3 animate-spin" /> {replacing ? 'Replacing…' : 'Searching…'}
@@ -340,19 +340,19 @@ export default function SearchPanel({ rootId, rootName, getDirtyOpenFileIds, onO
           const collapsed = collapsedFiles.has(r.file.id);
           return (
             <div key={r.file.id}>
-              <div className="w-full flex items-center gap-1 px-2 py-[3px] text-[12px] text-white/80 hover:bg-white/10 group">
+              <div className="w-full flex items-center gap-1 px-2 py-[3px] text-[12px] text-[var(--wb-fg)]/80 hover:bg-[var(--wb-fg)]/10 group">
                 <button onClick={() => toggleCollapsed(r.file.id)} className="flex items-center gap-1 flex-1 min-w-0 cursor-pointer">
-                  {collapsed ? <ChevronRight className="w-3.5 h-3.5 shrink-0 text-white/40" /> : <ChevronDown className="w-3.5 h-3.5 shrink-0 text-white/40" />}
-                  <FileCode className="w-3.5 h-3.5 shrink-0 text-[#4fc3f7]" />
+                  {collapsed ? <ChevronRight className="w-3.5 h-3.5 shrink-0 text-[var(--wb-fg)]/40" /> : <ChevronDown className="w-3.5 h-3.5 shrink-0 text-[var(--wb-fg)]/40" />}
+                  <FileCode className="w-3.5 h-3.5 shrink-0 text-[var(--wb-accent)]" />
                   <span className="truncate font-medium">{r.file.name}</span>
-                  <span className="text-white/30 shrink-0">{r.matches.length}</span>
+                  <span className="text-[var(--wb-fg)]/30 shrink-0">{r.matches.length}</span>
                 </button>
                 {showReplace && (
                   <button
                     onClick={() => void handleReplaceAll([r])}
                     disabled={!replaceValue || replacing}
                     title="Replace All in File"
-                    className="opacity-0 group-hover:opacity-100 text-[10px] px-1 py-0.5 rounded hover:bg-white/10 disabled:opacity-0 cursor-pointer shrink-0"
+                    className="opacity-0 group-hover:opacity-100 text-[10px] px-1 py-0.5 rounded hover:bg-[var(--wb-fg)]/10 disabled:opacity-0 cursor-pointer shrink-0"
                   >
                     Replace
                   </button>
@@ -365,12 +365,12 @@ export default function SearchPanel({ rootId, rootName, getDirtyOpenFileIds, onO
                     <button
                       key={i}
                       onClick={() => onOpenResult(toFileItem(r.file), m.lineNumber, m.start + 1, m.end - m.start)}
-                      className="w-full flex items-start gap-1.5 pl-8 pr-2 py-[2px] text-left cursor-pointer hover:bg-white/10 text-[11.5px]"
+                      className="w-full flex items-start gap-1.5 pl-8 pr-2 py-[2px] text-left cursor-pointer hover:bg-[var(--wb-fg)]/10 text-[11.5px]"
                     >
-                      <span className="text-white/30 shrink-0 tabular-nums pt-[1px]">{m.lineNumber}</span>
-                      <span className="truncate text-white/60">
+                      <span className="text-[var(--wb-fg)]/30 shrink-0 tabular-nums pt-[1px]">{m.lineNumber}</span>
+                      <span className="truncate text-[var(--wb-fg)]/60">
                         {before}
-                        <mark className="bg-[#613214] text-[#ffd479] rounded-sm">{match}</mark>
+                        <mark className="bg-[var(--wb-match-bg)] text-[var(--wb-match-fg)] rounded-sm">{match}</mark>
                         {after}
                       </span>
                     </button>
@@ -379,7 +379,7 @@ export default function SearchPanel({ rootId, rootName, getDirtyOpenFileIds, onO
             </div>
           );
         })}
-        {status === 'done' && results.length === 0 && <div className="text-[11px] text-white/30 italic px-3 py-4">No results found.</div>}
+        {status === 'done' && results.length === 0 && <div className="text-[11px] text-[var(--wb-fg)]/30 italic px-3 py-4">No results found.</div>}
       </div>
     </div>
   );

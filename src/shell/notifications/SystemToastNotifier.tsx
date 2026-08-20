@@ -3,12 +3,14 @@ import { motion, AnimatePresence } from 'motion/react';
 import { AlertCircle, AlertTriangle, CheckCircle2, Info, X } from 'lucide-react';
 import { SystemNotification } from '../../platform/types';
 import { useShellTheme } from '../../platform/theme/useShellTheme';
+import { useSystemStore } from '../state/systemStore';
 
 export default function SystemToastNotifier() {
   const [activeToast, setActiveToast] = useState<SystemNotification | null>(null);
   // Above the early return below: this component bails out when there is no
   // toast, and a hook after that point would not run on every render.
   const shell = useShellTheme();
+  const openConversation = useSystemStore((state) => state.openConversation);
 
   useEffect(() => {
     const handleToastEvent = (e: Event) => {
@@ -46,10 +48,16 @@ export default function SystemToastNotifier() {
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: -20, scale: 0.95 }}
           transition={{ duration: 0.25 }}
+          onClick={() => {
+            if (activeToast.conversationId) {
+              openConversation(activeToast.conversationId);
+              setActiveToast(null);
+            }
+          }}
           /* The neutral toast takes the shell surface so it matches the dock
              and its panels; only the three severities keep their own colour,
              because that colour is the message. */
-          className={`p-3.5 rounded-2xl flex items-start gap-3 ${
+          className={`p-3.5 rounded-2xl flex items-start gap-3 ${activeToast.conversationId ? 'cursor-pointer' : ''} ${
             isError
               ? 'bg-red-950/90 border border-red-500/50 text-white shadow-2xl backdrop-blur-2xl'
               : isWarning
@@ -84,7 +92,10 @@ export default function SystemToastNotifier() {
           </div>
 
           <button
-            onClick={() => setActiveToast(null)}
+            onClick={(e) => {
+              e.stopPropagation();
+              setActiveToast(null);
+            }}
             className={`p-1 rounded-full transition-colors shrink-0 cursor-pointer ${isNeutral ? `${shell.hover} ${shell.textMuted}` : 'hover:bg-white/10 text-white/60 hover:text-white'}`}
           >
             <X size={14} />

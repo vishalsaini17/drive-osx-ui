@@ -106,14 +106,14 @@ function FolderRow({ folder, depth }: RowProps & { folder: FileItemResponse }) {
         onDragEnd={() => tree.setDraggedId(null)}
         onClick={toggle}
         onContextMenu={handleContextMenu}
-        className={`w-full flex items-center gap-1 px-2 py-[3px] text-[13px] text-white/80 hover:bg-white/10 cursor-pointer ${
-          isDragOver ? 'bg-[#04395e] outline outline-1 outline-[#007acc]' : ''
+        className={`w-full flex items-center gap-1 px-2 py-[3px] text-[13px] text-[var(--wb-fg)]/80 hover:bg-[var(--wb-fg)]/10 cursor-pointer ${
+          isDragOver ? 'bg-[var(--wb-drag-over)] outline outline-1 outline-[var(--wb-accent)]' : ''
         } ${tree.draggedId === folder.id ? 'opacity-40' : ''}`}
         style={{ paddingLeft: 8 + depth * 12 }}
         title={folder.name}
       >
-        {expanded ? <ChevronDown className="w-3.5 h-3.5 shrink-0 text-white/40" /> : <ChevronRight className="w-3.5 h-3.5 shrink-0 text-white/40" />}
-        <Folder className="w-3.5 h-3.5 shrink-0 text-[#dcb67a]" />
+        {expanded ? <ChevronDown className="w-3.5 h-3.5 shrink-0 text-[var(--wb-fg)]/40" /> : <ChevronRight className="w-3.5 h-3.5 shrink-0 text-[var(--wb-fg)]/40" />}
+        <Folder className="w-3.5 h-3.5 shrink-0 text-[var(--wb-folder)]" />
         <span className="truncate">{folder.name}</span>
       </button>
       {expanded && <NodeChildren folderId={folder.id} depth={depth + 1} />}
@@ -149,12 +149,12 @@ function FileRow({ file, depth }: RowProps & { file: FileItemResponse }) {
       onClick={() => tree.onOpenFile(toFileItem(file))}
       onContextMenu={handleContextMenu}
       className={`w-full flex items-center gap-1.5 py-[3px] text-[13px] cursor-pointer ${
-        active ? 'bg-[#37373d] text-white' : 'text-white/70 hover:bg-white/10 hover:text-white'
+        active ? 'bg-[var(--wb-selected)] text-[var(--wb-fg)]' : 'text-[var(--wb-fg)]/70 hover:bg-[var(--wb-fg)]/10 hover:text-[var(--wb-fg)]'
       } ${tree.draggedId === file.id ? 'opacity-40' : ''}`}
       style={{ paddingLeft: 8 + depth * 12 + 16 }}
       title={file.name}
     >
-      <FileCode className="w-3.5 h-3.5 shrink-0 text-[#4fc3f7]" />
+      <FileCode className="w-3.5 h-3.5 shrink-0 text-[var(--wb-accent)]" />
       <span className="truncate">{file.name}</span>
     </button>
   );
@@ -166,7 +166,7 @@ function NodeChildren({ folderId, depth }: { folderId: string | null; depth: num
 
   if (!node || node.status === 'loading') {
     return (
-      <div className="flex items-center gap-2 text-[11px] text-white/30 py-1" style={{ paddingLeft: 8 + depth * 12 }}>
+      <div className="flex items-center gap-2 text-[11px] text-[var(--wb-fg)]/30 py-1" style={{ paddingLeft: 8 + depth * 12 }}>
         <Loader2 className="w-3 h-3 animate-spin" /> Loading…
       </div>
     );
@@ -180,7 +180,7 @@ function NodeChildren({ folderId, depth }: { folderId: string | null; depth: num
   }
   if (node.entries.length === 0) {
     return (
-      <div className="text-[11px] text-white/25 italic py-1" style={{ paddingLeft: 8 + depth * 12 }}>
+      <div className="text-[11px] text-[var(--wb-fg)]/25 italic py-1" style={{ paddingLeft: 8 + depth * 12 }}>
         This folder is empty
       </div>
     );
@@ -429,26 +429,26 @@ export default function ExplorerSidebar({ rootId, rootName, activeFileId, onOpen
   return (
     <TreeContext.Provider value={ctx}>
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-        <div className="group/section flex items-center justify-between shrink-0 px-2 py-[3px] hover:bg-white/5">
+        <div className="group/section flex items-center justify-between shrink-0 px-2 py-[3px] hover:bg-[var(--wb-fg)]/5">
           <button
             onClick={() => setSectionExpanded((v) => !v)}
-            className="flex items-center gap-1 min-w-0 flex-1 text-[11px] font-bold tracking-wide text-white/70 cursor-pointer"
+            className="flex items-center gap-1 min-w-0 flex-1 text-[11px] font-bold tracking-wide text-[var(--wb-fg)]/70 cursor-pointer"
             title={rootName}
           >
-            {sectionExpanded ? <ChevronDown className="w-3.5 h-3.5 shrink-0 text-white/40" /> : <ChevronRight className="w-3.5 h-3.5 shrink-0 text-white/40" />}
+            {sectionExpanded ? <ChevronDown className="w-3.5 h-3.5 shrink-0 text-[var(--wb-fg)]/40" /> : <ChevronRight className="w-3.5 h-3.5 shrink-0 text-[var(--wb-fg)]/40" />}
             <span className="truncate uppercase">{rootName}</span>
           </button>
           <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover/section:opacity-100 focus-within:opacity-100">
-            <button onClick={() => createEntry(rootId, 'file')} title="New File…" className="p-1 rounded text-white/50 hover:text-white hover:bg-white/10 cursor-pointer">
+            <button onClick={() => createEntry(rootId, 'file')} title="New File…" className="p-1 rounded text-[var(--wb-fg)]/50 hover:text-[var(--wb-fg)] hover:bg-[var(--wb-fg)]/10 cursor-pointer">
               <FilePlus className="w-3.5 h-3.5" />
             </button>
-            <button onClick={() => createEntry(rootId, 'folder')} title="New Folder…" className="p-1 rounded text-white/50 hover:text-white hover:bg-white/10 cursor-pointer">
+            <button onClick={() => createEntry(rootId, 'folder')} title="New Folder…" className="p-1 rounded text-[var(--wb-fg)]/50 hover:text-[var(--wb-fg)] hover:bg-[var(--wb-fg)]/10 cursor-pointer">
               <FolderPlus className="w-3.5 h-3.5" />
             </button>
-            <button onClick={refreshRoot} title="Refresh Explorer" className="p-1 rounded text-white/50 hover:text-white hover:bg-white/10 cursor-pointer">
+            <button onClick={refreshRoot} title="Refresh Explorer" className="p-1 rounded text-[var(--wb-fg)]/50 hover:text-[var(--wb-fg)] hover:bg-[var(--wb-fg)]/10 cursor-pointer">
               <RefreshCw className="w-3.5 h-3.5" />
             </button>
-            <button onClick={onCloseFolder} title="Close Folder" className="p-1 rounded text-white/50 hover:text-white hover:bg-white/10 cursor-pointer">
+            <button onClick={onCloseFolder} title="Close Folder" className="p-1 rounded text-[var(--wb-fg)]/50 hover:text-[var(--wb-fg)] hover:bg-[var(--wb-fg)]/10 cursor-pointer">
               <X className="w-3.5 h-3.5" />
             </button>
           </div>

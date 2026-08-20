@@ -16,16 +16,16 @@ export default function Breadcrumb({ fileName, isDirty, parentFolderName, onCont
     <div
       id="editor-breadcrumb-bar"
       onContextMenu={onContextMenu}
-      className="h-6 shrink-0 px-3 flex items-center gap-1 text-[12px] text-white/50 bg-[#1e1e1e] border-b border-black/20 select-none overflow-x-auto"
+      className="h-6 shrink-0 px-3 flex items-center gap-1 text-[12px] text-[var(--wb-fg)]/50 bg-[var(--wb-surface)] border-b border-[var(--wb-border-subtle)] select-none overflow-x-auto"
     >
       {parentFolderName && (
         <>
           <span className="truncate shrink-0">{parentFolderName}</span>
-          <ChevronRight className="w-3 h-3 shrink-0 text-white/30" />
+          <ChevronRight className="w-3 h-3 shrink-0 text-[var(--wb-fg)]/30" />
         </>
       )}
-      <FileCode className="w-3.5 h-3.5 shrink-0 text-[#4fc3f7]" />
-      <span className="text-white/80 truncate shrink-0">
+      <FileCode className="w-3.5 h-3.5 shrink-0 text-[var(--wb-accent)]" />
+      <span className="text-[var(--wb-fg)]/80 truncate shrink-0">
         {fileName}
         {isDirty ? ' •' : ''}
       </span>

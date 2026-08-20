@@ -115,6 +115,7 @@ export function useRealtimeNotifications(isAuthenticated: boolean): void {
           sender: notification.title || 'Drive OSX',
           text: notification.body,
           type: 'info',
+          conversationId: conversationId ?? undefined,
         });
       }
 

@@ -7,6 +7,8 @@ export interface SystemNotification {
   text: string;
   time: string;
   type?: 'info' | 'error' | 'warning' | 'success';
+  /** Present for chat notifications; clicking the notification opens this conversation. */
+  conversationId?: string;
 }
 
 export interface Contact {

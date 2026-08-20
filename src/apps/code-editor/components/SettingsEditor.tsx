@@ -270,29 +270,29 @@ const EXTENSIONS: ExtensionInfo[] = [
 function ExtensionCard({ ext, onOpenExtension }: { ext: ExtensionInfo; onOpenExtension: (cat: CategoryId) => void }) {
   const Icon = ext.icon;
   return (
-    <div className="flex items-start gap-3 p-3 rounded border border-white/10 bg-white/[0.02]">
-      <div className="w-9 h-9 rounded bg-[#3c3c3c] flex items-center justify-center shrink-0">
-        <Icon className="w-4 h-4 text-white/70" />
+    <div className="flex items-start gap-3 p-3 rounded border border-[var(--wb-border-subtle)] bg-[var(--wb-fg)]/[0.02]">
+      <div className="w-9 h-9 rounded bg-[var(--wb-control-bg)] flex items-center justify-center shrink-0">
+        <Icon className="w-4 h-4 text-[var(--wb-fg)]/70" />
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-[13px] font-medium text-white/90">{ext.name}</span>
+          <span className="text-[13px] font-medium text-[var(--wb-fg)]/90">{ext.name}</span>
           {ext.installed ? (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#0e639c]/30 text-[#4fc3f7] flex items-center gap-1 shrink-0">
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--wb-accent-soft)]/30 text-[var(--wb-accent)] flex items-center gap-1 shrink-0">
               <CircleCheck className="w-3 h-3" /> Installed
             </span>
           ) : (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-white/50 shrink-0">Recommended</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--wb-fg)]/10 text-[var(--wb-fg)]/50 shrink-0">Recommended</span>
           )}
         </div>
-        <div className="text-[11px] text-white/40 mt-0.5">{ext.publisher}</div>
-        <p className="text-[12px] text-white/55 mt-1.5 leading-relaxed">{ext.description}</p>
-        {!ext.installed && ext.unavailableReason && <p className="text-[11px] text-amber-400/70 mt-1.5 leading-relaxed">{ext.unavailableReason}</p>}
+        <div className="text-[11px] text-[var(--wb-fg)]/40 mt-0.5">{ext.publisher}</div>
+        <p className="text-[12px] text-[var(--wb-fg)]/55 mt-1.5 leading-relaxed">{ext.description}</p>
+        {!ext.installed && ext.unavailableReason && <p className="text-[11px] text-amber-500/70 mt-1.5 leading-relaxed">{ext.unavailableReason}</p>}
       </div>
       {ext.installed && ext.settingsCategory && (
         <button
           onClick={() => onOpenExtension(ext.settingsCategory!)}
-          className="shrink-0 flex items-center gap-1 px-2.5 py-1 text-[11px] rounded bg-[#3c3c3c] hover:bg-[#4a4a4a] text-white/80 cursor-pointer"
+          className="shrink-0 flex items-center gap-1 px-2.5 py-1 text-[11px] rounded bg-[var(--wb-control-bg)] hover:bg-[var(--wb-control-bg-hover)] text-[var(--wb-fg)]/80 cursor-pointer"
         >
           <SettingsIcon className="w-3 h-3" /> Settings
         </button>
@@ -308,25 +308,25 @@ function SettingRow({ d, onChange }: { d: SettingDescriptor; onChange: (patch: R
   const control = d.control;
   return (
     <div className="mb-7 max-w-2xl">
-      <div className="text-[13px] font-semibold text-white/90 mb-1.5">{d.label}</div>
+      <div className="text-[13px] font-semibold text-[var(--wb-fg)]/90 mb-1.5">{d.label}</div>
       {control.kind === 'toggle' ? (
         <label className="flex items-start gap-2 cursor-pointer select-none">
           <input
             type="checkbox"
             checked={Boolean(d.value)}
             onChange={(e) => onChange({ [d.id]: e.target.checked })}
-            className="mt-0.5 w-3.5 h-3.5 shrink-0 cursor-pointer accent-[#0e639c]"
+            className="mt-0.5 w-3.5 h-3.5 shrink-0 cursor-pointer accent-[var(--wb-accent-soft)]"
           />
-          <span className="text-[12px] text-white/60 leading-relaxed">{d.description}</span>
+          <span className="text-[12px] text-[var(--wb-fg)]/60 leading-relaxed">{d.description}</span>
         </label>
       ) : (
         <>
-          <p className="text-[12px] text-white/50 mb-2 leading-relaxed">{d.description}</p>
+          <p className="text-[12px] text-[var(--wb-fg)]/50 mb-2 leading-relaxed">{d.description}</p>
           {control.kind === 'select' && (
             <select
               value={String(d.value)}
               onChange={(e) => onChange({ [d.id]: e.target.value })}
-              className="bg-[#3c3c3c] border border-black/30 rounded px-2 py-1.5 text-[12px] text-white outline-none min-w-[220px] cursor-pointer"
+              className="bg-[var(--wb-control-bg)] border border-[var(--wb-border-strong)] rounded px-2 py-1.5 text-[12px] text-[var(--wb-fg)] outline-none min-w-[220px] cursor-pointer"
             >
               {control.options.map((o) => (
                 <option key={o.value} value={o.value}>
@@ -345,7 +345,7 @@ function SettingRow({ d, onChange }: { d: SettingDescriptor; onChange: (patch: R
                 const n = Number(e.target.value);
                 if (!Number.isNaN(n)) onChange({ [d.id]: Math.min(control.max, Math.max(control.min, n)) });
               }}
-              className="bg-[#3c3c3c] border border-black/30 rounded px-2 py-1.5 text-[12px] text-white outline-none w-24"
+              className="bg-[var(--wb-control-bg)] border border-[var(--wb-border-strong)] rounded px-2 py-1.5 text-[12px] text-[var(--wb-fg)] outline-none w-24"
             />
           )}
           {control.kind === 'text' && (
@@ -353,7 +353,7 @@ function SettingRow({ d, onChange }: { d: SettingDescriptor; onChange: (patch: R
               type="text"
               value={String(d.value)}
               onChange={(e) => onChange({ [d.id]: e.target.value })}
-              className="bg-[#3c3c3c] border border-black/30 rounded px-2 py-1.5 text-[12px] text-white outline-none w-full max-w-md font-mono"
+              className="bg-[var(--wb-control-bg)] border border-[var(--wb-border-strong)] rounded px-2 py-1.5 text-[12px] text-[var(--wb-fg)] outline-none w-full max-w-md font-mono"
             />
           )}
         </>
@@ -383,20 +383,20 @@ export default function SettingsEditor(props: SettingsEditorProps) {
     : [];
 
   return (
-    <div className="h-full flex flex-col bg-[#1e1e1e] text-white overflow-hidden">
-      <div className="px-6 pt-4 pb-3 border-b border-black/30 shrink-0">
-        <div className="flex items-center gap-2 bg-[#3c3c3c] rounded px-3 py-1.5 max-w-2xl">
-          <Search className="w-4 h-4 text-white/40 shrink-0" />
+    <div className="h-full flex flex-col bg-[var(--wb-surface)] text-[var(--wb-fg)] overflow-hidden">
+      <div className="px-6 pt-4 pb-3 border-b border-[var(--wb-border-strong)] shrink-0">
+        <div className="flex items-center gap-2 bg-[var(--wb-control-bg)] rounded px-3 py-1.5 max-w-2xl">
+          <Search className="w-4 h-4 text-[var(--wb-fg)]/40 shrink-0" />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search settings"
-            className="flex-1 bg-transparent text-[13px] text-white outline-none placeholder:text-white/30 min-w-0"
+            className="flex-1 bg-transparent text-[13px] text-[var(--wb-fg)] outline-none placeholder:text-[var(--wb-fg)]/30 min-w-0"
           />
         </div>
       </div>
       <div className="flex-1 min-h-0 flex">
-        <div className="w-56 shrink-0 border-r border-black/30 overflow-y-auto py-3">
+        <div className="w-56 shrink-0 border-r border-[var(--wb-border-strong)] overflow-y-auto py-3">
           {NAV_ITEMS.map((item) => (
             <button
               key={item.id}
@@ -405,7 +405,7 @@ export default function SettingsEditor(props: SettingsEditorProps) {
                 setCategory(item.id);
               }}
               className={`w-full text-left text-[13px] px-4 py-1.5 cursor-pointer ${item.indent ? 'pl-8' : ''} ${
-                category === item.id && !trimmedQuery ? 'bg-[#37373d] text-white' : 'text-white/65 hover:bg-white/5'
+                category === item.id && !trimmedQuery ? 'bg-[var(--wb-selected)] text-[var(--wb-fg)]' : 'text-[var(--wb-fg)]/65 hover:bg-[var(--wb-fg)]/5'
               }`}
             >
               {CATEGORY_LABELS[item.id]}
@@ -419,27 +419,27 @@ export default function SettingsEditor(props: SettingsEditorProps) {
                 <h1 className="text-[20px] font-semibold mb-5">{searchMatches.length} Setting{searchMatches.length === 1 ? '' : 's'} Found</h1>
                 {searchMatches.map((d) => (
                   <div key={d.id}>
-                    <div className="text-[10px] font-bold tracking-wide text-white/30 uppercase mb-1">{CATEGORY_LABELS[d.categories[0]]}</div>
+                    <div className="text-[10px] font-bold tracking-wide text-[var(--wb-fg)]/30 uppercase mb-1">{CATEGORY_LABELS[d.categories[0]]}</div>
                     <SettingRow d={d} onChange={props.onChange} />
                   </div>
                 ))}
               </>
             ) : (
-              <p className="text-[13px] text-white/40">No settings found matching &quot;{query}&quot;.</p>
+              <p className="text-[13px] text-[var(--wb-fg)]/40">No settings found matching &quot;{query}&quot;.</p>
             )
           ) : category === 'extensions' ? (
             <div className="max-w-2xl">
               <h1 className="text-[20px] font-semibold mb-1">Extensions</h1>
-              <p className="text-[12px] text-white/40 mb-6 leading-relaxed">
+              <p className="text-[12px] text-[var(--wb-fg)]/40 mb-6 leading-relaxed">
                 Formatting and linting below run for real, entirely in your browser. There&apos;s no plugin marketplace or extension runtime yet.
               </p>
-              <div className="text-[11px] font-bold tracking-wide text-white/40 uppercase mb-2">Installed</div>
+              <div className="text-[11px] font-bold tracking-wide text-[var(--wb-fg)]/40 uppercase mb-2">Installed</div>
               <div className="flex flex-col gap-2 mb-7">
                 {EXTENSIONS.filter((e) => e.installed).map((e) => (
                   <ExtensionCard key={e.id} ext={e} onOpenExtension={setCategory} />
                 ))}
               </div>
-              <div className="text-[11px] font-bold tracking-wide text-white/40 uppercase mb-2">Recommended</div>
+              <div className="text-[11px] font-bold tracking-wide text-[var(--wb-fg)]/40 uppercase mb-2">Recommended</div>
               <div className="flex flex-col gap-2">
                 {EXTENSIONS.filter((e) => !e.installed).map((e) => (
                   <ExtensionCard key={e.id} ext={e} onOpenExtension={setCategory} />
@@ -451,7 +451,7 @@ export default function SettingsEditor(props: SettingsEditorProps) {
               {(category === 'ext-prettier' || category === 'ext-eslint') && (
                 <button
                   onClick={() => setCategory('extensions')}
-                  className="flex items-center gap-1 text-[12px] text-white/50 hover:text-white/80 mb-3 cursor-pointer"
+                  className="flex items-center gap-1 text-[12px] text-[var(--wb-fg)]/50 hover:text-[var(--wb-fg)]/80 mb-3 cursor-pointer"
                 >
                   <ChevronLeft className="w-3.5 h-3.5" /> Extensions
                 </button>

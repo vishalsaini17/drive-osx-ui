@@ -102,7 +102,7 @@ interface SystemState {
 
   // System Notifications & Offline Engine
   notifications: SystemNotification[];
-  addNotification: (notification: { sender: string; text: string; type?: 'info' | 'error' | 'warning' | 'success' }) => void;
+  addNotification: (notification: { sender: string; text: string; type?: 'info' | 'error' | 'warning' | 'success'; conversationId?: string }) => void;
   removeNotification: (id: string) => void;
   clearNotifications: () => void;
   notifyApiError: (appName: string, errorMessage: string) => void;
@@ -410,6 +410,7 @@ export const useSystemStore = create<SystemState>((set, get) => ({
       text: notification.text,
       time: 'Just now',
       type: notification.type || 'info',
+      conversationId: notification.conversationId,
     };
 
     set((state) => {

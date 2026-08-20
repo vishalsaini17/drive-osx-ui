@@ -24,7 +24,7 @@ const ITEMS: { id: ActivityPanel; label: string; Icon: typeof Files }[] = [
  */
 export default function ActivityBar({ active, onSelect, settingsActive, onOpenSettings }: ActivityBarProps) {
   return (
-    <div id="editor-activity-bar" className="w-11 shrink-0 bg-[#333333] border-r border-black/40 flex flex-col items-center py-2 gap-1">
+    <div id="editor-activity-bar" className="w-11 shrink-0 bg-[var(--wb-surface-sunken)] border-r border-[var(--wb-border-strong)] flex flex-col items-center py-2 gap-1">
       {ITEMS.map(({ id, label, Icon }) => {
         const isActive = active === id;
         return (
@@ -34,10 +34,10 @@ export default function ActivityBar({ active, onSelect, settingsActive, onOpenSe
             onClick={() => onSelect(id)}
             title={label}
             className={`relative w-11 h-11 flex items-center justify-center cursor-pointer ${
-              isActive ? 'text-white' : 'text-white/40 hover:text-white/80'
+              isActive ? 'text-[var(--wb-fg)]' : 'text-[var(--wb-fg)]/40 hover:text-[var(--wb-fg)]/80'
             }`}
           >
-            {isActive && <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 bg-[#007acc]" />}
+            {isActive && <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 bg-[var(--wb-accent)]" />}
             <Icon className="w-5 h-5" strokeWidth={isActive ? 2.25 : 1.75} />
           </button>
         );
@@ -47,10 +47,10 @@ export default function ActivityBar({ active, onSelect, settingsActive, onOpenSe
         onClick={onOpenSettings}
         title="Settings"
         className={`mt-auto relative w-11 h-11 flex items-center justify-center cursor-pointer ${
-          settingsActive ? 'text-white' : 'text-white/40 hover:text-white/80'
+          settingsActive ? 'text-[var(--wb-fg)]' : 'text-[var(--wb-fg)]/40 hover:text-[var(--wb-fg)]/80'
         }`}
       >
-        {settingsActive && <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 bg-[#007acc]" />}
+        {settingsActive && <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 bg-[var(--wb-accent)]" />}
         <Settings className="w-5 h-5" strokeWidth={settingsActive ? 2.25 : 1.75} />
       </button>
     </div>
