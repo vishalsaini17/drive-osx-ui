@@ -175,12 +175,15 @@ export default function FileManager() {
   const [typeFilter, setTypeFilter] = useState<'all' | 'documents' | 'images' | 'audio' | 'video' | 'code' | 'archives'>('all');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>(prefView);
 
-  // "Shared with me" only: narrowing by the role you were given, and
-  // clustering a flat cross-owner list into something scannable.
+  // "Shared with me" only: narrowing by the role you were given.
   const [sharedRoleFilter, setSharedRoleFilter] = useState<'all' | 'viewer' | 'commenter' | 'editor'>('all');
-  const [sharedGroupBy, setSharedGroupBy] = useState<
+  // Grouping — available in every folder. "Shared By" only makes sense in
+  // "Shared with me" (regular folders have no per-item owner to show), so
+  // it's hidden from the dropdown elsewhere; `effectiveGroupBy` below also
+  // guards against a stale 'owner' choice carried over from that tab.
+  const [groupBy, setGroupBy] = useState<
     'none' | 'owner' | 'role' | 'name' | 'type' | 'size' | 'dateModified' | 'dateCreated'
-  >('owner');
+  >('none');
 
   const DEFAULT_FOLDER_NAMES = ['Documents', 'Downloads', 'Projects', 'Pictures', 'Videos', 'Music'];
   const [defaultFolderIdMap, setDefaultFolderIdMap] = useState<Record<string, string>>({});
@@ -2150,49 +2153,54 @@ export default function FileManager() {
     return 0;
   });
 
-  // "Shared with me" grouping. Interspersing full-width header rows into the
-  // same flat list the grid/list views already render keeps every existing
-  // per-item drag/select/context-menu behavior untouched — grouping only
-  // changes what gets inserted between items, not how an item itself renders.
-  // `key` decides which bucket an item falls into and (for date/size) its
-  // display order; `label` is what the header actually shows, which can
-  // carry more than the key (e.g. the owner's @handle alongside their name).
+  // Grouping. Interspersing full-width header rows into the same flat list
+  // the grid/list views already render keeps every existing per-item
+  // drag/select/context-menu behavior untouched — grouping only changes what
+  // gets inserted between items, not how an item itself renders. `key`
+  // decides which bucket an item falls into and (for date/size) its display
+  // order; `label` is what the header actually shows, which can carry more
+  // than the key (e.g. the owner's @handle alongside their name).
   type DisplayEntry = { kind: 'header'; key: string; label: string } | { kind: 'item'; item: FileItem };
   const SHARED_ROLE_LABELS: Record<string, string> = { owner: 'Owner', editor: 'Editor', commenter: 'Commenter', viewer: 'Viewer' };
+  // "Shared By" only has data on "Shared with me" items (`ownerName`/
+  // `ownerUsername` are only populated there) — if the choice was made on
+  // that tab and the user then switches to a regular folder, fall back to no
+  // grouping rather than dumping every item into one "Unknown" bucket.
+  const effectiveGroupBy = groupBy === 'owner' && currentFolderId !== 'shared-with-me' ? 'none' : groupBy;
   const groupOf = (item: FileItem): { key: string; label: string } => {
-    if (sharedGroupBy === 'owner') {
+    if (effectiveGroupBy === 'owner') {
       const name = item.ownerName || 'Unknown';
       return { key: name, label: item.ownerUsername ? `${name} (@${item.ownerUsername})` : name };
     }
-    if (sharedGroupBy === 'role') {
+    if (effectiveGroupBy === 'role') {
       const label = SHARED_ROLE_LABELS[item.sharedRole ?? ''] || 'Viewer';
       return { key: label, label };
     }
-    if (sharedGroupBy === 'name') {
+    if (effectiveGroupBy === 'name') {
       const first = item.name.trim().charAt(0).toUpperCase();
       const label = /[A-Z]/.test(first) ? first : '#';
       return { key: label, label };
     }
-    if (sharedGroupBy === 'type') {
+    if (effectiveGroupBy === 'type') {
       const label = fileCategoryLabel(item);
       return { key: label, label };
     }
-    if (sharedGroupBy === 'size') {
+    if (effectiveGroupBy === 'size') {
       const label = sizeBucketLabel(item);
       return { key: label, label };
     }
-    if (sharedGroupBy === 'dateModified') {
+    if (effectiveGroupBy === 'dateModified') {
       const label = dateBucketLabel(item.updatedAt ?? item.createdAt);
       return { key: label, label };
     }
-    if (sharedGroupBy === 'dateCreated') {
+    if (effectiveGroupBy === 'dateCreated') {
       const label = dateBucketLabel(item.createdAt);
       return { key: label, label };
     }
     return { key: '', label: '' };
   };
   let displayEntries: DisplayEntry[];
-  if (currentFolderId === 'shared-with-me' && sharedGroupBy !== 'none') {
+  if (effectiveGroupBy !== 'none') {
     const order: string[] = [];
     const groups = new Map<string, { label: string; items: FileItem[] }>();
     for (const item of sortedItems) {
@@ -2203,7 +2211,7 @@ export default function FileManager() {
       }
       groups.get(key)!.items.push(item);
     }
-    const chronologicalOrder = sharedGroupBy === 'dateModified' || sharedGroupBy === 'dateCreated' ? DATE_BUCKET_ORDER : sharedGroupBy === 'size' ? SIZE_BUCKET_ORDER : null;
+    const chronologicalOrder = effectiveGroupBy === 'dateModified' || effectiveGroupBy === 'dateCreated' ? DATE_BUCKET_ORDER : effectiveGroupBy === 'size' ? SIZE_BUCKET_ORDER : null;
     order.sort((a, b) =>
       chronologicalOrder ? chronologicalOrder.indexOf(a) - chronologicalOrder.indexOf(b) : a.localeCompare(b),
     );
@@ -2616,54 +2624,53 @@ export default function FileManager() {
             </select>
 
             {currentFolderId === 'shared-with-me' && (
-              <>
-                <select
-                  value={sharedRoleFilter}
-                  onChange={(e) => setSharedRoleFilter(e.target.value as any)}
-                  className="h-7 px-2 text-[11px] font-semibold rounded bg-white/40 dark:bg-black/40 border border-black/10 focus:outline-none cursor-pointer"
-                  title="Filter by your access level"
-                >
-                  <option value="all">Role: All</option>
-                  <option value="viewer">Viewer</option>
-                  <option value="commenter">Commenter</option>
-                  <option value="editor">Editor</option>
-                </select>
-                <select
-                  value={sortField}
-                  onChange={(e) => setSortField(e.target.value as any)}
-                  className="h-7 px-2 text-[11px] font-semibold rounded bg-white/40 dark:bg-black/40 border border-black/10 focus:outline-none cursor-pointer"
-                  title="Sort by"
-                >
-                  <option value="name">Sort: Name</option>
-                  <option value="dateModified">Date Modified</option>
-                  <option value="date">Date Shared</option>
-                  <option value="type">Type</option>
-                  <option value="size">Size</option>
-                </select>
-                <button
-                  onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
-                  className="h-7 px-2 text-[11px] font-semibold rounded bg-white/40 dark:bg-black/40 border border-black/10 hover:bg-white/60 cursor-pointer"
-                  title={sortOrder === 'asc' ? 'Ascending' : 'Descending'}
-                >
-                  {sortOrder === 'asc' ? '▴ Asc' : '▾ Desc'}
-                </button>
-                <select
-                  value={sharedGroupBy}
-                  onChange={(e) => setSharedGroupBy(e.target.value as any)}
-                  className="h-7 px-2 text-[11px] font-semibold rounded bg-white/40 dark:bg-black/40 border border-black/10 focus:outline-none cursor-pointer"
-                  title="Group items"
-                >
-                  <option value="none">No Grouping</option>
-                  <option value="owner">Group: Shared By</option>
-                  <option value="role">Group: Your Role</option>
-                  <option value="name">Group: Name</option>
-                  <option value="type">Group: Type</option>
-                  <option value="size">Group: Size</option>
-                  <option value="dateModified">Group: Date Modified</option>
-                  <option value="dateCreated">Group: Date Created</option>
-                </select>
-              </>
+              <select
+                value={sharedRoleFilter}
+                onChange={(e) => setSharedRoleFilter(e.target.value as any)}
+                className="h-7 px-2 text-[11px] font-semibold rounded bg-white/40 dark:bg-black/40 border border-black/10 focus:outline-none cursor-pointer"
+                title="Filter by your access level"
+              >
+                <option value="all">Role: All</option>
+                <option value="viewer">Viewer</option>
+                <option value="commenter">Commenter</option>
+                <option value="editor">Editor</option>
+              </select>
             )}
+
+            <select
+              value={sortField}
+              onChange={(e) => setSortField(e.target.value as any)}
+              className="h-7 px-2 text-[11px] font-semibold rounded bg-white/40 dark:bg-black/40 border border-black/10 focus:outline-none cursor-pointer"
+              title="Sort by"
+            >
+              <option value="name">Sort: Name</option>
+              <option value="dateModified">Date Modified</option>
+              <option value="date">{currentFolderId === 'shared-with-me' ? 'Date Shared' : 'Date Created'}</option>
+              <option value="type">Type</option>
+              <option value="size">Size</option>
+            </select>
+            <button
+              onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
+              className="h-7 px-2 text-[11px] font-semibold rounded bg-white/40 dark:bg-black/40 border border-black/10 hover:bg-white/60 cursor-pointer"
+              title={sortOrder === 'asc' ? 'Ascending' : 'Descending'}
+            >
+              {sortOrder === 'asc' ? '▴ Asc' : '▾ Desc'}
+            </button>
+            <select
+              value={groupBy}
+              onChange={(e) => setGroupBy(e.target.value as any)}
+              className="h-7 px-2 text-[11px] font-semibold rounded bg-white/40 dark:bg-black/40 border border-black/10 focus:outline-none cursor-pointer"
+              title="Group items"
+            >
+              <option value="none">No Grouping</option>
+              {currentFolderId === 'shared-with-me' && <option value="owner">Group: Shared By</option>}
+              {currentFolderId === 'shared-with-me' && <option value="role">Group: Your Role</option>}
+              <option value="name">Group: Name</option>
+              <option value="type">Group: Type</option>
+              <option value="size">Group: Size</option>
+              <option value="dateModified">Group: Date Modified</option>
+              <option value="dateCreated">Group: Date Created</option>
+            </select>
 
             <span className="h-4 w-[1px] bg-black/10 mx-0.5" />
 
