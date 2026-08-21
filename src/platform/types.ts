@@ -113,6 +113,8 @@ export interface FileItem {
   content?: string;
   parentId: string | null;
   createdAt: string;
+  /** Last-modified timestamp, as reported by the server. */
+  updatedAt?: string;
   starred?: boolean;
   category?: 'documents' | 'images' | 'audio' | 'video' | 'code' | 'archives' | 'other';
   originalParentId?: string | null;
@@ -128,6 +130,12 @@ export interface FileItem {
   effectiveRole?: ResourceRole;
   /** Present only on items reached through "Shared with me". */
   sharedRole?: ResourceRole;
+  /** Present only on items reached through "Shared with me" — when it was shared. */
+  sharedAt?: string;
+  /** Present only on items reached through "Shared with me" — the owner's display name. */
+  ownerName?: string | null;
+  /** Present only on items reached through "Shared with me" — the owner's @handle. */
+  ownerUsername?: string | null;
 }
 
 export interface ChatMessage {

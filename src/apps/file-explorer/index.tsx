@@ -92,6 +92,58 @@ function dragHasType(e: React.DragEvent, type: string): boolean {
   return Array.from(e.dataTransfer.types || []).includes(type);
 }
 
+/** Extension → the same broad category the toolbar's type filter uses. */
+function fileCategoryLabel(item: FileItem): string {
+  if (item.type === 'folder') return 'Folders';
+  const ext = item.name.split('.').pop()?.toLowerCase();
+  if (ext === 'txt' || ext === 'pdf' || ext === 'doc' || ext === 'docx') return 'Documents';
+  if (ext === 'png' || ext === 'jpg' || ext === 'jpeg' || ext === 'webp' || ext === 'svg') return 'Images';
+  if (ext === 'mp3' || ext === 'wav' || ext === 'ogg' || ext === 'm4a') return 'Audio';
+  if (ext === 'mp4' || ext === 'webm' || ext === 'mov') return 'Video';
+  if (ext === 'js' || ext === 'ts' || ext === 'tsx' || ext === 'html' || ext === 'css' || ext === 'py' || ext === 'json') return 'Code';
+  if (ext === 'zip' || ext === 'tar' || ext === 'gz' || ext === 'rar') return 'Archives';
+  return 'Other';
+}
+
+/** Windows-Explorer-style recency buckets, most recent first. */
+const DATE_BUCKET_ORDER = ['Today', 'Yesterday', 'Earlier this week', 'Earlier this month', 'Earlier this year', 'Older', 'Unknown'];
+function dateBucketLabel(dateStr: string | undefined): string {
+  if (!dateStr) return 'Unknown';
+  const date = new Date(dateStr);
+  if (Number.isNaN(date.getTime())) return 'Unknown';
+
+  const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const today = startOfDay(new Date());
+  const target = startOfDay(date);
+  const dayDiff = Math.round((today.getTime() - target.getTime()) / 86_400_000);
+
+  if (dayDiff <= 0) return 'Today';
+  if (dayDiff === 1) return 'Yesterday';
+  if (dayDiff <= 7) return 'Earlier this week';
+  if (dayDiff <= 31) return 'Earlier this month';
+  if (target.getFullYear() === today.getFullYear()) return 'Earlier this year';
+  return 'Older';
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Windows-Explorer-style size buckets, largest first. */
+const SIZE_BUCKET_ORDER = ['Folders', 'Very Large (100 MB+)', 'Large (10-100 MB)', 'Medium (1-10 MB)', 'Small (under 1 MB)', 'Empty', 'Unknown'];
+function sizeBucketLabel(item: FileItem): string {
+  if (item.type === 'folder') return 'Folders';
+  if (typeof item.size !== 'number') return 'Unknown';
+  const mb = item.size / (1024 * 1024);
+  if (item.size === 0) return 'Empty';
+  if (mb >= 100) return 'Very Large (100 MB+)';
+  if (mb >= 10) return 'Large (10-100 MB)';
+  if (mb >= 1) return 'Medium (1-10 MB)';
+  return 'Small (under 1 MB)';
+}
+
 export default function FileManager() {
   // Central store integration
   const files = useSystemStore((state) => state.files);
@@ -122,6 +174,13 @@ export default function FileManager() {
   const [typeFilter, setTypeFilter] = useState<'all' | 'documents' | 'images' | 'audio' | 'video' | 'code' | 'archives'>('all');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>(prefView);
 
+  // "Shared with me" only: narrowing by the role you were given, and
+  // clustering a flat cross-owner list into something scannable.
+  const [sharedRoleFilter, setSharedRoleFilter] = useState<'all' | 'viewer' | 'commenter' | 'editor'>('all');
+  const [sharedGroupBy, setSharedGroupBy] = useState<
+    'none' | 'owner' | 'role' | 'name' | 'type' | 'size' | 'dateModified' | 'dateCreated'
+  >('owner');
+
   const DEFAULT_FOLDER_NAMES = ['Documents', 'Downloads', 'Projects', 'Pictures', 'Videos', 'Music'];
   const [defaultFolderIdMap, setDefaultFolderIdMap] = useState<Record<string, string>>({});
 
@@ -145,6 +204,19 @@ export default function FileManager() {
   } | null>(null);
   const uploadOverallPercent = uploadProgress
     ? Math.min(100, Math.round(((uploadProgress.completed + uploadProgress.currentPercent / 100) / uploadProgress.total) * 100))
+    : 0;
+
+  // Download progress, shown in the window's status bar while a zip download
+  // (2+ items, or any folder) is in flight. `approxTotalBytes` comes from the
+  // server's uncompressed-size estimate, so the percentage can overshoot
+  // slightly short of 100 right up until the response actually finishes.
+  const [downloadProgress, setDownloadProgress] = useState<{
+    itemCount: number;
+    loadedBytes: number;
+    approxTotalBytes: number;
+  } | null>(null);
+  const downloadOverallPercent = downloadProgress && downloadProgress.approxTotalBytes > 0
+    ? Math.min(99, Math.round((downloadProgress.loadedBytes / downloadProgress.approxTotalBytes) * 100))
     : 0;
 
   // Drag and drop state
@@ -292,12 +364,16 @@ export default function FileManager() {
           content: f.content || '',
           parentId: 'shared-with-me',
           createdAt: f.createdAt,
+          updatedAt: f.updatedAt,
           size: f.size,
           starred: f.starred || false,
           category: f.mimeType?.split('/')[0] as any,
           originalParentId: f.parentId,
           isShared: f.isShared || false,
           sharedRole: f.sharedRole,
+          sharedAt: f.sharedAt,
+          ownerUsername: f.ownerUsername,
+          ownerName: f.ownerName,
         })),
       );
     } catch (error) {
@@ -379,7 +455,7 @@ export default function FileManager() {
   const [historyIndex, setHistoryIndex] = useState<number>(0);
 
   // Sorting
-  const [sortField, setSortField] = useState<'name' | 'type' | 'date' | 'size'>('name');
+  const [sortField, setSortField] = useState<'name' | 'type' | 'date' | 'dateModified' | 'size'>('name');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
 
   // Address Bar path editing
@@ -703,25 +779,61 @@ export default function FileManager() {
     return <FileText className={`${dim} text-blue-500`} />;
   };
 
-  // Real Local File Download Execution
-  const handleDownloadFile = (item: FileItem) => {
-    if (item.type === 'folder') {
-      alert('Downloading folders as zip is not supported in client preview mode.');
-      return;
-    }
-    const content = item.content || '';
-    const isDataUrl = content.startsWith('data:');
-    const downloadUrl = isDataUrl
-      ? content
-      : URL.createObjectURL(new Blob([content], { type: 'text/plain;charset=utf-8' }));
-
+  function triggerBrowserDownload(href: string, filename: string) {
     const a = document.createElement('a');
-    a.href = downloadUrl;
-    a.download = item.name;
+    a.href = href;
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    if (!isDataUrl) URL.revokeObjectURL(downloadUrl);
+  }
+
+  // A single real file downloads directly via a short-lived signed URL — no
+  // need to route it through the zip endpoint. A folder has no such URL (it
+  // isn't one object in storage), so it always goes through the zip path.
+  const handleDownloadFile = async (item: FileItem) => {
+    if (item.type === 'folder') {
+      await handleDownloadSelectedItems([item.id]);
+      return;
+    }
+    try {
+      const url = await FileService.downloadUrl(item.id);
+      triggerBrowserDownload(url, item.name);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Please try again.';
+      alert(`Could not download "${item.name}": ${message}`);
+    }
+  };
+
+  // Toolbar Download — a single file downloads directly; two or more items,
+  // or any folder (which can only be downloaded as a zip in the first
+  // place), bundle server-side into one archive with a progress readout.
+  const handleDownloadSelectedItems = async (idsParam?: string[]) => {
+    const ids = idsParam ?? selectedFileIds;
+    const items = ids.map((id) => displaySource.find((f) => f.id === id)).filter((i): i is FileItem => !!i);
+    if (items.length === 0) return;
+
+    const hasFolder = items.some((i) => i.type === 'folder');
+    if (!hasFolder && items.length <= 2) {
+      for (const item of items) await handleDownloadFile(item);
+      return;
+    }
+
+    setDownloadProgress({ itemCount: items.length, loadedBytes: 0, approxTotalBytes: 0 });
+    try {
+      const { blob, filename } = await FileService.downloadZip(ids, {
+        onProgress: (loadedBytes, approxTotalBytes) =>
+          setDownloadProgress({ itemCount: items.length, loadedBytes, approxTotalBytes }),
+      });
+      const objectUrl = URL.createObjectURL(blob);
+      triggerBrowserDownload(objectUrl, filename);
+      URL.revokeObjectURL(objectUrl);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Please try again.';
+      alert(`Could not download the selected items: ${message}`);
+    } finally {
+      setDownloadProgress(null);
+    }
   };
 
   // Toggle Star / Favorite
@@ -1385,6 +1497,30 @@ export default function FileManager() {
     useContextMenuStore.getState().closeContextMenu();
   };
 
+  // Toolbar Delete — acts on the whole selection, not just the first item.
+  const handleDeleteSelectedItems = async () => {
+    const items = selectedFileIds
+      .map((id) => displaySource.find((f) => f.id === id))
+      .filter((item): item is FileItem => !!item);
+    if (items.length === 0) return;
+    if (items.length === 1) {
+      handleDeleteItem(items[0]);
+      return;
+    }
+
+    if (isTrashFolder) {
+      if (!confirm(`Permanently erase ${items.length} items? This cannot be undone.`)) return;
+      const selectedIds = new Set(selectedFileIds);
+      const remainingTrash = deletedFiles.filter((f) => !selectedIds.has(f.id));
+      StorageService.set('webos-trash', remainingTrash);
+      useSystemStore.setState({ deletedFiles: remainingTrash });
+    } else {
+      if (!confirm(`Move ${items.length} items to the Recycle Bin?`)) return;
+      await Promise.all(items.map((item) => handleDeleteFile({ ...item, originalParentId: item.parentId })));
+    }
+    setSelectedFileIds([]);
+  };
+
   // Left toolbar overflow ---------------------------------------------------
   // Below a certain width the action buttons (New Folder, Cut, Copy, Paste,
   // Rename, Delete, …) no longer fit on one line. Rather than wrapping onto a
@@ -1487,9 +1623,17 @@ export default function FileManager() {
       label: 'Delete',
       icon: <Trash2 className="w-3.5 h-3.5 shrink-0" />,
       menuIcon: <Trash2 size={15} className="text-rose-500" />,
-      onClick: () => selectedItem && handleDeleteItem(selectedItem),
-      disabled: !selectedItem,
+      onClick: () => void handleDeleteSelectedItems(),
+      disabled: selectedFileIds.length === 0,
       danger: true,
+    },
+    {
+      id: 'download',
+      label: 'Download',
+      icon: <Download className="w-3.5 h-3.5 shrink-0" />,
+      menuIcon: <Download size={15} className="text-emerald-500" />,
+      onClick: () => void handleDownloadSelectedItems(),
+      disabled: selectedFileIds.length === 0,
     },
   ];
 
@@ -1920,6 +2064,11 @@ export default function FileManager() {
     });
   }
 
+  // "Shared with me" only: narrow to a specific access level.
+  if (currentFolderId === 'shared-with-me' && sharedRoleFilter !== 'all') {
+    currentItems = currentItems.filter((item) => item.sharedRole === sharedRoleFilter);
+  }
+
   // Apply Search Query
   const filteredItems = currentItems.filter((f) =>
     f.name.toLowerCase().includes(searchQuery.toLowerCase())
@@ -1938,8 +2087,14 @@ export default function FileManager() {
       valA = getItemTypeString(a);
       valB = getItemTypeString(b);
     } else if (sortField === 'date') {
-      valA = a.createdAt;
-      valB = b.createdAt;
+      // In "Shared with me", "date" means when it was shared with you, not
+      // when the owner originally created it — that's what someone sorting
+      // this view by date is actually asking for.
+      valA = a.sharedAt ?? a.createdAt;
+      valB = b.sharedAt ?? b.createdAt;
+    } else if (sortField === 'dateModified') {
+      valA = a.updatedAt ?? a.createdAt;
+      valB = b.updatedAt ?? b.createdAt;
     } else if (sortField === 'size') {
       if (a.type === 'folder') {
         valA = files.filter((f) => f.parentId === a.id).length;
@@ -1954,6 +2109,74 @@ export default function FileManager() {
     if (valA > valB) return sortOrder === 'asc' ? 1 : -1;
     return 0;
   });
+
+  // "Shared with me" grouping. Interspersing full-width header rows into the
+  // same flat list the grid/list views already render keeps every existing
+  // per-item drag/select/context-menu behavior untouched — grouping only
+  // changes what gets inserted between items, not how an item itself renders.
+  // `key` decides which bucket an item falls into and (for date/size) its
+  // display order; `label` is what the header actually shows, which can
+  // carry more than the key (e.g. the owner's @handle alongside their name).
+  type DisplayEntry = { kind: 'header'; key: string; label: string } | { kind: 'item'; item: FileItem };
+  const SHARED_ROLE_LABELS: Record<string, string> = { owner: 'Owner', editor: 'Editor', commenter: 'Commenter', viewer: 'Viewer' };
+  const groupOf = (item: FileItem): { key: string; label: string } => {
+    if (sharedGroupBy === 'owner') {
+      const name = item.ownerName || 'Unknown';
+      return { key: name, label: item.ownerUsername ? `${name} (@${item.ownerUsername})` : name };
+    }
+    if (sharedGroupBy === 'role') {
+      const label = SHARED_ROLE_LABELS[item.sharedRole ?? ''] || 'Viewer';
+      return { key: label, label };
+    }
+    if (sharedGroupBy === 'name') {
+      const first = item.name.trim().charAt(0).toUpperCase();
+      const label = /[A-Z]/.test(first) ? first : '#';
+      return { key: label, label };
+    }
+    if (sharedGroupBy === 'type') {
+      const label = fileCategoryLabel(item);
+      return { key: label, label };
+    }
+    if (sharedGroupBy === 'size') {
+      const label = sizeBucketLabel(item);
+      return { key: label, label };
+    }
+    if (sharedGroupBy === 'dateModified') {
+      const label = dateBucketLabel(item.updatedAt ?? item.createdAt);
+      return { key: label, label };
+    }
+    if (sharedGroupBy === 'dateCreated') {
+      const label = dateBucketLabel(item.createdAt);
+      return { key: label, label };
+    }
+    return { key: '', label: '' };
+  };
+  let displayEntries: DisplayEntry[];
+  if (currentFolderId === 'shared-with-me' && sharedGroupBy !== 'none') {
+    const order: string[] = [];
+    const groups = new Map<string, { label: string; items: FileItem[] }>();
+    for (const item of sortedItems) {
+      const { key, label } = groupOf(item);
+      if (!groups.has(key)) {
+        groups.set(key, { label, items: [] });
+        order.push(key);
+      }
+      groups.get(key)!.items.push(item);
+    }
+    const chronologicalOrder = sharedGroupBy === 'dateModified' || sharedGroupBy === 'dateCreated' ? DATE_BUCKET_ORDER : sharedGroupBy === 'size' ? SIZE_BUCKET_ORDER : null;
+    order.sort((a, b) =>
+      chronologicalOrder ? chronologicalOrder.indexOf(a) - chronologicalOrder.indexOf(b) : a.localeCompare(b),
+    );
+    displayEntries = order.flatMap((key) => {
+      const group = groups.get(key)!;
+      return [
+        { kind: 'header' as const, key: `group-${key}`, label: `${group.label} · ${group.items.length}` },
+        ...group.items.map((item) => ({ kind: 'item' as const, item })),
+      ];
+    });
+  } else {
+    displayEntries = sortedItems.map((item) => ({ kind: 'item' as const, item }));
+  }
 
   // Theme styles
   const themeStyles = {
@@ -2018,7 +2241,7 @@ export default function FileManager() {
         { id: 'upload', label: 'Upload Files…', onSelect: handleUploadClick },
         separator(),
         { id: 'rename', label: 'Rename', shortcut: 'F2', disabled: !selectedItem, onSelect: () => selectedItem && handleStartRename(selectedItem) },
-        { id: 'download', label: 'Download', disabled: !selectedItem || selectedItem.type !== 'file', onSelect: () => selectedItem && handleDownloadFile(selectedItem) },
+        { id: 'download', label: 'Download', disabled: !selectedItem, onSelect: () => void handleDownloadSelectedItems() },
         separator(),
         { id: 'delete', label: isTrashFolder ? 'Delete Permanently' : 'Move to Trash', shortcut: 'Delete', danger: true, disabled: !selectedItem, onSelect: () => selectedItem && handleDeleteItem(selectedItem) },
         { id: 'empty-trash', label: 'Empty Recycle Bin', danger: true, disabled: deletedFiles.length === 0, onSelect: () => handleEmptyTrash() },
@@ -2048,7 +2271,7 @@ export default function FileManager() {
         {
           kind: 'submenu', id: 'sort-by', label: 'Sort By',
           items: ([
-            ['name', 'Name'], ['type', 'Type'], ['date', 'Date Modified'], ['size', 'Size'],
+            ['name', 'Name'], ['type', 'Type'], ['dateModified', 'Date Modified'], ['date', 'Date Created'], ['size', 'Size'],
           ] as const).map(([field, label]) => ({
             id: `sort-${field}`, label, selected: sortField === field,
             onSelect: () => setSortField(field),
@@ -2340,6 +2563,56 @@ export default function FileManager() {
               <option value="archives">Archives</option>
             </select>
 
+            {currentFolderId === 'shared-with-me' && (
+              <>
+                <select
+                  value={sharedRoleFilter}
+                  onChange={(e) => setSharedRoleFilter(e.target.value as any)}
+                  className="h-7 px-2 text-[11px] font-semibold rounded bg-white/40 dark:bg-black/40 border border-black/10 focus:outline-none cursor-pointer"
+                  title="Filter by your access level"
+                >
+                  <option value="all">Role: All</option>
+                  <option value="viewer">Viewer</option>
+                  <option value="commenter">Commenter</option>
+                  <option value="editor">Editor</option>
+                </select>
+                <select
+                  value={sortField}
+                  onChange={(e) => setSortField(e.target.value as any)}
+                  className="h-7 px-2 text-[11px] font-semibold rounded bg-white/40 dark:bg-black/40 border border-black/10 focus:outline-none cursor-pointer"
+                  title="Sort by"
+                >
+                  <option value="name">Sort: Name</option>
+                  <option value="dateModified">Date Modified</option>
+                  <option value="date">Date Shared</option>
+                  <option value="type">Type</option>
+                  <option value="size">Size</option>
+                </select>
+                <button
+                  onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
+                  className="h-7 px-2 text-[11px] font-semibold rounded bg-white/40 dark:bg-black/40 border border-black/10 hover:bg-white/60 cursor-pointer"
+                  title={sortOrder === 'asc' ? 'Ascending' : 'Descending'}
+                >
+                  {sortOrder === 'asc' ? '▴ Asc' : '▾ Desc'}
+                </button>
+                <select
+                  value={sharedGroupBy}
+                  onChange={(e) => setSharedGroupBy(e.target.value as any)}
+                  className="h-7 px-2 text-[11px] font-semibold rounded bg-white/40 dark:bg-black/40 border border-black/10 focus:outline-none cursor-pointer"
+                  title="Group items"
+                >
+                  <option value="none">No Grouping</option>
+                  <option value="owner">Group: Shared By</option>
+                  <option value="role">Group: Your Role</option>
+                  <option value="name">Group: Name</option>
+                  <option value="type">Group: Type</option>
+                  <option value="size">Group: Size</option>
+                  <option value="dateModified">Group: Date Modified</option>
+                  <option value="dateCreated">Group: Date Created</option>
+                </select>
+              </>
+            )}
+
             <span className="h-4 w-[1px] bg-black/10 mx-0.5" />
 
             <button
@@ -2373,48 +2646,6 @@ export default function FileManager() {
           </div>
         </div>
 
-        {/* Multi-Selection Banner */}
-        {selectedFileIds.length > 1 && (
-          <div className="bg-purple-600 text-white px-4 py-1.5 text-xs flex items-center justify-between font-semibold">
-            <div className="flex items-center gap-2">
-              <CheckSquare className="w-4 h-4" />
-              <span>{selectedFileIds.length} items selected</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => {
-                  selectedFileIds.forEach((id) => {
-                    const item = files.find((f) => f.id === id);
-                    if (item) handleDownloadFile(item);
-                  });
-                }}
-                className="px-2.5 py-1 bg-white/20 hover:bg-white/30 rounded text-[11px] cursor-pointer flex items-center gap-1"
-              >
-                <Download className="w-3 h-3" /> Download Selected
-              </button>
-              <button
-                onClick={() => {
-                  if (confirm(`Move selected ${selectedFileIds.length} items to Trash?`)) {
-                    selectedFileIds.forEach((id) => {
-                      const item = files.find((f) => f.id === id);
-                      if (item) handleDeleteFile(item);
-                    });
-                    setSelectedFileIds([]);
-                  }
-                }}
-                className="px-2.5 py-1 bg-rose-500 hover:bg-rose-600 rounded text-[11px] cursor-pointer flex items-center gap-1"
-              >
-                <Trash2 className="w-3 h-3" /> Delete Selected
-              </button>
-              <button
-                onClick={() => setSelectedFileIds([])}
-                className="px-2 py-1 hover:bg-white/20 rounded text-[11px] cursor-pointer"
-              >
-                Deselect All
-              </button>
-            </div>
-          </div>
-        )}
 
         {/* Trash Banner when inside Trash Bin */}
         {isTrashFolder && (
@@ -2581,7 +2812,18 @@ export default function FileManager() {
                 gridTemplateColumns: 'repeat(auto-fill, minmax(88px, 120px))',
               }}
             >
-              {sortedItems.map((item) => {
+              {displayEntries.map((entry) => {
+                if (entry.kind === 'header') {
+                  return (
+                    <div
+                      key={entry.key}
+                      className="col-span-full pt-2 pb-1 px-1 text-[11px] font-bold uppercase tracking-wider opacity-60 first:pt-0"
+                    >
+                      {entry.label}
+                    </div>
+                  );
+                }
+                const item = entry.item;
                 const isSelected = selectedFileIds.includes(item.id);
                 const isBeingRenamed = renamingId === item.id;
                 const isClipboardCut = clipboard && clipboard.id === item.id && clipboard.action === 'cut';
@@ -2719,7 +2961,18 @@ export default function FileManager() {
                   </tr>
                 </thead>
                 <tbody>
-                  {sortedItems.map((item) => {
+                  {displayEntries.map((entry) => {
+                    if (entry.kind === 'header') {
+                      const columnCount = 1 + (containerWidth >= 380 ? 1 : 0) + (containerWidth >= 500 ? 2 : 0);
+                      return (
+                        <tr key={entry.key}>
+                          <td colSpan={columnCount} className="pt-3 pb-1 px-4 text-[11px] font-bold uppercase tracking-wider opacity-60">
+                            {entry.label}
+                          </td>
+                        </tr>
+                      );
+                    }
+                    const item = entry.item;
                     const isSelected = selectedFileIds.includes(item.id);
                     const isBeingRenamed = renamingId === item.id;
                 const isClipboardCut = clipboard && clipboard.id === item.id && clipboard.action === 'cut';
@@ -2857,15 +3110,13 @@ export default function FileManager() {
                     <Share2 className="w-3.5 h-3.5" />
                     Share Item
                   </button>
-                  {selectedItem.type === 'file' && (
-                    <button
-                      onClick={() => handleDownloadFile(selectedItem)}
-                      className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg text-xs transition-colors flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                      Download File
-                    </button>
-                  )}
+                  <button
+                    onClick={() => handleDownloadFile(selectedItem)}
+                    className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg text-xs transition-colors flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    Download
+                  </button>
                   <button
                     onClick={() => handleDeleteItem(selectedItem)}
                     className="w-full py-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 font-bold rounded-lg text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
@@ -2919,6 +3170,19 @@ export default function FileManager() {
                 <div className="h-full bg-blue-500 transition-[width] duration-150" style={{ width: `${uploadOverallPercent}%` }} />
               </div>
               <span className="tabular-nums w-9 text-right">{uploadOverallPercent}%</span>
+            </div>
+          ) : downloadProgress ? (
+            <div id="status-bar-download-progress" className="flex items-center gap-2 shrink-0">
+              <span className="truncate max-w-[220px]">
+                Downloading {downloadProgress.itemCount} item{downloadProgress.itemCount === 1 ? '' : 's'}
+                {downloadProgress.approxTotalBytes > 0
+                  ? ` — ${formatBytes(downloadProgress.loadedBytes)} of ~${formatBytes(downloadProgress.approxTotalBytes)}`
+                  : ` — ${formatBytes(downloadProgress.loadedBytes)}`}
+              </span>
+              <div className="w-24 h-1.5 rounded-full bg-black/10 overflow-hidden">
+                <div className="h-full bg-emerald-500 transition-[width] duration-150" style={{ width: `${downloadOverallPercent}%` }} />
+              </div>
+              <span className="tabular-nums w-9 text-right">{downloadOverallPercent}%</span>
             </div>
           ) : undefined
         }

@@ -59,6 +59,12 @@ export interface FileItemResponse {
   effectiveRole?: ResourceRole;
   /** Present only on `listSharedWithMe` results. */
   sharedRole?: ResourceRole;
+  /** Present only on `listSharedWithMe` results — when the share was granted. */
+  sharedAt?: string;
+  /** Present only on `listSharedWithMe` results — the file owner's display name. */
+  ownerName?: string | null;
+  /** Present only on `listSharedWithMe` results — the file owner's @handle. */
+  ownerUsername?: string | null;
 }
 
 export interface ShareView {
@@ -440,6 +446,68 @@ export class FileServiceClass {
       ...(versionId ? { query: { versionId } } : {}),
     });
     return data.download.url;
+  }
+
+  /**
+   * Zips a multi-selection (files and/or whole folders) server-side and
+   * downloads the result. XHR (not fetch) so download progress is
+   * observable — the server can't send a `Content-Length` for a streamed
+   * archive, so `X-Uncompressed-Size` is used as an approximate total.
+   */
+  downloadZip(
+    fileIds: string[],
+    options: { onProgress?: (loadedBytes: number, approxTotalBytes: number) => void; signal?: AbortSignal } = {},
+  ): Promise<{ blob: Blob; filename: string }> {
+    return new Promise((resolve, reject) => {
+      const request = new XMLHttpRequest();
+      request.open('POST', `${API_BASE_URL}/files/download-zip`);
+      request.responseType = 'blob';
+
+      const token = tokens.access();
+      if (token) request.setRequestHeader('Authorization', `Bearer ${token}`);
+      const organizationId = tokens.organization();
+      if (organizationId) request.setRequestHeader('X-Organization-Id', organizationId);
+      request.setRequestHeader('Content-Type', 'application/json');
+
+      request.onprogress = (event) => {
+        const approxTotal = Number(request.getResponseHeader('X-Uncompressed-Size') ?? 0);
+        if (options.onProgress) options.onProgress(event.loaded, approxTotal || event.loaded);
+      };
+
+      request.onload = async () => {
+        if (request.status >= 200 && request.status < 300) {
+          const disposition = request.getResponseHeader('Content-Disposition') ?? '';
+          const match = /filename="([^"]+)"/.exec(disposition);
+          resolve({ blob: request.response as Blob, filename: match?.[1] ?? 'Download.zip' });
+          return;
+        }
+
+        let message = `Download failed with status ${request.status}`;
+        try {
+          const text = await (request.response as Blob).text();
+          message = (JSON.parse(text)?.error?.message as string) ?? message;
+        } catch {
+          // Fall through to the status-based message above.
+        }
+        reject(new ApiError({ message, code: 'internal_error', status: request.status }));
+      };
+
+      request.onerror = () =>
+        reject(
+          new ApiError({
+            message: 'The download could not be completed because the connection was interrupted.',
+            code: 'offline',
+            status: 0,
+            retryable: true,
+          }),
+        );
+
+      request.onabort = () => reject(new ApiError({ message: 'Download cancelled', code: 'validation_error', status: 0 }));
+
+      options.signal?.addEventListener('abort', () => request.abort());
+
+      request.send(JSON.stringify({ fileIds }));
+    });
   }
 
   async listVersions(fileId: string): Promise<FileVersion[]> {
