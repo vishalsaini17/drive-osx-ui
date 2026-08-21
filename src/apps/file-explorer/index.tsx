@@ -2523,12 +2523,24 @@ export default function FileManager() {
             {leftToolbarVisibleCount > 8 && (
               <button
                 ref={(el) => { leftButtonRefs.current[8] = el; }}
-                onClick={() => selectedItem && handleDeleteItem(selectedItem)}
-                disabled={!selectedItem}
+                onClick={() => void handleDeleteSelectedItems()}
+                disabled={selectedFileIds.length === 0}
                 className="flex items-center gap-1.5 px-2 py-1 text-[11px] font-semibold rounded hover:bg-white/35 text-rose-500 disabled:opacity-35 cursor-pointer shrink-0"
               >
                 <Trash2 className="w-3.5 h-3.5 shrink-0" />
                 {!isCompactRibbon && <span>Delete</span>}
+              </button>
+            )}
+
+            {leftToolbarVisibleCount > 9 && (
+              <button
+                ref={(el) => { leftButtonRefs.current[9] = el; }}
+                onClick={() => void handleDownloadSelectedItems()}
+                disabled={selectedFileIds.length === 0}
+                className="flex items-center gap-1.5 px-2 py-1 text-[11px] font-semibold rounded hover:bg-white/35 text-emerald-600 disabled:opacity-35 cursor-pointer shrink-0"
+              >
+                <Download className="w-3.5 h-3.5 shrink-0" />
+                {!isCompactRibbon && <span>Download</span>}
               </button>
             )}
 
