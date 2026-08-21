@@ -67,6 +67,8 @@ export interface ShareView {
   principalType: 'user' | 'team' | 'organization' | 'link';
   principalId: string | null;
   principalName: string | null;
+  /** Only set for `principalType === 'user'`; teams/links have no @handle. */
+  principalUsername: string | null;
   role: ResourceRole;
   message: string | null;
   expiresAt: string | null;

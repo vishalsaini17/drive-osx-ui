@@ -369,6 +369,7 @@ export default function ShareModal({ fileItem, isOpen, onClose, onSharedChanged 
                               <div className="min-w-0">
                                 <div className="text-xs font-semibold truncate">{user.name}</div>
                                 <div className="text-[10px] text-zinc-400 truncate">{user.email}</div>
+                                <div className="text-[10px] text-zinc-400/80 truncate">@{user.username}</div>
                               </div>
                             </button>
                           ))}
@@ -454,6 +455,7 @@ export default function ShareModal({ fileItem, isOpen, onClose, onSharedChanged 
                             </div>
                             <div className="text-[10px] text-zinc-400">
                               Added {new Date(share.createdAt).toLocaleDateString()}
+                              {share.principalUsername ? ` · @${share.principalUsername}` : ''}
                             </div>
                           </div>
                         </div>
