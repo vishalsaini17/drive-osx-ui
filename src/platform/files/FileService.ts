@@ -269,6 +269,14 @@ export class FileServiceClass {
     }
   }
 
+  async duplicateFile(fileId: string, targetParentId?: string | null): Promise<FileItemResponse> {
+    const data = await http.post<{ file: FileItemResponse }>(`/files/${fileId}/duplicate`, {
+      ...(targetParentId !== undefined ? { parentId: targetParentId } : {}),
+    });
+    await cacheFiles([data.file]);
+    return data.file;
+  }
+
   async deleteFile(fileId: string): Promise<void> {
     try {
       await http.delete(`/files/${fileId}`);
@@ -449,15 +457,20 @@ export class FileServiceClass {
   }
 
   /**
-   * Zips a multi-selection (files and/or whole folders) server-side and
-   * downloads the result. XHR (not fetch) so download progress is
+   * Zips one part of a multi-selection (files and/or whole folders)
+   * server-side and downloads it. XHR (not fetch) so download progress is
    * observable — the server can't send a `Content-Length` for a streamed
    * archive, so `X-Uncompressed-Size` is used as an approximate total.
+   *
+   * A selection over 1GiB comes back as several parts rather than one giant
+   * archive: call with `partIndex: 0` first, read `totalParts` off the
+   * result, and if it's more than 1, call again for 1..totalParts-1.
    */
   downloadZip(
     fileIds: string[],
+    partIndex = 0,
     options: { onProgress?: (loadedBytes: number, approxTotalBytes: number) => void; signal?: AbortSignal } = {},
-  ): Promise<{ blob: Blob; filename: string }> {
+  ): Promise<{ blob: Blob; filename: string; partIndex: number; totalParts: number }> {
     return new Promise((resolve, reject) => {
       const request = new XMLHttpRequest();
       request.open('POST', `${API_BASE_URL}/files/download-zip`);
@@ -478,7 +491,12 @@ export class FileServiceClass {
         if (request.status >= 200 && request.status < 300) {
           const disposition = request.getResponseHeader('Content-Disposition') ?? '';
           const match = /filename="([^"]+)"/.exec(disposition);
-          resolve({ blob: request.response as Blob, filename: match?.[1] ?? 'Download.zip' });
+          resolve({
+            blob: request.response as Blob,
+            filename: match?.[1] ?? 'Download.zip',
+            partIndex: Number(request.getResponseHeader('X-Part-Index') ?? partIndex),
+            totalParts: Number(request.getResponseHeader('X-Total-Parts') ?? 1),
+          });
           return;
         }
 
@@ -506,7 +524,7 @@ export class FileServiceClass {
 
       options.signal?.addEventListener('abort', () => request.abort());
 
-      request.send(JSON.stringify({ fileIds }));
+      request.send(JSON.stringify({ fileIds, partIndex }));
     });
   }
 

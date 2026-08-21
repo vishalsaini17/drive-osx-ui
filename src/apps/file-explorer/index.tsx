@@ -150,6 +150,7 @@ export default function FileManager() {
   const setFiles = useSystemStore((state) => state.setFiles);
   const syncFilesFromBackend = useSystemStore((state) => state.syncFilesFromBackend);
   const syncTrashFromBackend = useSystemStore((state) => state.syncTrashFromBackend);
+  const addNotification = useSystemStore((state) => state.addNotification);
   const deletedFiles = useSystemStore((state) => state.deletedFiles || []);
   const handleDeleteFile = useSystemStore((state) => state.handleDeleteFile);
   const handleRestoreFile = useSystemStore((state) => state.handleRestoreFile);
@@ -206,18 +207,31 @@ export default function FileManager() {
     ? Math.min(100, Math.round(((uploadProgress.completed + uploadProgress.currentPercent / 100) / uploadProgress.total) * 100))
     : 0;
 
-  // Download progress, shown in the window's status bar while a zip download
-  // (2+ items, or any folder) is in flight. `approxTotalBytes` comes from the
-  // server's uncompressed-size estimate, so the percentage can overshoot
-  // slightly short of 100 right up until the response actually finishes.
+  // Download progress, shown as a floating notification-style card anchored
+  // to the bottom-left of the window while a zip download (2+ items, or any
+  // folder) is in flight. `approxTotalBytes` comes from the server's
+  // uncompressed-size estimate for the CURRENT part only, so the percentage
+  // can overshoot slightly short of 100 right up until that part's response
+  // actually finishes. A small download can complete in well under a video
+  // frame, so `completed` holds the bar at 100% for a beat rather than
+  // clearing it the instant the request resolves — otherwise nothing would
+  // ever be visible to see. A selection over 1GiB downloads as several
+  // parts (`totalParts` > 1), each its own zip file.
   const [downloadProgress, setDownloadProgress] = useState<{
     itemCount: number;
     loadedBytes: number;
     approxTotalBytes: number;
+    partIndex: number;
+    totalParts: number;
+    completed?: boolean;
   } | null>(null);
-  const downloadOverallPercent = downloadProgress && downloadProgress.approxTotalBytes > 0
-    ? Math.min(99, Math.round((downloadProgress.loadedBytes / downloadProgress.approxTotalBytes) * 100))
-    : 0;
+  const downloadOverallPercent = !downloadProgress
+    ? 0
+    : downloadProgress.completed
+      ? 100
+      : downloadProgress.approxTotalBytes > 0
+        ? Math.min(99, Math.round((downloadProgress.loadedBytes / downloadProgress.approxTotalBytes) * 100))
+        : 0;
 
   // Drag and drop state
   const [isDragOverCanvas, setIsDragOverCanvas] = useState<boolean>(false);
@@ -819,15 +833,46 @@ export default function FileManager() {
       return;
     }
 
-    setDownloadProgress({ itemCount: items.length, loadedBytes: 0, approxTotalBytes: 0 });
+    let partIndex = 0;
+    let totalParts = 1;
+    let lastFilename = '';
+    const startedAt = Date.now();
+    setDownloadProgress({ itemCount: items.length, loadedBytes: 0, approxTotalBytes: 0, partIndex: 0, totalParts: 1 });
     try {
-      const { blob, filename } = await FileService.downloadZip(ids, {
-        onProgress: (loadedBytes, approxTotalBytes) =>
-          setDownloadProgress({ itemCount: items.length, loadedBytes, approxTotalBytes }),
+      do {
+        const { blob, filename, totalParts: tp } = await FileService.downloadZip(ids, partIndex, {
+          onProgress: (loadedBytes, approxTotalBytes) =>
+            setDownloadProgress({ itemCount: items.length, loadedBytes, approxTotalBytes, partIndex, totalParts: tp }),
+        });
+        totalParts = tp;
+        lastFilename = filename;
+        const objectUrl = URL.createObjectURL(blob);
+        triggerBrowserDownload(objectUrl, filename);
+        URL.revokeObjectURL(objectUrl);
+        partIndex += 1;
+      } while (partIndex < totalParts);
+
+      setDownloadProgress({
+        itemCount: items.length,
+        loadedBytes: 1,
+        approxTotalBytes: 1,
+        partIndex: totalParts - 1,
+        totalParts,
+        completed: true,
       });
-      const objectUrl = URL.createObjectURL(blob);
-      triggerBrowserDownload(objectUrl, filename);
-      URL.revokeObjectURL(objectUrl);
+      // Top up to a minimum visible duration rather than always adding a
+      // fixed delay — a genuinely slow zip shouldn't get padded further, but
+      // a fast one still needs to be on screen long enough to actually see.
+      const remainingMs = 500 - (Date.now() - startedAt);
+      if (remainingMs > 0) await new Promise((resolve) => setTimeout(resolve, remainingMs));
+      addNotification({
+        sender: 'File Explorer',
+        text:
+          totalParts > 1
+            ? `Downloaded ${items.length} item${items.length === 1 ? '' : 's'} as ${totalParts} zip files.`
+            : `Downloaded ${items.length} item${items.length === 1 ? '' : 's'} as "${lastFilename}".`,
+        type: 'success',
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Please try again.';
       alert(`Could not download the selected items: ${message}`);
@@ -1317,16 +1362,18 @@ export default function FileManager() {
   // Clipboard commands
   const handleCopy = (item: FileItem) => {
     setClipboard({ id: item.id, action: 'copy' });
+    addNotification({ sender: 'File Explorer', text: `Copied "${item.name}". Paste to place it.`, type: 'info' });
     useContextMenuStore.getState().closeContextMenu();
   };
 
   const handleCut = (item: FileItem) => {
     setClipboard({ id: item.id, action: 'cut' });
+    addNotification({ sender: 'File Explorer', text: `Cut "${item.name}". Paste to move it.`, type: 'info' });
     useContextMenuStore.getState().closeContextMenu();
   };
 
   // Paste logic
-  const handlePaste = () => {
+  const handlePaste = async () => {
     if (!clipboard) return;
     const sourceItem = files.find((f) => f.id === clipboard.id);
     if (!sourceItem) {
@@ -1335,10 +1382,14 @@ export default function FileManager() {
     }
 
     if (clipboard.action === 'cut') {
-      const updatedFiles = files.map((f) =>
-        f.id === sourceItem.id ? { ...f, parentId: currentFolderId } : f
-      );
-      setFiles(updatedFiles);
+      try {
+        const updated = await FileService.moveFile(sourceItem.id, currentFolderId);
+        setFiles((prev) => prev.map((f) => (f.id === sourceItem.id ? { ...f, parentId: updated.parentId } : f)));
+        addNotification({ sender: 'File Explorer', text: `Moved "${sourceItem.name}" here.`, type: 'success' });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Please try again.';
+        addNotification({ sender: 'File Explorer', text: `Could not move "${sourceItem.name}": ${message}`, type: 'error' });
+      }
       setClipboard(null);
     } else {
       if (sourceItem.type === 'file') {
@@ -1362,33 +1413,22 @@ export default function FileManager() {
         const itemsToInsert = duplicateFolderRecursive(sourceItem, currentFolderId);
         setFiles((prev) => [...prev, ...itemsToInsert]);
       }
+      addNotification({ sender: 'File Explorer', text: `Pasted a copy of "${sourceItem.name}" here.`, type: 'success' });
     }
     useContextMenuStore.getState().closeContextMenu();
   };
 
-  // Instant Duplicate
-  const handleDuplicate = (item: FileItem) => {
-    if (item.type === 'file') {
-      const dotIndex = item.name.lastIndexOf('.');
-      let base = dotIndex !== -1 ? item.name.substring(0, dotIndex) : item.name;
-      let ext = dotIndex !== -1 ? item.name.substring(dotIndex) : '';
-      let newName = `${base} - Copy${ext}`;
-      let count = 1;
-      while (files.some((f) => f.parentId === currentFolderId && f.name === newName)) {
-        newName = `${base} - Copy (${count++})${ext}`;
-      }
-
-      const newItem: FileItem = {
-        ...item,
-        id: `file-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-        name: newName,
-        parentId: currentFolderId,
-        createdAt: new Date().toLocaleDateString(),
-      };
-      setFiles((prev) => [...prev, newItem]);
-    } else {
-      const itemsToInsert = duplicateFolderRecursive(item, currentFolderId);
-      setFiles((prev) => [...prev, ...itemsToInsert]);
+  // Instant Duplicate — persisted server-side (real copy in object storage +
+  // a new DB row), so the result survives a refresh and can be deleted/moved
+  // like any other item.
+  const handleDuplicate = async (item: FileItem) => {
+    try {
+      await FileService.duplicateFile(item.id);
+      await syncFilesFromBackend(currentFolderId);
+      addNotification({ sender: 'File Explorer', text: `Duplicated "${item.name}".`, type: 'success' });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Please try again.';
+      addNotification({ sender: 'File Explorer', text: `Could not duplicate "${item.name}": ${message}`, type: 'error' });
     }
     useContextMenuStore.getState().closeContextMenu();
   };
@@ -2316,7 +2356,7 @@ export default function FileManager() {
   ]);
 
   return (
-    <div ref={containerRef} className={`h-full flex flex-col text-sm select-none ${ts.container}`}>
+    <div ref={containerRef} className={`relative h-full flex flex-col text-sm select-none ${ts.container}`}>
       {/* ==================== 1. TOP NAV & TOOLBAR RIBBON ==================== */}
       <div className={`${ts.toolbar} flex flex-col shrink-0`}>
         {/* Navigation Row */}
@@ -2764,6 +2804,7 @@ export default function FileManager() {
           onDragOver={handleCanvasDragOver}
           onDragLeave={handleCanvasDragLeave}
           onDrop={handleCanvasDrop}
+          onClick={() => setSelectedFileIds([])}
           className={`flex-1 flex flex-col overflow-hidden relative transition-all ${
             isDragOverCanvas ? 'ring-4 ring-purple-500/50 bg-purple-500/5' : ''
           }`}
@@ -3183,22 +3224,55 @@ export default function FileManager() {
               </div>
               <span className="tabular-nums w-9 text-right">{uploadOverallPercent}%</span>
             </div>
-          ) : downloadProgress ? (
-            <div id="status-bar-download-progress" className="flex items-center gap-2 shrink-0">
-              <span className="truncate max-w-[220px]">
-                Downloading {downloadProgress.itemCount} item{downloadProgress.itemCount === 1 ? '' : 's'}
-                {downloadProgress.approxTotalBytes > 0
-                  ? ` — ${formatBytes(downloadProgress.loadedBytes)} of ~${formatBytes(downloadProgress.approxTotalBytes)}`
-                  : ` — ${formatBytes(downloadProgress.loadedBytes)}`}
-              </span>
-              <div className="w-24 h-1.5 rounded-full bg-black/10 overflow-hidden">
-                <div className="h-full bg-emerald-500 transition-[width] duration-150" style={{ width: `${downloadOverallPercent}%` }} />
-              </div>
-              <span className="tabular-nums w-9 text-right">{downloadOverallPercent}%</span>
-            </div>
           ) : undefined
         }
       />
+
+      {/* Zip-creation progress — a floating notification-style card anchored
+          to the window's bottom-right (Google Drive puts its equivalent
+          "Creating zip..." indicator the same place). What it tracks is how
+          much of the archive the server has built, not a network transfer:
+          entries are streamed into the archive and out to the browser in
+          lockstep, so bytes-received is the same signal as bytes-zipped —
+          there's no separate "now downloading the finished zip" phase. */}
+      {downloadProgress && (
+        <div className="absolute bottom-4 right-4 z-[500] w-80 rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-zinc-900 shadow-2xl p-3.5 flex items-start gap-3">
+          <div
+            className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+              downloadProgress.completed
+                ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                : 'bg-blue-500/15 text-blue-600 dark:text-blue-400'
+            }`}
+          >
+            {downloadProgress.completed ? <Check className="w-5 h-5" /> : <FileArchive className="w-5 h-5" />}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-xs font-bold truncate text-zinc-900 dark:text-zinc-100">
+              {downloadProgress.completed
+                ? `Downloaded ${downloadProgress.itemCount} item${downloadProgress.itemCount === 1 ? '' : 's'}`
+                : downloadProgress.totalParts > 1
+                  ? `Creating zip ${downloadProgress.partIndex + 1} of ${downloadProgress.totalParts}...`
+                  : `Compressing ${downloadProgress.itemCount} item${downloadProgress.itemCount === 1 ? '' : 's'} into a zip...`}
+            </div>
+            <div className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate mt-0.5">
+              {downloadProgress.completed
+                ? 'Saved to your downloads'
+                : downloadProgress.approxTotalBytes > 0
+                  ? `${formatBytes(downloadProgress.loadedBytes)} of ~${formatBytes(downloadProgress.approxTotalBytes)} zipped`
+                  : `${formatBytes(downloadProgress.loadedBytes)} zipped`}
+            </div>
+            <div className="w-full h-1.5 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden mt-2">
+              <div
+                className="h-full bg-emerald-500 transition-[width] duration-150"
+                style={{ width: `${downloadOverallPercent}%` }}
+              />
+            </div>
+          </div>
+          <span className="text-[11px] font-bold tabular-nums shrink-0 text-zinc-900 dark:text-zinc-100">
+            {downloadOverallPercent}%
+          </span>
+        </div>
+      )}
 
       {/* Hidden File Input */}
       <input
