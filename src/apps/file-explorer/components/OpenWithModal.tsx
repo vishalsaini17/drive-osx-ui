@@ -11,6 +11,7 @@ import {
   ChevronRight
 } from 'lucide-react';
 import { FileItem } from '../../../platform/types';
+import { getFileKind } from '../utils/fileType';
 
 interface OpenWithModalProps {
   item: FileItem | null;
@@ -27,13 +28,14 @@ export default function OpenWithModal({
 }: OpenWithModalProps) {
   if (!isOpen || !item) return null;
 
-  const appOptions = [
+  const allAppOptions = [
     {
       key: 'text-editor',
       name: 'Text Editor (Notepad)',
       desc: 'View & edit raw text or code files',
       icon: FileText,
       color: 'text-blue-500 bg-blue-500/10',
+      kinds: ['text', 'code'],
     },
     {
       key: 'image-viewer',
@@ -41,6 +43,7 @@ export default function OpenWithModal({
       desc: 'View images and graphic assets',
       icon: ImageIcon,
       color: 'text-sky-500 bg-sky-500/10',
+      kinds: ['image'],
     },
     {
       key: 'audio-player',
@@ -48,6 +51,7 @@ export default function OpenWithModal({
       desc: 'Listen to music tracks & sound recordings',
       icon: Music,
       color: 'text-emerald-500 bg-emerald-500/10',
+      kinds: ['audio'],
     },
     {
       key: 'video-player',
@@ -55,6 +59,7 @@ export default function OpenWithModal({
       desc: 'Watch video recordings & clips',
       icon: Video,
       color: 'text-purple-500 bg-purple-500/10',
+      kinds: ['video'],
     },
     {
       key: 'code-viewer',
@@ -62,6 +67,7 @@ export default function OpenWithModal({
       desc: 'Syntax formatted code reader',
       icon: Code,
       color: 'text-amber-500 bg-amber-500/10',
+      kinds: ['code'],
     },
     {
       key: 'properties',
@@ -69,8 +75,15 @@ export default function OpenWithModal({
       desc: 'Inspect file metadata, permissions, & activity log',
       icon: Info,
       color: 'text-zinc-500 bg-zinc-500/10',
+      // Always relevant, regardless of file type.
+      kinds: null,
     },
   ];
+
+  // Only offer apps that can actually do something with this file's type —
+  // e.g. a .txt file shouldn't list an Image Preview or Video Player option.
+  const fileKind = getFileKind(item);
+  const appOptions = allAppOptions.filter((app) => app.kinds === null || app.kinds.includes(fileKind));
 
   return (
     <div className="fixed inset-0 z-[12000] flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">

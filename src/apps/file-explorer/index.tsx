@@ -44,6 +44,9 @@ import {
   CheckSquare,
   Square,
   FileArchive,
+  FileSpreadsheet,
+  FileType,
+  Presentation as PresentationIcon,
   Layers,
   FolderUp,
   ChevronDown,
@@ -59,6 +62,7 @@ import { useContextMenuStore, ContextMenuItem } from '../../shell/context-menu/c
 import { StorageService } from '../../platform/storage/StorageService';
 import { FileService, type FileItemResponse } from '../../platform/files/FileService';
 import { getAppForFile } from '../../platform/registry/EditorRegistry';
+import { getFileKind } from './utils/fileType';
 import WindowStatus from '../../shell/window-manager/WindowStatusContext';
 import { useAppMenu } from '../../platform/menus/AppMenuContext';
 import { separator } from '../../platform/menus/types';
@@ -426,6 +430,10 @@ export default function FileManager() {
 
   useEffect(() => {
     if (currentFolderId !== 'shared-with-me' || !currentUser) return;
+    // Default to grouping by "Shared By" each time the tab is opened — that's
+    // the grouping that actually makes sense here (regular folders have no
+    // per-item owner), though the user can still switch it away for this visit.
+    setGroupBy('owner');
     const signal = { cancelled: false };
     void loadSharedWithMe(signal);
     return () => {
@@ -853,16 +861,12 @@ export default function FileManager() {
 
   // Render Vector Icon for items
   const renderFileIcon = (item: FileItem, size: 'large' | 'small' | 'xl' = 'large') => {
-    const lower = item.name.toLowerCase();
-    const isImage = lower.endsWith('.png') || lower.endsWith('.jpg') || lower.endsWith('.jpeg') || lower.endsWith('.webp');
-    const isCode = lower.endsWith('.js') || lower.endsWith('.ts') || lower.endsWith('.tsx') || lower.endsWith('.py') || lower.endsWith('.html') || lower.endsWith('.css');
-    const isAudio = lower.endsWith('.mp3') || lower.endsWith('.wav') || lower.endsWith('.ogg');
-    const isVideo = lower.endsWith('.mp4') || lower.endsWith('.webm');
-    
+    const kind = getFileKind(item);
+
     const dim = size === 'xl' ? 'w-16 h-16' : size === 'large' ? 'w-10 h-10' : 'w-4 h-4';
     const rounded = size === 'xl' ? 'rounded-xl' : size === 'large' ? 'rounded-lg' : 'rounded';
 
-    if (isImage && item.content && (item.content.startsWith('data:image/') || item.content.startsWith('http'))) {
+    if (kind === 'image' && item.content && (item.content.startsWith('data:image/') || item.content.startsWith('http'))) {
       return (
         <img
           src={item.content}
@@ -873,27 +877,30 @@ export default function FileManager() {
       );
     }
 
-    if (item.type === 'folder') {
-      return <Folder className={`${dim} text-amber-500 fill-amber-500/20`} />;
+    switch (kind) {
+      case 'folder':
+        return <Folder className={`${dim} text-amber-500 fill-amber-500/20`} />;
+      case 'image':
+        return <ImageIcon className={`${dim} text-sky-500`} />;
+      case 'code':
+        return <FileCode className={`${dim} text-purple-500`} />;
+      case 'audio':
+        return <Music className={`${dim} text-emerald-500`} />;
+      case 'video':
+        return <Video className={`${dim} text-indigo-500`} />;
+      case 'archive':
+        return <FileArchive className={`${dim} text-orange-500`} />;
+      case 'pdf':
+        return <FileType className={`${dim} text-red-500`} />;
+      case 'spreadsheet':
+        return <FileSpreadsheet className={`${dim} text-green-600`} />;
+      case 'presentation':
+        return <PresentationIcon className={`${dim} text-amber-600`} />;
+      case 'text':
+        return <FileText className={`${dim} text-slate-500`} />;
+      default:
+        return <FileText className={`${dim} text-blue-500`} />;
     }
-
-    if (isImage) {
-      return <ImageIcon className={`${dim} text-sky-500`} />;
-    }
-
-    if (isCode) {
-      return <FileCode className={`${dim} text-purple-500`} />;
-    }
-
-    if (isAudio) {
-      return <Music className={`${dim} text-emerald-500`} />;
-    }
-
-    if (isVideo) {
-      return <Video className={`${dim} text-indigo-500`} />;
-    }
-
-    return <FileText className={`${dim} text-blue-500`} />;
   };
 
   function triggerBrowserDownload(href: string, filename: string) {
@@ -2162,12 +2169,16 @@ export default function FileManager() {
           icon: item.type === 'folder' ? <Folder size={15} className="text-amber-400" /> : <FileText size={15} className="text-blue-400" />,
           onClick: () => handleItemDoubleClick(item),
         },
-        {
-          id: 'open-with',
-          label: 'Open With...',
-          icon: <ExternalLink size={15} className="text-purple-400" />,
-          onClick: () => setActiveOpenWithItem(item),
-        },
+        ...(item.type === 'folder'
+          ? []
+          : [
+              {
+                id: 'open-with',
+                label: 'Open With...',
+                icon: <ExternalLink size={15} className="text-purple-400" />,
+                onClick: () => setActiveOpenWithItem(item),
+              } as ContextMenuItem,
+            ]),
         {
           id: 'preview',
           label: 'Preview',
