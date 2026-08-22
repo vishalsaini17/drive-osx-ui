@@ -7,7 +7,7 @@ import { useAppMenu } from '../../platform/menus/AppMenuContext';
 import { separator } from '../../platform/menus/types';
 import { useContextMenuStore } from '../../shell/context-menu/contextMenuStore';
 import AppShell from '../../design-system/components/AppShell';
-import { FolderOpen, FileCode2, FilePlus, FolderInput } from 'lucide-react';
+import { FolderOpen, FileCode2, FilePlus, FolderInput, Search } from 'lucide-react';
 import EditorTabBar from './components/EditorTabBar';
 import MonacoPane from './components/MonacoPane';
 import ExplorerSidebar from './components/ExplorerSidebar';
@@ -867,13 +867,33 @@ export default function CodeEditor({ windowId = 'editor' }: { windowId?: string 
           )}
           {sidebarVisible && activePanel === 'search' && (
             <SidebarPanel dataName="editor-sidebar-search" title="SEARCH">
-              <SearchPanel
-                rootId={openFolder?.id ?? null}
-                rootName={openFolder?.name ?? 'Home'}
-                getDirtyOpenFileIds={getDirtyOpenFileIds}
-                onOpenResult={(f, line, col, len) => void handleSearchOpenResult(f, line, col, len)}
-                onFileContentReplaced={handleFileContentReplaced}
-              />
+              {openFolder ? (
+                <SearchPanel
+                  rootId={openFolder.id}
+                  rootName={openFolder.name}
+                  getDirtyOpenFileIds={getDirtyOpenFileIds}
+                  onOpenResult={(f, line, col, len) => void handleSearchOpenResult(f, line, col, len)}
+                  onFileContentReplaced={handleFileContentReplaced}
+                />
+              ) : (
+                // No folder open means there's nothing selected to search —
+                // without this, Search silently fell back to `rootId: null`,
+                // which walks the entire Drive from its root rather than
+                // staying inside whatever's actually open.
+                <div className="flex-1 flex flex-col items-center justify-center gap-3 px-5 text-center">
+                  <Search className="w-6 h-6 text-[var(--wb-fg)]/20" />
+                  <p className="text-[12px] text-[var(--wb-fg)]/40">You have not yet opened a folder.</p>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      requestFilePick(windowId, 'folder');
+                    }}
+                    className="px-3 py-1.5 bg-[var(--wb-accent-soft)] hover:bg-[var(--wb-accent-hover)] text-[var(--wb-on-accent)] text-[12px] font-medium rounded cursor-pointer"
+                  >
+                    Open Folder
+                  </button>
+                </div>
+              )}
             </SidebarPanel>
           )}
           <div data-name="editor-group" className="flex-1 min-h-0 min-w-0 flex flex-col">
