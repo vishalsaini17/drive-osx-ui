@@ -43,7 +43,7 @@ const LANGUAGE_LABELS: Record<string, string> = {
  */
 export default function StatusBar({ language, cursorLine, cursorColumn, tabSizeLabel, errorCount, warningCount }: StatusBarProps) {
   return (
-    <div id="editor-status-bar" className="h-[22px] shrink-0 bg-[#007acc] text-white flex items-center justify-between px-2 text-[12px] select-none">
+    <div data-name="editor-status-bar" className="h-[22px] shrink-0 bg-[#007acc] text-white flex items-center justify-between px-2 text-[12px] select-none">
       <div className="flex items-center h-full">
         <span className="flex items-center gap-1 h-full px-1.5 hover:bg-white/15 cursor-default">
           <XCircle className="w-3.5 h-3.5" /> {errorCount}

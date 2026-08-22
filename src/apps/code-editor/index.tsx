@@ -779,7 +779,7 @@ export default function CodeEditor() {
     // AppShell as siblings, not children.
     <div className="contents" style={workbenchVars as React.CSSProperties}>
       <AppShell className="bg-[var(--wb-surface)] text-[var(--wb-fg)]">
-        <div id="editor-workbench" className="flex-1 min-h-0 flex">
+        <div data-name="editor-workbench" className="flex-1 min-h-0 flex">
           <ActivityBar
             active={sidebarVisible ? activePanel : null}
             onSelect={handleActivitySelect}
@@ -787,7 +787,7 @@ export default function CodeEditor() {
             onOpenSettings={() => setIsSettingsOpen(true)}
           />
           {sidebarVisible && activePanel === 'explorer' && (
-            <SidebarPanel id="editor-sidebar-explorer" title="EXPLORER">
+            <SidebarPanel dataName="editor-sidebar-explorer" title="EXPLORER">
               {openFolder ? (
                 <ExplorerSidebar
                   rootId={openFolder.id}
@@ -813,7 +813,7 @@ export default function CodeEditor() {
             </SidebarPanel>
           )}
           {sidebarVisible && activePanel === 'search' && (
-            <SidebarPanel id="editor-sidebar-search" title="SEARCH">
+            <SidebarPanel dataName="editor-sidebar-search" title="SEARCH">
               <SearchPanel
                 rootId={openFolder?.id ?? null}
                 rootName={openFolder?.name ?? 'Home'}
@@ -823,7 +823,7 @@ export default function CodeEditor() {
               />
             </SidebarPanel>
           )}
-          <div id="editor-group" className="flex-1 min-h-0 min-w-0 flex flex-col">
+          <div data-name="editor-group" className="flex-1 min-h-0 min-w-0 flex flex-col">
             <EditorTabBar
               tabs={
                 isSettingsOpen
@@ -852,7 +852,7 @@ export default function CodeEditor() {
                 }
               />
             )}
-            <div id="editor-content-area" className="flex-1 min-h-0 min-w-0">
+            <div data-name="editor-content-area" className="flex-1 min-h-0 min-w-0">
               {isSettingsOpen ? (
                 <SettingsEditor
                   fontSize={fontSize}

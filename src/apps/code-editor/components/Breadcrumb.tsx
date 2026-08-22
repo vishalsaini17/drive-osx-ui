@@ -14,7 +14,7 @@ interface BreadcrumbProps {
 export default function Breadcrumb({ fileName, isDirty, parentFolderName, onContextMenu }: BreadcrumbProps) {
   return (
     <div
-      id="editor-breadcrumb-bar"
+      data-name="editor-breadcrumb-bar"
       onContextMenu={onContextMenu}
       className="h-6 shrink-0 px-3 flex items-center gap-1 text-[12px] text-[var(--wb-fg)]/50 bg-[var(--wb-surface)] border-b border-[var(--wb-border-subtle)] select-none overflow-x-auto"
     >

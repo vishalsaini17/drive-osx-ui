@@ -397,6 +397,23 @@ export default function AppWindow({
 
   const isInteracting = gesture !== 'idle';
 
+  // Every theme's window surface carries `backdrop-blur` — every open window
+  // is a live blur of whatever is behind it. That is cheap for a window
+  // sitting still (the browser blurs it once and caches the result), but a
+  // drag or resize changes what is behind the window on every single frame,
+  // forcing the compositor to redo the Gaussian blur 60 times a second for
+  // the whole window surface. Dropping just that utility for the duration of
+  // the gesture removes the single most expensive part of moving a window;
+  // the base colour underneath is already ~90%+ opaque in every theme, so the
+  // window does not visibly change look for the fraction of a second the
+  // gesture lasts.
+  const windowSurfaceClass = isInteracting
+    ? themeStyle.window
+        .split(' ')
+        .filter((cls) => !cls.startsWith('backdrop-blur') && !cls.startsWith('backdrop-saturate'))
+        .join(' ')
+    : themeStyle.window;
+
   return (
     <div
       ref={windowRef}
@@ -427,7 +444,7 @@ export default function AppWindow({
           : 'transition-[top,left,width,height,opacity,border-color,box-shadow] duration-150 ease-out'
       } shadow-2xl overflow-hidden pointer-events-auto select-none ${
         app.isMaximized ? 'rounded-none border-t-0 border-x-0' : 'rounded-2xl'
-      } ${themeStyle.window} ${isFocused ? themeStyle.windowFocused : 'opacity-95'}`}
+      } ${windowSurfaceClass} ${isFocused ? themeStyle.windowFocused : 'opacity-95'}`}
     >
       {/* WINDOW TITLE BAR */}
       <div

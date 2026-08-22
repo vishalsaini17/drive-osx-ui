@@ -40,6 +40,7 @@ import {
   Sparkles,
   ExternalLink,
   Filter,
+  ArrowUpDown,
   CheckSquare,
   Square,
   FileArchive,
@@ -56,7 +57,7 @@ import { useSystemStore } from '../../shell/state/systemStore';
 import { useAppTheme } from '../../platform/theme/useAppTheme';
 import { useContextMenuStore, ContextMenuItem } from '../../shell/context-menu/contextMenuStore';
 import { StorageService } from '../../platform/storage/StorageService';
-import { FileService } from '../../platform/files/FileService';
+import { FileService, type FileItemResponse } from '../../platform/files/FileService';
 import { getAppForFile } from '../../platform/registry/EditorRegistry';
 import WindowStatus from '../../shell/window-manager/WindowStatusContext';
 import { useAppMenu } from '../../platform/menus/AppMenuContext';
@@ -90,6 +91,26 @@ const VIRTUAL_FOLDER_IDS = new Set(['trash', 'recent', 'starred', 'shared-with-m
 
 function dragHasType(e: React.DragEvent, type: string): boolean {
   return Array.from(e.dataTransfer.types || []).includes(type);
+}
+
+/** Maps a server file row onto the shape the grid/list views render. */
+function mapFileResponseToItem(f: FileItemResponse, parentId: string): FileItem {
+  return {
+    id: f.id || f._id,
+    name: f.name,
+    type: f.type,
+    content: f.content || '',
+    parentId,
+    createdAt: f.createdAt,
+    updatedAt: f.updatedAt,
+    size: f.size,
+    starred: f.starred || false,
+    category: f.mimeType?.split('/')[0] as FileItem['category'],
+    originalParentId: null,
+    isShared: f.isShared || false,
+    effectiveRole: f.effectiveRole,
+    isSystem: f.metadata?.system === true,
+  };
 }
 
 /** Extension → the same broad category the toolbar's type filter uses. */
@@ -412,6 +433,71 @@ export default function FileManager() {
     };
   }, [currentFolderId, currentUser]);
 
+  // "Recent" and "Starred" virtual folders — server-ranked/filtered rather
+  // than derived from the client's `files` cache. That cache only holds
+  // folders actually opened this session (files are fetched lazily, per
+  // folder), so filtering it locally silently dropped every file in a folder
+  // the user hadn't visited yet, and "Recent" wasn't even ordered by recency.
+  const [recentItems, setRecentItems] = useState<FileItem[]>([]);
+  const [recentLoading, setRecentLoading] = useState(false);
+  const [recentError, setRecentError] = useState<string | null>(null);
+
+  const loadRecent = async (signal: { cancelled: boolean }) => {
+    setRecentLoading(true);
+    setRecentError(null);
+    try {
+      const items = await FileService.listRecent();
+      if (signal.cancelled) return;
+      setRecentItems(items.map((f) => mapFileResponseToItem(f, 'recent')));
+    } catch (error) {
+      if (!signal.cancelled) {
+        const message = error instanceof Error ? error.message : 'Please try again.';
+        setRecentError(`Could not load recent files. ${message}`);
+      }
+    } finally {
+      if (!signal.cancelled) setRecentLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (currentFolderId !== 'recent' || !currentUser) return;
+    const signal = { cancelled: false };
+    void loadRecent(signal);
+    return () => {
+      signal.cancelled = true;
+    };
+  }, [currentFolderId, currentUser]);
+
+  const [starredItems, setStarredItems] = useState<FileItem[]>([]);
+  const [starredLoading, setStarredLoading] = useState(false);
+  const [starredError, setStarredError] = useState<string | null>(null);
+
+  const loadStarred = async (signal: { cancelled: boolean }) => {
+    setStarredLoading(true);
+    setStarredError(null);
+    try {
+      const items = await FileService.listStarred();
+      if (signal.cancelled) return;
+      setStarredItems(items.map((f) => mapFileResponseToItem(f, 'starred')));
+    } catch (error) {
+      if (!signal.cancelled) {
+        const message = error instanceof Error ? error.message : 'Please try again.';
+        setStarredError(`Could not load starred files. ${message}`);
+      }
+    } finally {
+      if (!signal.cancelled) setStarredLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (currentFolderId !== 'starred' || !currentUser) return;
+    const signal = { cancelled: false };
+    void loadStarred(signal);
+    return () => {
+      signal.cancelled = true;
+    };
+  }, [currentFolderId, currentUser]);
+
   /**
    * Trash and "Shared with me" are backed by their own endpoints, not
    * `/files/children/:id` — routing every virtual folder through
@@ -426,6 +512,10 @@ export default function FileManager() {
       void syncTrashFromBackend();
     } else if (currentFolderId === 'shared-with-me') {
       void loadSharedWithMe({ cancelled: false });
+    } else if (currentFolderId === 'recent') {
+      void loadRecent({ cancelled: false });
+    } else if (currentFolderId === 'starred') {
+      void loadStarred({ cancelled: false });
     } else if (!currentFolderId || !VIRTUAL_FOLDER_IDS.has(currentFolderId)) {
       void syncFilesFromBackend(currentFolderId);
     }
@@ -550,11 +640,28 @@ export default function FileManager() {
   const isTrashFolder = currentFolderId === 'trash';
   const displaySource = isTrashFolder ? deletedFiles : files;
   const selectedItem = displaySource.find((f) => f.id === selectedFileIds[0]) || null;
+  // A default folder (Documents, Pictures, Videos, Music) can't be deleted,
+  // renamed or moved — the server rejects all three regardless of who owns
+  // it (files.service.ts's `assertNotSystemFolder`). Disabling one item's
+  // worth of selection covers the common case; a mixed multi-select still
+  // disables the whole action rather than silently dropping the protected
+  // item from a batch delete.
+  const selectionHasSystemFolder = selectedFileIds.some(
+    (id) => displaySource.find((f) => f.id === id)?.isSystem,
+  );
 
-  // Auto-focus renaming input
+  // Auto-focus renaming input. Only the base name is selected, not the
+  // extension — replacing a selection that included ".pdf" was the easiest
+  // way to accidentally rename a file into a different, wrong type.
   useEffect(() => {
-    if (renamingId && renameInputRef.current) {
-      renameInputRef.current.focus();
+    if (!renamingId || !renameInputRef.current) return;
+    renameInputRef.current.focus();
+    const target = displaySource.find((f) => f.id === renamingId);
+    const dotIndex = renameText.lastIndexOf('.');
+    // A folder's dot isn't an extension, and a leading dot (dotfile) has none.
+    if (target?.type === 'file' && dotIndex > 0) {
+      renameInputRef.current.setSelectionRange(0, dotIndex);
+    } else {
       renameInputRef.current.select();
     }
   }, [renamingId]);
@@ -569,28 +676,21 @@ export default function FileManager() {
         setSelectedFileIds(sortedItems.map((f) => f.id));
       } else if (e.key === 'Delete' && selectedFileIds.length > 0) {
         if (isTrashFolder) {
-          if (confirm(`Permanently erase selected ${selectedFileIds.length} item(s)?`)) {
-            selectedFileIds.forEach((id) => {
-              const item = deletedFiles.find((f) => f.id === id);
-              if (item) {
-                // Remove permanently
-                const updatedTrash = deletedFiles.filter((f) => f.id !== id);
-                StorageService.set('webos-trash', updatedTrash);
-                useSystemStore.setState({ deletedFiles: updatedTrash });
-              }
-            });
+          if (confirm(`Permanently erase selected ${selectedFileIds.length} item(s)? This cannot be undone.`)) {
+            void permanentlyEraseTrashItems(selectedFileIds);
             setSelectedFileIds([]);
           }
         } else {
-          if (confirm(`Move selected ${selectedFileIds.length} item(s) to Recycle Bin?`)) {
-            selectedFileIds.forEach((id) => {
+          const deletableIds = selectedFileIds.filter((id) => !files.find((f) => f.id === id)?.isSystem);
+          if (deletableIds.length > 0 && confirm(`Move selected ${deletableIds.length} item(s) to Recycle Bin?`)) {
+            deletableIds.forEach((id) => {
               const item = files.find((f) => f.id === id);
               if (item) handleDeleteFile(item);
             });
             setSelectedFileIds([]);
           }
         }
-      } else if (e.key === 'F2' && selectedItem) {
+      } else if (e.key === 'F2' && selectedItem && !isTrashFolder && !selectedItem.isSystem) {
         handleStartRename(selectedItem);
       }
     };
@@ -809,6 +909,7 @@ export default function FileManager() {
   // need to route it through the zip endpoint. A folder has no such URL (it
   // isn't one object in storage), so it always goes through the zip path.
   const handleDownloadFile = async (item: FileItem) => {
+    if (isTrashFolder) return;
     if (item.type === 'folder') {
       await handleDownloadSelectedItems([item.id]);
       return;
@@ -826,6 +927,7 @@ export default function FileManager() {
   // or any folder (which can only be downloaded as a zip in the first
   // place), bundle server-side into one archive with a progress readout.
   const handleDownloadSelectedItems = async (idsParam?: string[]) => {
+    if (isTrashFolder) return;
     const ids = idsParam ?? selectedFileIds;
     const items = ids.map((id) => displaySource.find((f) => f.id === id)).filter((i): i is FileItem => !!i);
     if (items.length === 0) return;
@@ -897,6 +999,14 @@ export default function FileManager() {
     try {
       const result = await FileService.toggleStar(item.id);
       setFiles((prev) => prev.map((f) => (f.id === item.id ? { ...f, starred: result.starred } : f)));
+      // The Starred view is a separate, server-fetched list (not filtered
+      // from `files`), so unstarring an item from within that view has to
+      // drop it from this list too — otherwise it would sit there, still
+      // showing, until the next full reload.
+      setStarredItems((prev) =>
+        result.starred ? prev : prev.filter((f) => f.id !== item.id)
+      );
+      setRecentItems((prev) => prev.map((f) => (f.id === item.id ? { ...f, starred: result.starred } : f)));
     } catch (error) {
       console.error('Failed to toggle star:', error);
       alert(`Could not update the starred state of "${item.name}". Please try again.`);
@@ -1196,6 +1306,11 @@ export default function FileManager() {
       setDraggedItemId(null);
       return;
     }
+    if (sourceItem.isSystem) {
+      setDraggedItemId(null);
+      alert(`"${sourceItem.name}" is a default folder and cannot be moved.`);
+      return;
+    }
 
     // Prevent moving folder inside itself
     if (sourceItem.type === 'folder' && targetFolderId !== null) {
@@ -1291,8 +1406,9 @@ export default function FileManager() {
     return 'System File';
   };
 
-  // Create folder
+  // Create folder — not available inside Trash; there's nowhere for it to go.
   const handleCreateFolder = async () => {
+    if (isTrashFolder) return;
     const name = prompt('Enter name of new folder:', 'New Folder');
     if (!name) return;
 
@@ -1324,8 +1440,9 @@ export default function FileManager() {
     }
   };
 
-  // Create file
+  // Create file — not available inside Trash; there's nowhere for it to go.
   const handleCreateFile = async () => {
+    if (isTrashFolder) return;
     const name = prompt('Enter name of new text file:', 'notes.txt');
     if (!name) return;
 
@@ -1362,14 +1479,17 @@ export default function FileManager() {
     }
   };
 
-  // Clipboard commands
+  // Clipboard commands — trashed items are not eligible: they have no
+  // "here" to be copied or moved to until they're restored.
   const handleCopy = (item: FileItem) => {
+    if (isTrashFolder) return;
     setClipboard({ id: item.id, action: 'copy' });
     addNotification({ sender: 'File Explorer', text: `Copied "${item.name}". Paste to place it.`, type: 'info' });
     useContextMenuStore.getState().closeContextMenu();
   };
 
   const handleCut = (item: FileItem) => {
+    if (isTrashFolder || item.isSystem) return;
     setClipboard({ id: item.id, action: 'cut' });
     addNotification({ sender: 'File Explorer', text: `Cut "${item.name}". Paste to move it.`, type: 'info' });
     useContextMenuStore.getState().closeContextMenu();
@@ -1377,7 +1497,7 @@ export default function FileManager() {
 
   // Paste logic
   const handlePaste = async () => {
-    if (!clipboard) return;
+    if (!clipboard || isTrashFolder) return;
     const sourceItem = files.find((f) => f.id === clipboard.id);
     if (!sourceItem) {
       setClipboard(null);
@@ -1425,6 +1545,7 @@ export default function FileManager() {
   // a new DB row), so the result survives a refresh and can be deleted/moved
   // like any other item.
   const handleDuplicate = async (item: FileItem) => {
+    if (isTrashFolder) return;
     try {
       await FileService.duplicateFile(item.id);
       await syncFilesFromBackend(currentFolderId);
@@ -1475,8 +1596,10 @@ export default function FileManager() {
     return accumulated;
   };
 
-  // Rename
+  // Rename — trashed items can't be renamed; restore first. Default folders
+  // (Documents, Pictures, …) can never be renamed — the server rejects it.
   const handleStartRename = (item: FileItem) => {
+    if (isTrashFolder || item.isSystem) return;
     setRenamingId(item.id);
     setRenameText(item.name);
     useContextMenuStore.getState().closeContextMenu();
@@ -1526,15 +1649,41 @@ export default function FileManager() {
   };
 
   // Delete / Trash
-  const handleDeleteItem = (item: FileItem) => {
+  //
+  // Permanently erasing a trashed item must go through the server — it's the
+  // system of record for the trash. An item that only disappears from local
+  // state would reappear the next time `syncTrashFromBackend` runs, silently
+  // "undeleting" something the user was told was gone for good. Items the
+  // server fails to erase are kept in the local trash (not hidden) so the
+  // user can see they're still there and retry.
+  const permanentlyEraseTrashItems = async (ids: string[]) => {
+    const results = await Promise.allSettled(ids.map((id) => FileService.permanentDeleteFile(id)));
+    const failedIds = new Set(
+      results.flatMap((result, index) => (result.status === 'rejected' ? [ids[index]] : [])),
+    );
+    const remaining = deletedFiles.filter((f) => failedIds.has(f.id));
+    StorageService.set('webos-trash', JSON.stringify(remaining));
+    useSystemStore.setState({ deletedFiles: remaining });
+    if (failedIds.size > 0) {
+      addNotification({
+        sender: 'File Explorer',
+        text: `${ids.length - failedIds.size} of ${ids.length} item(s) were erased. ${failedIds.size} could not be deleted and are still in Trash.`,
+        type: 'error',
+      });
+    }
+  };
+
+  const handleDeleteItem = async (item: FileItem) => {
     if (isTrashFolder) {
       if (!confirm(`Permanently erase "${item.name}"? This cannot be undone.`)) return;
-      const updatedTrash = deletedFiles.filter((f) => f.id !== item.id);
-      StorageService.set('webos-trash', updatedTrash);
-      useSystemStore.setState({ deletedFiles: updatedTrash });
+      await permanentlyEraseTrashItems([item.id]);
     } else {
+      if (item.isSystem) {
+        alert(`"${item.name}" is a default folder and cannot be deleted.`);
+        return;
+      }
       if (!confirm(`Move "${item.name}" to the Recycle Bin?`)) return;
-      handleDeleteFile({ ...item, originalParentId: item.parentId });
+      await handleDeleteFile({ ...item, originalParentId: item.parentId });
     }
     setSelectedFileIds((prev) => prev.filter((id) => id !== item.id));
     useContextMenuStore.getState().closeContextMenu();
@@ -1547,19 +1696,26 @@ export default function FileManager() {
       .filter((item): item is FileItem => !!item);
     if (items.length === 0) return;
     if (items.length === 1) {
-      handleDeleteItem(items[0]);
+      await handleDeleteItem(items[0]);
       return;
     }
 
     if (isTrashFolder) {
       if (!confirm(`Permanently erase ${items.length} items? This cannot be undone.`)) return;
-      const selectedIds = new Set(selectedFileIds);
-      const remainingTrash = deletedFiles.filter((f) => !selectedIds.has(f.id));
-      StorageService.set('webos-trash', remainingTrash);
-      useSystemStore.setState({ deletedFiles: remainingTrash });
+      await permanentlyEraseTrashItems(selectedFileIds);
     } else {
-      if (!confirm(`Move ${items.length} items to the Recycle Bin?`)) return;
-      await Promise.all(items.map((item) => handleDeleteFile({ ...item, originalParentId: item.parentId })));
+      const deletable = items.filter((item) => !item.isSystem);
+      const skipped = items.length - deletable.length;
+      if (deletable.length === 0) return;
+      if (!confirm(`Move ${deletable.length} item(s) to the Recycle Bin?`)) return;
+      await Promise.all(deletable.map((item) => handleDeleteFile({ ...item, originalParentId: item.parentId })));
+      if (skipped > 0) {
+        addNotification({
+          sender: 'File Explorer',
+          text: `${skipped} default folder(s) were not deleted — default folders can't be removed.`,
+          type: 'warning',
+        });
+      }
     }
     setSelectedFileIds([]);
   };
@@ -1579,13 +1735,17 @@ export default function FileManager() {
     label: string;
     icon: React.ReactNode;
     menuIcon: React.ReactNode;
-    onClick: () => void;
+    onClick: (e: React.MouseEvent) => void;
     disabled?: boolean;
     danger?: boolean;
     dividerBefore?: boolean;
     wide?: boolean;
     hasChevron?: boolean;
     submenu?: ContextMenuItem[];
+    /** Tooltip text — only set where it differs from the visible label. */
+    title?: string;
+    /** Extra classes beyond the shared button style (icon/text color). */
+    colorClass?: string;
   }
 
   const leftToolbarActions: LeftToolbarAction[] = [
@@ -1595,7 +1755,9 @@ export default function FileManager() {
       icon: <FolderPlus className="w-3.5 h-3.5 text-amber-500 shrink-0" />,
       menuIcon: <FolderPlus size={15} className="text-amber-500" />,
       onClick: handleCreateFolder,
+      disabled: isTrashFolder,
       wide: true,
+      title: 'New Folder',
     },
     {
       id: 'new-text',
@@ -1603,17 +1765,22 @@ export default function FileManager() {
       icon: <Plus className="w-3.5 h-3.5 text-blue-500 shrink-0" />,
       menuIcon: <Plus size={15} className="text-blue-500" />,
       onClick: handleCreateFile,
+      disabled: isTrashFolder,
       wide: true,
+      title: 'New Text File',
     },
     {
       id: 'upload',
       label: 'Upload',
       icon: <Upload className="w-3.5 h-3.5 shrink-0" />,
       menuIcon: <Upload size={15} className="text-emerald-500" />,
-      onClick: handleUploadClick,
+      onClick: handleUploadMenuClick,
+      disabled: isTrashFolder,
       dividerBefore: true,
       wide: true,
       hasChevron: true,
+      title: 'Upload a file or folder',
+      colorClass: 'text-emerald-600 hover:text-emerald-700',
       submenu: [
         { id: 'upload-file', label: 'Upload File', icon: <FileUp size={15} className="text-emerald-400" />, onClick: handleUploadClick },
         { id: 'upload-folder', label: 'Upload Folder', icon: <FolderUp size={15} className="text-emerald-400" />, onClick: handleUploadFolderClick },
@@ -1625,7 +1792,7 @@ export default function FileManager() {
       icon: <Scissors className="w-3.5 h-3.5 shrink-0" />,
       menuIcon: <Scissors size={15} className="text-slate-400" />,
       onClick: () => selectedItem && handleCut(selectedItem),
-      disabled: !selectedItem,
+      disabled: !selectedItem || isTrashFolder || selectionHasSystemFolder,
       dividerBefore: true,
     },
     {
@@ -1634,7 +1801,7 @@ export default function FileManager() {
       icon: <Copy className="w-3.5 h-3.5 shrink-0" />,
       menuIcon: <Copy size={15} className="text-slate-400" />,
       onClick: () => selectedItem && handleCopy(selectedItem),
-      disabled: !selectedItem,
+      disabled: !selectedItem || isTrashFolder,
     },
     {
       id: 'paste',
@@ -1642,7 +1809,7 @@ export default function FileManager() {
       icon: <Clipboard className="w-3.5 h-3.5 shrink-0" />,
       menuIcon: <Clipboard size={15} className="text-slate-400" />,
       onClick: handlePaste,
-      disabled: !clipboard,
+      disabled: !clipboard || isTrashFolder,
     },
     {
       id: 'duplicate',
@@ -1650,7 +1817,8 @@ export default function FileManager() {
       icon: <Copy className="w-3.5 h-3.5 text-purple-500 shrink-0" />,
       menuIcon: <Copy size={15} className="text-purple-500" />,
       onClick: () => selectedItem && handleDuplicate(selectedItem),
-      disabled: !selectedItem,
+      disabled: !selectedItem || isTrashFolder,
+      title: 'Duplicate selection',
     },
     {
       id: 'rename',
@@ -1658,17 +1826,19 @@ export default function FileManager() {
       icon: <Edit3 className="w-3.5 h-3.5 text-sky-500 shrink-0" />,
       menuIcon: <Edit3 size={15} className="text-sky-500" />,
       onClick: () => selectedItem && handleStartRename(selectedItem),
-      disabled: !selectedItem,
+      disabled: !selectedItem || isTrashFolder || selectionHasSystemFolder,
       dividerBefore: true,
     },
     {
       id: 'delete',
-      label: 'Delete',
+      label: isTrashFolder ? 'Delete Permanently' : 'Delete',
       icon: <Trash2 className="w-3.5 h-3.5 shrink-0" />,
       menuIcon: <Trash2 size={15} className="text-rose-500" />,
       onClick: () => void handleDeleteSelectedItems(),
-      disabled: selectedFileIds.length === 0,
+      disabled: selectedFileIds.length === 0 || selectionHasSystemFolder,
       danger: true,
+      colorClass: 'text-rose-500',
+      title: isTrashFolder ? 'Permanently erase the selected item(s) — this cannot be undone' : undefined,
     },
     {
       id: 'download',
@@ -1676,37 +1846,71 @@ export default function FileManager() {
       icon: <Download className="w-3.5 h-3.5 shrink-0" />,
       menuIcon: <Download size={15} className="text-emerald-500" />,
       onClick: () => void handleDownloadSelectedItems(),
-      disabled: selectedFileIds.length === 0,
+      disabled: selectedFileIds.length === 0 || isTrashFolder,
+      colorClass: 'text-emerald-600',
+    },
+    {
+      id: 'restore',
+      label: 'Restore Item',
+      icon: <RotateCcw className="w-3.5 h-3.5 shrink-0" />,
+      menuIcon: <RotateCcw size={15} className="text-emerald-500" />,
+      onClick: () => void handleRestoreSelectedItems(),
+      disabled: !isTrashFolder || selectedFileIds.length === 0,
+      dividerBefore: true,
+      colorClass: 'text-emerald-600',
+    },
+    {
+      id: 'empty-trash',
+      label: 'Empty Trash',
+      icon: <Trash2 className="w-3.5 h-3.5 shrink-0" />,
+      menuIcon: <Trash2 size={15} className="text-rose-500" />,
+      onClick: () => void handleEmptyTrash(),
+      disabled: !isTrashFolder || deletedFiles.length === 0,
+      danger: true,
+      colorClass: 'text-rose-500',
     },
   ];
 
+  // Only actions that can actually be performed right now are shown — a
+  // disabled/greyed-out button gives no information a missing button
+  // doesn't also give, and it costs toolbar space. Everything downstream
+  // (width measurement, the visible/overflow split, the "More Actions" menu)
+  // operates on this filtered list, not the full one.
+  const visibleToolbarActions = leftToolbarActions.filter((action) => !action.disabled);
+
   // Real measured widths, not guessed ones: a per-character estimate turned
   // out to be off by enough (accumulated over 9 buttons) to trigger the
-  // overflow menu even at widths where everything actually fits. Every
-  // button is always mounted with a ref; when hidden it's `display: none`
-  // rather than unmounted, so — combined with the "show everything, measure,
-  // then trim" cycle below — a button's width, once known for the current
-  // label mode, never needs re-measuring just because it's not currently
-  // visible.
+  // overflow menu even at widths where everything actually fits. A button
+  // folded into "More Actions" is unmounted, not hidden with `display:
+  // none` — so the "show everything, measure, then trim" cycle below has to
+  // re-run (re-mounting every visible action first) any time what's visible
+  // changes, not just once.
   const leftButtonRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const [leftMeasuredWidths, setLeftMeasuredWidths] = useState<number[] | null>(null);
+
+  // Which actions are actually shown can change on its own (selecting an
+  // item, filling the clipboard, …) independently of a resize or a label
+  // mode flip — previously-measured widths are indexed by position in
+  // `visibleToolbarActions`, so a change in *which* actions are visible
+  // invalidates them just as much as a width or label change does.
+  const visibleActionsKey = visibleToolbarActions.map((action) => action.id).join('|');
 
   // Label visibility (isCompactRibbon) changes every button's own width, so
   // previously-measured widths go stale — clear them to force a fresh
   // "show everything" measuring pass below.
   useEffect(() => {
     setLeftMeasuredWidths(null);
-  }, [isCompactRibbon]);
+  }, [isCompactRibbon, visibleActionsKey]);
 
   useLayoutEffect(() => {
     if (leftMeasuredWidths !== null) return;
-    const widths = leftButtonRefs.current.map((el) => el?.offsetWidth ?? 0);
-    if (widths.some((w) => w === 0)) return; // not all buttons mounted yet
+    const widths = leftButtonRefs.current.slice(0, visibleToolbarActions.length).map((el) => el?.offsetWidth ?? 0);
+    if (widths.length < visibleToolbarActions.length || widths.some((w) => w === 0)) return; // not all buttons mounted yet
     setLeftMeasuredWidths(widths);
   });
 
   const leftToolbarVisibleCount = useMemo(() => {
-    const total = leftToolbarActions.length;
+    const total = visibleToolbarActions.length;
     // Still measuring (or about to): render every button so the layout
     // effect above has something to measure.
     if (!leftMeasuredWidths) return total;
@@ -1720,7 +1924,7 @@ export default function FileManager() {
       for (let i = 0; i < count; i++) {
         let addition = leftMeasuredWidths[i] ?? 0;
         if (i > 0) addition += ROW_GAP;
-        if (leftToolbarActions[i].dividerBefore) addition += DIVIDER_W + ROW_GAP;
+        if (i > 0 && visibleToolbarActions[i].dividerBefore) addition += DIVIDER_W + ROW_GAP;
         running += addition;
       }
       return running;
@@ -1735,10 +1939,10 @@ export default function FileManager() {
     }
     return count;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [leftMeasuredWidths, leftToolbarWidth]);
+  }, [leftMeasuredWidths, leftToolbarWidth, visibleActionsKey]);
 
   const handleLeftToolbarOverflowClick = (e: React.MouseEvent) => {
-    const hidden = leftToolbarActions.slice(leftToolbarVisibleCount);
+    const hidden = visibleToolbarActions.slice(leftToolbarVisibleCount);
     openContextMenu(
       e,
       hidden.map((action) => ({
@@ -1747,10 +1951,83 @@ export default function FileManager() {
         icon: action.menuIcon,
         disabled: action.disabled,
         danger: action.danger,
-        onClick: action.onClick,
+        // The context menu invokes this with no arguments; forward the
+        // click that opened "More Actions" itself so an action like Upload
+        // (which anchors its own follow-up menu off the event) still has
+        // one to work with.
+        onClick: () => action.onClick(e),
         submenu: action.submenu,
       })),
       'More Actions'
+    );
+  };
+
+  const SORT_FIELD_OPTIONS: Array<{ field: typeof sortField; label: string }> = [
+    { field: 'name', label: 'Name' },
+    { field: 'type', label: 'Type' },
+    { field: 'dateModified', label: 'Date Modified' },
+    { field: 'date', label: currentFolderId === 'shared-with-me' ? 'Date Shared' : 'Date Created' },
+    { field: 'size', label: 'Size' },
+  ];
+  const activeSortFieldLabel = SORT_FIELD_OPTIONS.find((o) => o.field === sortField)?.label ?? 'Name';
+
+  // A single icon opens one menu covering both what to sort by and which
+  // direction — the toolbar previously spent two separate controls (a field
+  // dropdown and a standalone Asc/Desc button) on what is really one choice.
+  const handleSortMenuClick = (e: React.MouseEvent) => {
+    openContextMenu(
+      e,
+      [
+        ...SORT_FIELD_OPTIONS.map(({ field, label }) => ({
+          id: `sort-${field}`,
+          label,
+          icon: sortField === field ? <Check size={15} className="text-purple-500" /> : undefined,
+          onClick: () => setSortField(field),
+        })),
+        { divider: true },
+        {
+          id: 'sort-asc',
+          label: 'Ascending',
+          icon: sortOrder === 'asc' ? <Check size={15} className="text-purple-500" /> : undefined,
+          onClick: () => setSortOrder('asc'),
+        },
+        {
+          id: 'sort-desc',
+          label: 'Descending',
+          icon: sortOrder === 'desc' ? <Check size={15} className="text-purple-500" /> : undefined,
+          onClick: () => setSortOrder('desc'),
+        },
+      ],
+      'Sort'
+    );
+  };
+
+  const GROUP_BY_OPTIONS: Array<{ value: typeof groupBy; label: string }> = [
+    { value: 'none', label: 'No Grouping' },
+    ...(currentFolderId === 'shared-with-me'
+      ? [
+          { value: 'owner' as const, label: 'Shared By' },
+          { value: 'role' as const, label: 'Your Role' },
+        ]
+      : []),
+    { value: 'name', label: 'Name' },
+    { value: 'type', label: 'Type' },
+    { value: 'size', label: 'Size' },
+    { value: 'dateModified', label: 'Date Modified' },
+    { value: 'dateCreated', label: 'Date Created' },
+  ];
+  const activeGroupByLabel = GROUP_BY_OPTIONS.find((o) => o.value === groupBy)?.label ?? 'No Grouping';
+
+  const handleGroupMenuClick = (e: React.MouseEvent) => {
+    openContextMenu(
+      e,
+      GROUP_BY_OPTIONS.map(({ value, label }) => ({
+        id: `group-${value}`,
+        label,
+        icon: groupBy === value ? <Check size={15} className="text-purple-500" /> : undefined,
+        onClick: () => setGroupBy(value),
+      })),
+      'Group By'
     );
   };
 
@@ -1759,6 +2036,16 @@ export default function FileManager() {
     handleRestoreFile(item);
     setSelectedFileIds((prev) => prev.filter((id) => id !== item.id));
     useContextMenuStore.getState().closeContextMenu();
+  };
+
+  // Toolbar Restore — acts on the whole selection, mirroring handleDeleteSelectedItems.
+  const handleRestoreSelectedItems = async () => {
+    const items = selectedFileIds
+      .map((id) => deletedFiles.find((f) => f.id === id))
+      .filter((item): item is FileItem => !!item);
+    if (items.length === 0) return;
+    await Promise.all(items.map((item) => handleRestoreFile(item)));
+    setSelectedFileIds([]);
   };
 
   // Sidebar location clicks
@@ -1929,7 +2216,7 @@ export default function FileManager() {
           id: 'move-to',
           label: 'Move To...',
           icon: <Scissors size={15} className="text-slate-400" />,
-          disabled: !canWrite,
+          disabled: !canWrite || item.isSystem,
           onClick: () => setActiveMoveItem(item),
         },
         {
@@ -1937,6 +2224,7 @@ export default function FileManager() {
           label: 'Cut',
           icon: <Scissors size={15} className="text-slate-400" />,
           shortcut: 'Ctrl+X',
+          disabled: item.isSystem,
           onClick: () => handleCut(item),
         },
         {
@@ -1951,7 +2239,7 @@ export default function FileManager() {
           label: 'Rename',
           icon: <Edit3 size={15} className="text-slate-400" />,
           shortcut: 'F2',
-          disabled: !canWrite,
+          disabled: !canWrite || item.isSystem,
           onClick: () => handleStartRename(item),
         },
         {
@@ -1960,7 +2248,7 @@ export default function FileManager() {
           icon: <Trash2 size={15} className="text-red-400" />,
           danger: true,
           shortcut: 'Del',
-          disabled: !canWrite,
+          disabled: !canWrite || item.isSystem,
           onClick: () => handleDeleteItem(item),
         },
         { divider: true },
@@ -1975,10 +2263,76 @@ export default function FileManager() {
       openContextMenu(e, fileItems, item.name);
     } else {
       setSelectedFileIds([]);
+
+      // Shared by both the Trash and the regular background menu below, so
+      // View/Sort/Group are reachable from a right-click no matter which
+      // folder is open — the same choices already exposed as icon buttons in
+      // the toolbar (`handleSortMenuClick`/`handleGroupMenuClick`).
+      const viewSortGroupItems: ContextMenuItem[] = [
+        {
+          id: 'view-mode',
+          label: 'View',
+          icon: viewMode === 'grid' ? <Grid size={15} className="text-slate-400" /> : <List size={15} className="text-slate-400" />,
+          submenu: [
+            {
+              id: 'view-grid',
+              label: 'Grid',
+              icon: viewMode === 'grid' ? <Check size={15} className="text-purple-400" /> : <Grid size={15} className="text-slate-400" />,
+              onClick: () => setViewMode('grid'),
+            },
+            {
+              id: 'view-list',
+              label: 'List',
+              icon: viewMode === 'list' ? <Check size={15} className="text-purple-400" /> : <List size={15} className="text-slate-400" />,
+              onClick: () => setViewMode('list'),
+            },
+          ],
+        },
+        {
+          id: 'sort-by',
+          label: 'Sort By',
+          icon: <ArrowUpDown size={15} className="text-slate-400" />,
+          submenu: [
+            ...SORT_FIELD_OPTIONS.map(({ field, label }) => ({
+              id: `ctx-sort-${field}`,
+              label,
+              icon: sortField === field ? <Check size={15} className="text-purple-400" /> : undefined,
+              onClick: () => setSortField(field),
+            })),
+            { divider: true },
+            {
+              id: 'ctx-sort-asc',
+              label: 'Ascending',
+              icon: sortOrder === 'asc' ? <Check size={15} className="text-purple-400" /> : undefined,
+              onClick: () => setSortOrder('asc'),
+            },
+            {
+              id: 'ctx-sort-desc',
+              label: 'Descending',
+              icon: sortOrder === 'desc' ? <Check size={15} className="text-purple-400" /> : undefined,
+              onClick: () => setSortOrder('desc'),
+            },
+          ],
+        },
+        {
+          id: 'group-by',
+          label: 'Group By',
+          icon: <Layers size={15} className="text-slate-400" />,
+          submenu: GROUP_BY_OPTIONS.map(({ value, label }) => ({
+            id: `ctx-group-${value}`,
+            label,
+            icon: groupBy === value ? <Check size={15} className="text-purple-400" /> : undefined,
+            onClick: () => setGroupBy(value),
+          })),
+        },
+      ];
+
       if (isTrashFolder) {
         openContextMenu(
           e,
           [
+            ...viewSortGroupItems,
+            { divider: true },
             {
               id: 'empty-trash',
               label: 'Empty Recycle Bin',
@@ -2024,6 +2378,8 @@ export default function FileManager() {
             },
           ],
         },
+        { divider: true },
+        ...viewSortGroupItems,
         { divider: true },
         {
           id: 'paste',
@@ -2079,9 +2435,9 @@ export default function FileManager() {
   if (isTrashFolder) {
     currentItems = deletedFiles;
   } else if (currentFolderId === 'recent') {
-    currentItems = files.filter((f) => f.type === 'file');
+    currentItems = recentItems;
   } else if (currentFolderId === 'starred') {
-    currentItems = files.filter((f) => f.starred);
+    currentItems = starredItems;
   } else if (currentFolderId === 'shared-with-me') {
     currentItems = sharedWithMeItems;
   } else {
@@ -2285,13 +2641,13 @@ export default function FileManager() {
       id: 'file',
       label: 'File',
       items: [
-        { id: 'new-folder', label: 'New Folder', shortcut: 'Ctrl+Shift+N', onSelect: handleCreateFolder },
-        { id: 'upload', label: 'Upload Files…', onSelect: handleUploadClick },
+        { id: 'new-folder', label: 'New Folder', shortcut: 'Ctrl+Shift+N', disabled: isTrashFolder, onSelect: handleCreateFolder },
+        { id: 'upload', label: 'Upload Files…', disabled: isTrashFolder, onSelect: handleUploadClick },
         separator(),
-        { id: 'rename', label: 'Rename', shortcut: 'F2', disabled: !selectedItem, onSelect: () => selectedItem && handleStartRename(selectedItem) },
-        { id: 'download', label: 'Download', disabled: !selectedItem, onSelect: () => void handleDownloadSelectedItems() },
+        { id: 'rename', label: 'Rename', shortcut: 'F2', disabled: !selectedItem || isTrashFolder || selectionHasSystemFolder, onSelect: () => selectedItem && handleStartRename(selectedItem) },
+        { id: 'download', label: 'Download', disabled: !selectedItem || isTrashFolder, onSelect: () => void handleDownloadSelectedItems() },
         separator(),
-        { id: 'delete', label: isTrashFolder ? 'Delete Permanently' : 'Move to Trash', shortcut: 'Delete', danger: true, disabled: !selectedItem, onSelect: () => selectedItem && handleDeleteItem(selectedItem) },
+        { id: 'delete', label: isTrashFolder ? 'Delete Permanently' : 'Move to Trash', shortcut: 'Delete', danger: true, disabled: !selectedItem || selectionHasSystemFolder, onSelect: () => selectedItem && handleDeleteItem(selectedItem) },
         { id: 'empty-trash', label: 'Empty Recycle Bin', danger: true, disabled: deletedFiles.length === 0, onSelect: () => handleEmptyTrash() },
       ],
     },
@@ -2299,14 +2655,14 @@ export default function FileManager() {
       id: 'edit',
       label: 'Edit',
       items: [
-        { id: 'cut', label: 'Cut', shortcut: 'Ctrl+X', disabled: !selectedItem, onSelect: () => selectedItem && handleCut(selectedItem) },
-        { id: 'copy', label: 'Copy', shortcut: 'Ctrl+C', disabled: !selectedItem, onSelect: () => selectedItem && handleCopy(selectedItem) },
-        { id: 'paste', label: 'Paste', shortcut: 'Ctrl+V', disabled: !clipboard, onSelect: handlePaste },
+        { id: 'cut', label: 'Cut', shortcut: 'Ctrl+X', disabled: !selectedItem || isTrashFolder || selectionHasSystemFolder, onSelect: () => selectedItem && handleCut(selectedItem) },
+        { id: 'copy', label: 'Copy', shortcut: 'Ctrl+C', disabled: !selectedItem || isTrashFolder, onSelect: () => selectedItem && handleCopy(selectedItem) },
+        { id: 'paste', label: 'Paste', shortcut: 'Ctrl+V', disabled: !clipboard || isTrashFolder, onSelect: handlePaste },
         separator(),
         { id: 'select-all', label: 'Select All', shortcut: 'Ctrl+A', onSelect: () => setSelectedFileIds(sortedItems.map((item) => item.id)) },
         { id: 'select-none', label: 'Deselect All', disabled: selectedFileIds.length === 0, onSelect: () => setSelectedFileIds([]) },
         separator(),
-        { id: 'star', label: 'Toggle Star', disabled: !selectedItem, onSelect: () => selectedItem && handleToggleStar(selectedItem) },
+        { id: 'star', label: 'Toggle Star', disabled: !selectedItem || isTrashFolder, onSelect: () => selectedItem && handleToggleStar(selectedItem) },
       ],
     },
     {
@@ -2364,11 +2720,11 @@ export default function FileManager() {
   ]);
 
   return (
-    <div ref={containerRef} className={`relative h-full flex flex-col text-sm select-none ${ts.container}`}>
+    <div ref={containerRef} data-name="file-explorer-root" className={`relative h-full flex flex-col text-sm select-none ${ts.container}`}>
       {/* ==================== 1. TOP NAV & TOOLBAR RIBBON ==================== */}
-      <div className={`${ts.toolbar} flex flex-col shrink-0`}>
+      <div data-name="file-explorer-toolbar" className={`${ts.toolbar} flex flex-col shrink-0`}>
         {/* Navigation Row */}
-        <div className="flex items-center gap-1.5 p-2 px-3">
+        <div data-name="file-explorer-nav-row" className="flex items-center gap-1.5 p-2 px-3">
           <div className="flex items-center gap-1 shrink-0">
             <button
               onClick={handleGoBack}
@@ -2404,7 +2760,7 @@ export default function FileManager() {
           </div>
 
           {/* Address Bar */}
-          <div className="flex-1 min-w-[120px] relative">
+          <div data-name="file-explorer-address-bar" className="flex-1 min-w-[120px] relative">
             {isPathEditing ? (
               <form onSubmit={handlePathSubmit} className="w-full h-8">
                 <input
@@ -2442,7 +2798,7 @@ export default function FileManager() {
           </div>
 
           {/* Search Box */}
-          <div className={`${containerWidth < 500 ? 'w-28' : 'w-48'} relative transition-all shrink-0`}>
+          <div data-name="file-explorer-search-box" className={`${containerWidth < 500 ? 'w-28' : 'w-48'} relative transition-all shrink-0`}>
             <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 opacity-50 text-gray-500" />
             <input
               type="text"
@@ -2455,144 +2811,32 @@ export default function FileManager() {
         </div>
 
         {/* Toolbar Action Ribbon */}
-        <div className="flex items-center justify-between border-t border-black/5 bg-black/5 py-1 px-3 flex-wrap gap-1">
+        <div data-name="file-explorer-action-ribbon" className="flex items-center justify-between border-t border-black/5 bg-black/5 py-1 px-3 flex-wrap gap-1">
           {/* `flex-nowrap` + `min-w-0 flex-1`: the group never wraps onto a
               second line — instead leftToolbarVisibleCount, computed against
               this container's actual measured width, decides how many
               buttons render inline before the rest fold into the "More
               Actions" overflow menu below. */}
-          <div ref={leftToolbarRef} className="flex items-center gap-1.5 flex-nowrap min-w-0 flex-1 overflow-hidden">
-            {leftToolbarVisibleCount > 0 && (
-              <button
-                ref={(el) => { leftButtonRefs.current[0] = el; }}
-                onClick={handleCreateFolder}
-                className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold rounded hover:bg-white/35 cursor-pointer shrink-0"
-                title="New Folder"
-              >
-                <FolderPlus className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-                {!isCompactRibbon && <span>New Folder</span>}
-              </button>
-            )}
-            {leftToolbarVisibleCount > 1 && (
-              <button
-                ref={(el) => { leftButtonRefs.current[1] = el; }}
-                onClick={handleCreateFile}
-                className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold rounded hover:bg-white/35 cursor-pointer shrink-0"
-                title="New Text File"
-              >
-                <Plus className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-                {!isCompactRibbon && <span>New Text</span>}
-              </button>
-            )}
-
-            {leftToolbarVisibleCount > 2 && (
-              <>
-                <span className="h-4 w-[1px] bg-black/10 mx-0.5 shrink-0" />
+          <div ref={leftToolbarRef} data-name="file-explorer-toolbar-actions" className="flex items-center gap-1.5 flex-nowrap min-w-0 flex-1 overflow-hidden">
+            {visibleToolbarActions.slice(0, leftToolbarVisibleCount).map((action, idx) => (
+              <React.Fragment key={action.id}>
+                {idx > 0 && action.dividerBefore && (
+                  <span className="h-4 w-[1px] bg-black/10 mx-0.5 shrink-0" />
+                )}
                 <button
-                  ref={(el) => { leftButtonRefs.current[2] = el; }}
-                  onClick={handleUploadMenuClick}
-                  className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold rounded hover:bg-white/35 text-emerald-600 hover:text-emerald-700 cursor-pointer shrink-0"
-                  title="Upload a file or folder"
+                  ref={(el) => { leftButtonRefs.current[idx] = el; }}
+                  onClick={action.onClick}
+                  title={action.title}
+                  className={`flex items-center gap-1.5 ${action.wide ? 'px-2.5' : 'px-2'} py-1 text-[11px] font-semibold rounded hover:bg-white/35 cursor-pointer shrink-0 ${action.colorClass ?? ''}`}
                 >
-                  <Upload className="w-3.5 h-3.5 shrink-0" />
-                  {!isCompactRibbon && <span>Upload</span>}
-                  <ChevronDown className="w-3 h-3 shrink-0" />
+                  {action.icon}
+                  {!isCompactRibbon && <span>{action.label}</span>}
+                  {action.hasChevron && <ChevronDown className="w-3 h-3 shrink-0" />}
                 </button>
-              </>
-            )}
+              </React.Fragment>
+            ))}
 
-            {leftToolbarVisibleCount > 3 && (
-              <>
-                <span className="h-4 w-[1px] bg-black/10 mx-0.5 shrink-0" />
-                <button
-                  ref={(el) => { leftButtonRefs.current[3] = el; }}
-                  onClick={() => selectedItem && handleCut(selectedItem)}
-                  disabled={!selectedItem}
-                  className="flex items-center gap-1.5 px-2 py-1 text-[11px] font-semibold rounded hover:bg-white/35 disabled:opacity-35 cursor-pointer shrink-0"
-                >
-                  <Scissors className="w-3.5 h-3.5 shrink-0" />
-                  {!isCompactRibbon && <span>Cut</span>}
-                </button>
-              </>
-            )}
-
-            {leftToolbarVisibleCount > 4 && (
-              <button
-                ref={(el) => { leftButtonRefs.current[4] = el; }}
-                onClick={() => selectedItem && handleCopy(selectedItem)}
-                disabled={!selectedItem}
-                className="flex items-center gap-1.5 px-2 py-1 text-[11px] font-semibold rounded hover:bg-white/35 disabled:opacity-35 cursor-pointer shrink-0"
-              >
-                <Copy className="w-3.5 h-3.5 shrink-0" />
-                {!isCompactRibbon && <span>Copy</span>}
-              </button>
-            )}
-
-            {leftToolbarVisibleCount > 5 && (
-              <button
-                ref={(el) => { leftButtonRefs.current[5] = el; }}
-                onClick={handlePaste}
-                disabled={!clipboard}
-                className="flex items-center gap-1.5 px-2 py-1 text-[11px] font-semibold rounded hover:bg-white/35 disabled:opacity-35 cursor-pointer shrink-0"
-              >
-                <Clipboard className="w-3.5 h-3.5 shrink-0" />
-                {!isCompactRibbon && <span>Paste</span>}
-              </button>
-            )}
-
-            {leftToolbarVisibleCount > 6 && (
-              <button
-                ref={(el) => { leftButtonRefs.current[6] = el; }}
-                onClick={() => selectedItem && handleDuplicate(selectedItem)}
-                disabled={!selectedItem}
-                className="flex items-center gap-1.5 px-2 py-1 text-[11px] font-semibold rounded hover:bg-white/35 disabled:opacity-35 cursor-pointer shrink-0"
-                title="Duplicate selection"
-              >
-                <Copy className="w-3.5 h-3.5 text-purple-500 shrink-0" />
-                {!isCompactRibbon && <span>Duplicate</span>}
-              </button>
-            )}
-
-            {leftToolbarVisibleCount > 7 && (
-              <>
-                <span className="h-4 w-[1px] bg-black/10 mx-0.5 shrink-0" />
-                <button
-                  ref={(el) => { leftButtonRefs.current[7] = el; }}
-                  onClick={() => selectedItem && handleStartRename(selectedItem)}
-                  disabled={!selectedItem}
-                  className="flex items-center gap-1.5 px-2 py-1 text-[11px] font-semibold rounded hover:bg-white/35 disabled:opacity-35 cursor-pointer shrink-0"
-                >
-                  <Edit3 className="w-3.5 h-3.5 text-sky-500 shrink-0" />
-                  {!isCompactRibbon && <span>Rename</span>}
-                </button>
-              </>
-            )}
-
-            {leftToolbarVisibleCount > 8 && (
-              <button
-                ref={(el) => { leftButtonRefs.current[8] = el; }}
-                onClick={() => void handleDeleteSelectedItems()}
-                disabled={selectedFileIds.length === 0}
-                className="flex items-center gap-1.5 px-2 py-1 text-[11px] font-semibold rounded hover:bg-white/35 text-rose-500 disabled:opacity-35 cursor-pointer shrink-0"
-              >
-                <Trash2 className="w-3.5 h-3.5 shrink-0" />
-                {!isCompactRibbon && <span>Delete</span>}
-              </button>
-            )}
-
-            {leftToolbarVisibleCount > 9 && (
-              <button
-                ref={(el) => { leftButtonRefs.current[9] = el; }}
-                onClick={() => void handleDownloadSelectedItems()}
-                disabled={selectedFileIds.length === 0}
-                className="flex items-center gap-1.5 px-2 py-1 text-[11px] font-semibold rounded hover:bg-white/35 text-emerald-600 disabled:opacity-35 cursor-pointer shrink-0"
-              >
-                <Download className="w-3.5 h-3.5 shrink-0" />
-                {!isCompactRibbon && <span>Download</span>}
-              </button>
-            )}
-
-            {leftToolbarVisibleCount < leftToolbarActions.length && (
+            {leftToolbarVisibleCount < visibleToolbarActions.length && (
               <>
                 <span className="h-4 w-[1px] bg-black/10 mx-0.5 shrink-0" />
                 <button
@@ -2606,23 +2850,8 @@ export default function FileManager() {
             )}
           </div>
 
-          {/* VIEW MODE & TYPE FILTER TOGGLES */}
-          <div className="flex items-center gap-1 shrink-0">
-            {/* Filter Dropdown */}
-            <select
-              value={typeFilter}
-              onChange={(e) => setTypeFilter(e.target.value as any)}
-              className="h-7 px-2 text-[11px] font-semibold rounded bg-white/40 dark:bg-black/40 border border-black/10 focus:outline-none cursor-pointer"
-            >
-              <option value="all">Filter: All Types</option>
-              <option value="documents">Documents</option>
-              <option value="images">Images</option>
-              <option value="audio">Audio</option>
-              <option value="video">Video</option>
-              <option value="code">Code/Text</option>
-              <option value="archives">Archives</option>
-            </select>
-
+          {/* VIEW MODE, SORT & GROUP TOGGLES */}
+          <div data-name="file-explorer-view-controls" className="flex items-center gap-1 shrink-0">
             {currentFolderId === 'shared-with-me' && (
               <select
                 value={sharedRoleFilter}
@@ -2637,40 +2866,20 @@ export default function FileManager() {
               </select>
             )}
 
-            <select
-              value={sortField}
-              onChange={(e) => setSortField(e.target.value as any)}
-              className="h-7 px-2 text-[11px] font-semibold rounded bg-white/40 dark:bg-black/40 border border-black/10 focus:outline-none cursor-pointer"
-              title="Sort by"
-            >
-              <option value="name">Sort: Name</option>
-              <option value="dateModified">Date Modified</option>
-              <option value="date">{currentFolderId === 'shared-with-me' ? 'Date Shared' : 'Date Created'}</option>
-              <option value="type">Type</option>
-              <option value="size">Size</option>
-            </select>
             <button
-              onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
-              className="h-7 px-2 text-[11px] font-semibold rounded bg-white/40 dark:bg-black/40 border border-black/10 hover:bg-white/60 cursor-pointer"
-              title={sortOrder === 'asc' ? 'Ascending' : 'Descending'}
+              onClick={handleSortMenuClick}
+              className="p-1.5 rounded hover:bg-white/35 cursor-pointer"
+              title={`Sort: ${activeSortFieldLabel} (${sortOrder === 'asc' ? 'Ascending' : 'Descending'})`}
             >
-              {sortOrder === 'asc' ? '▴ Asc' : '▾ Desc'}
+              <ArrowUpDown className="w-4 h-4" />
             </button>
-            <select
-              value={groupBy}
-              onChange={(e) => setGroupBy(e.target.value as any)}
-              className="h-7 px-2 text-[11px] font-semibold rounded bg-white/40 dark:bg-black/40 border border-black/10 focus:outline-none cursor-pointer"
-              title="Group items"
+            <button
+              onClick={handleGroupMenuClick}
+              className="p-1.5 rounded hover:bg-white/35 cursor-pointer"
+              title={`Group: ${activeGroupByLabel}`}
             >
-              <option value="none">No Grouping</option>
-              {currentFolderId === 'shared-with-me' && <option value="owner">Group: Shared By</option>}
-              {currentFolderId === 'shared-with-me' && <option value="role">Group: Your Role</option>}
-              <option value="name">Group: Name</option>
-              <option value="type">Group: Type</option>
-              <option value="size">Group: Size</option>
-              <option value="dateModified">Group: Date Modified</option>
-              <option value="dateCreated">Group: Date Created</option>
-            </select>
+              <Layers className="w-4 h-4" />
+            </button>
 
             <span className="h-4 w-[1px] bg-black/10 mx-0.5" />
 
@@ -2705,39 +2914,12 @@ export default function FileManager() {
           </div>
         </div>
 
-
-        {/* Trash Banner when inside Trash Bin */}
-        {isTrashFolder && (
-          <div className="bg-rose-500/10 border-b border-rose-500/20 px-4 py-2 text-xs flex items-center justify-between text-rose-600 dark:text-rose-400 font-semibold">
-            <div className="flex items-center gap-2">
-              <Trash2 className="w-4 h-4" />
-              <span>Recycle Bin ({deletedFiles.length} item{deletedFiles.length === 1 ? '' : 's'})</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => {
-                  deletedFiles.forEach((item) => handleRestoreFile(item));
-                  alert('Restored all files from Trash!');
-                }}
-                className="px-3 py-1 bg-emerald-600 text-white rounded-lg hover:bg-emerald-500 cursor-pointer text-[11px] font-bold flex items-center gap-1"
-              >
-                <RotateCcw className="w-3 h-3" /> Restore All Items
-              </button>
-              <button
-                onClick={handleEmptyTrash}
-                className="px-3 py-1 bg-rose-600 text-white rounded-lg hover:bg-rose-500 cursor-pointer text-[11px] font-bold flex items-center gap-1"
-              >
-                <Trash2 className="w-3 h-3" /> Empty Trash
-              </button>
-            </div>
-          </div>
-        )}
       </div>
 
       {/* ==================== 2. MAIN LAYOUT: SIDEBAR, STAGE, DETAILS ==================== */}
-      <div className="flex-1 flex overflow-hidden relative" onContextMenu={(e) => handleContextMenu(e, null)}>
+      <div data-name="file-explorer-main-layout" className="flex-1 flex overflow-hidden relative" onContextMenu={(e) => handleContextMenu(e, null)}>
         {/* LEFT NAVIGATION TREE SIDEBAR */}
-        <div className={`transition-all duration-150 ${isCompactSidebar ? 'w-12 p-1' : 'w-52 p-2.5'} flex flex-col gap-0.5 shrink-0 overflow-y-auto select-none ${ts.sidebar}`}>
+        <div data-name="file-explorer-sidebar" className={`transition-all duration-150 ${isCompactSidebar ? 'w-12 p-1' : 'w-52 p-2.5'} flex flex-col gap-0.5 shrink-0 overflow-y-auto select-none ${ts.sidebar}`}>
           {/* CORE PLACES */}
           {[
             { id: 'home', label: 'Home', icon: Home, targetFolderId: null },
@@ -2807,7 +2989,7 @@ export default function FileManager() {
         {/* MIDDLE EXPLORER CANVAS AREA */}
         <div
           ref={explorerAreaRef}
-          id="file-explorer-canvas"
+          data-name="file-explorer-canvas"
           onDragOver={handleCanvasDragOver}
           onDragLeave={handleCanvasDragLeave}
           onDrop={handleCanvasDrop}
@@ -2842,15 +3024,45 @@ export default function FileManager() {
               <Loader2 className="w-8 h-8 animate-spin text-current" />
               <span>Loading what's been shared with you...</span>
             </div>
+          ) : currentFolderId === 'recent' && recentLoading ? (
+            <div className="flex-1 flex flex-col items-center justify-center opacity-60 text-xs select-none p-4 text-center gap-2">
+              <Loader2 className="w-8 h-8 animate-spin text-current" />
+              <span>Loading recent files...</span>
+            </div>
+          ) : currentFolderId === 'starred' && starredLoading ? (
+            <div className="flex-1 flex flex-col items-center justify-center opacity-60 text-xs select-none p-4 text-center gap-2">
+              <Loader2 className="w-8 h-8 animate-spin text-current" />
+              <span>Loading starred files...</span>
+            </div>
           ) : currentFolderId === 'shared-with-me' && sharedWithMeError ? (
             <div className="flex-1 flex flex-col items-center justify-center opacity-70 text-xs select-none p-4 text-center gap-1">
               <AlertCircle className="w-10 h-10 mb-1 text-rose-500" />
               <span className="font-semibold text-sm text-rose-500">{sharedWithMeError}</span>
             </div>
+          ) : currentFolderId === 'recent' && recentError ? (
+            <div className="flex-1 flex flex-col items-center justify-center opacity-70 text-xs select-none p-4 text-center gap-1">
+              <AlertCircle className="w-10 h-10 mb-1 text-rose-500" />
+              <span className="font-semibold text-sm text-rose-500">{recentError}</span>
+            </div>
+          ) : currentFolderId === 'starred' && starredError ? (
+            <div className="flex-1 flex flex-col items-center justify-center opacity-70 text-xs select-none p-4 text-center gap-1">
+              <AlertCircle className="w-10 h-10 mb-1 text-rose-500" />
+              <span className="font-semibold text-sm text-rose-500">{starredError}</span>
+            </div>
           ) : sortedItems.length === 0 && currentFolderId === 'shared-with-me' ? (
             <div className="flex-1 flex flex-col items-center justify-center opacity-40 text-xs select-none p-4 text-center">
               <Users className="w-12 h-12 stroke-[1.2] mb-3 text-current" />
               <span>Nothing has been shared with you yet.</span>
+            </div>
+          ) : sortedItems.length === 0 && currentFolderId === 'recent' ? (
+            <div className="flex-1 flex flex-col items-center justify-center opacity-40 text-xs select-none p-4 text-center">
+              <Clock className="w-12 h-12 stroke-[1.2] mb-3 text-current" />
+              <span>No recent files yet.</span>
+            </div>
+          ) : sortedItems.length === 0 && currentFolderId === 'starred' ? (
+            <div className="flex-1 flex flex-col items-center justify-center opacity-40 text-xs select-none p-4 text-center">
+              <Star className="w-12 h-12 stroke-[1.2] mb-3 text-current" />
+              <span>No starred files yet.</span>
             </div>
           ) : sortedItems.length === 0 ? (
             <div className="flex-1 flex flex-col items-center justify-center opacity-40 text-xs select-none p-4 text-center">
@@ -2867,6 +3079,7 @@ export default function FileManager() {
           ) : viewMode === 'grid' ? (
             /* GRID VIEW */
             <div
+              data-name="file-explorer-grid-view"
               className="flex-1 p-4 overflow-y-auto custom-scrollbar select-none grid gap-3.5 content-start"
               style={{
                 gridTemplateColumns: 'repeat(auto-fill, minmax(88px, 120px))',
@@ -2892,7 +3105,7 @@ export default function FileManager() {
                 return (
                   <div
                     key={item.id}
-                    draggable
+                    draggable={!isTrashFolder && !item.isSystem}
                     onDragStart={(e) => handleItemDragStart(e, item)}
                     onDragEnd={handleItemDragEnd}
                     onDragEnter={(e) => item.type === 'folder' && handleFolderDragEnter(e, item.id)}
@@ -2964,7 +3177,7 @@ export default function FileManager() {
             </div>
           ) : (
             /* DETAILS LIST VIEW */
-            <div className="flex-1 flex flex-col overflow-y-auto select-none custom-scrollbar">
+            <div data-name="file-explorer-list-view" className="flex-1 flex flex-col overflow-y-auto select-none custom-scrollbar">
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className={`${ts.listHeader} sticky top-0 z-10`}>
@@ -3041,7 +3254,7 @@ export default function FileManager() {
                     return (
                       <tr
                         key={item.id}
-                        draggable
+                        draggable={!isTrashFolder && !item.isSystem}
                         onDragStart={(e) => handleItemDragStart(e, item)}
                         onDragEnd={handleItemDragEnd}
                         onDragEnter={(e) => item.type === 'folder' && handleFolderDragEnter(e, item.id)}
@@ -3112,7 +3325,7 @@ export default function FileManager() {
 
         {/* RIGHT SIDE DETAILS PROPERTIES PANEL */}
         {showDetailsPane && (
-          <div className={`w-64 flex flex-col shrink-0 overflow-y-auto select-none ${ts.rightPane}`}>
+          <div data-name="file-explorer-details-pane" className={`w-64 flex flex-col shrink-0 overflow-y-auto select-none ${ts.rightPane}`}>
             <div className={`p-4 ${ts.rightPaneHeader} flex items-center justify-between`}>
               <span className="text-xs font-extrabold uppercase tracking-wider text-current/60 flex items-center gap-1.5">
                 <Info className="w-3.5 h-3.5 text-purple-500" />
@@ -3157,33 +3370,54 @@ export default function FileManager() {
                 </div>
 
                 <div className="w-full flex flex-col gap-2 mt-1">
-                  <button
-                    onClick={() => handleItemDoubleClick(selectedItem)}
-                    className="w-full py-2 bg-purple-600 hover:bg-purple-500 text-white font-bold rounded-lg text-xs transition-colors flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
-                  >
-                    Open / Preview
-                  </button>
-                  <button
-                    onClick={() => setActiveShareItem(selectedItem)}
-                    className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-lg text-xs transition-colors flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
-                  >
-                    <Share2 className="w-3.5 h-3.5" />
-                    Share Item
-                  </button>
-                  <button
-                    onClick={() => handleDownloadFile(selectedItem)}
-                    className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg text-xs transition-colors flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    Download
-                  </button>
-                  <button
-                    onClick={() => handleDeleteItem(selectedItem)}
-                    className="w-full py-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 font-bold rounded-lg text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    Move to Trash
-                  </button>
+                  {isTrashFolder ? (
+                    <>
+                      <button
+                        onClick={() => handleRestoreItem(selectedItem)}
+                        className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg text-xs transition-colors flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        Restore Item
+                      </button>
+                      <button
+                        onClick={() => void handleDeleteItem(selectedItem)}
+                        className="w-full py-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 font-bold rounded-lg text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        Delete Permanently
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => handleItemDoubleClick(selectedItem)}
+                        className="w-full py-2 bg-purple-600 hover:bg-purple-500 text-white font-bold rounded-lg text-xs transition-colors flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
+                      >
+                        Open / Preview
+                      </button>
+                      <button
+                        onClick={() => setActiveShareItem(selectedItem)}
+                        className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-lg text-xs transition-colors flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
+                      >
+                        <Share2 className="w-3.5 h-3.5" />
+                        Share Item
+                      </button>
+                      <button
+                        onClick={() => handleDownloadFile(selectedItem)}
+                        className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg text-xs transition-colors flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        Download
+                      </button>
+                      <button
+                        onClick={() => void handleDeleteItem(selectedItem)}
+                        className="w-full py-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 font-bold rounded-lg text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        Move to Trash
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             ) : (
@@ -3199,17 +3433,17 @@ export default function FileManager() {
       {/* ==================== 3. WINDOW STATUS BAR CONTENT ==================== */}
       <WindowStatus
         left={
-          <div id="status-bar-items-count" className="flex items-center gap-1.5 shrink-0">
+          <div data-name="status-bar-items-count" className="flex items-center gap-1.5 shrink-0">
             <span>{currentItems.length} item{currentItems.length === 1 ? '' : 's'}</span>
             {searchQuery && (
-              <span id="status-bar-filtered-count" className="opacity-60 bg-black/5 px-1.5 py-0.5 rounded text-[10px]">
+              <span data-name="status-bar-filtered-count" className="opacity-60 bg-black/5 px-1.5 py-0.5 rounded text-[10px]">
                 Filtered: {sortedItems.length}
               </span>
             )}
           </div>
         }
         center={
-          <div id="status-bar-selection-info" className="truncate text-center">
+          <div data-name="status-bar-selection-info" className="truncate text-center">
             {selectedFileIds.length > 0 ? (
               <span className="text-purple-600 font-bold">
                 {selectedFileIds.length} item{selectedFileIds.length === 1 ? '' : 's'} selected
@@ -3221,7 +3455,7 @@ export default function FileManager() {
         }
         right={
           uploadProgress ? (
-            <div id="status-bar-upload-progress" className="flex items-center gap-2 shrink-0">
+            <div data-name="status-bar-upload-progress" className="flex items-center gap-2 shrink-0">
               <span className="truncate max-w-[220px]">
                 Uploading {Math.min(uploadProgress.completed + 1, uploadProgress.total)} of {uploadProgress.total}
                 {uploadProgress.currentFileName ? ` — ${uploadProgress.currentFileName}` : ''}
@@ -3243,7 +3477,7 @@ export default function FileManager() {
           lockstep, so bytes-received is the same signal as bytes-zipped —
           there's no separate "now downloading the finished zip" phase. */}
       {downloadProgress && (
-        <div className="absolute bottom-4 right-4 z-[500] w-80 rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-zinc-900 shadow-2xl p-3.5 flex items-start gap-3">
+        <div data-name="file-explorer-download-progress" className="absolute bottom-4 right-4 z-[500] w-80 rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-zinc-900 shadow-2xl p-3.5 flex items-start gap-3">
           <div
             className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
               downloadProgress.completed

@@ -17,7 +17,7 @@ interface EditorTabBarProps {
 
 export default function EditorTabBar({ tabs, activeTabId, onSelect, onClose, onNew }: EditorTabBarProps) {
   return (
-    <div id="editor-tab-bar" className="flex items-stretch h-9 bg-[var(--wb-surface)] border-b border-[var(--wb-border-strong)] overflow-x-auto shrink-0 select-none">
+    <div data-name="editor-tab-bar" className="flex items-stretch h-9 bg-[var(--wb-surface)] border-b border-[var(--wb-border-strong)] overflow-x-auto shrink-0 select-none">
       {tabs.map((tab) => {
         const active = tab.id === activeTabId;
         return (

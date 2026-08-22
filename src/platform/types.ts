@@ -126,6 +126,13 @@ export interface FileItem {
   size?: number;
   /** True when anyone other than the owner currently has access. Drives the shared-item badge. */
   isShared?: boolean;
+  /**
+   * True for the fixed set of default root folders (Documents, Pictures,
+   * Videos, Music) provisioned for every new drive. The server refuses to
+   * delete, rename or move these regardless of who owns them — this lets the
+   * UI hide those actions instead of showing a button that always fails.
+   */
+  isSystem?: boolean;
   /** The signed-in user's resolved access level for this item. */
   effectiveRole?: ResourceRole;
   /** Present only on items reached through "Shared with me". */

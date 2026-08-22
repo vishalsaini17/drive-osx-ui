@@ -1110,6 +1110,7 @@ export const useSystemStore = create<SystemState>((set, get) => ({
         originalParentId: null,
         isShared: f.isShared || false,
         effectiveRole: f.effectiveRole,
+        isSystem: f.metadata?.system === true,
       }));
       set((state) => {
         const merged = mergeFolderChildren(state.files, folderId, mappedFiles);

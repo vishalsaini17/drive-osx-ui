@@ -24,13 +24,13 @@ const ITEMS: { id: ActivityPanel; label: string; Icon: typeof Files }[] = [
  */
 export default function ActivityBar({ active, onSelect, settingsActive, onOpenSettings }: ActivityBarProps) {
   return (
-    <div id="editor-activity-bar" className="w-11 shrink-0 bg-[var(--wb-surface-sunken)] border-r border-[var(--wb-border-strong)] flex flex-col items-center py-2 gap-1">
+    <div data-name="editor-activity-bar" className="w-11 shrink-0 bg-[var(--wb-surface-sunken)] border-r border-[var(--wb-border-strong)] flex flex-col items-center py-2 gap-1">
       {ITEMS.map(({ id, label, Icon }) => {
         const isActive = active === id;
         return (
           <button
             key={id}
-            id={`editor-activity-bar-${id}`}
+            data-name={`editor-activity-bar-${id}`}
             onClick={() => onSelect(id)}
             title={label}
             className={`relative w-11 h-11 flex items-center justify-center cursor-pointer ${
@@ -43,7 +43,7 @@ export default function ActivityBar({ active, onSelect, settingsActive, onOpenSe
         );
       })}
       <button
-        id="editor-activity-bar-settings"
+        data-name="editor-activity-bar-settings"
         onClick={onOpenSettings}
         title="Settings"
         className={`mt-auto relative w-11 h-11 flex items-center justify-center cursor-pointer ${
