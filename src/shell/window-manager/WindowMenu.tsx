@@ -223,18 +223,24 @@ function MenuPanel({ items, theme, onClose, placement, onPointerEnter, onPointer
               role="menuitem"
             >
               <span className="flex items-center gap-2 min-w-0">
-                <span className="w-3.5 shrink-0 flex items-center justify-center">
-                  {item.checked && <Check size={12} />}
-                  {item.selected && <span className="w-1.5 h-1.5 rounded-full bg-current" />}
-                  {!item.checked && !item.selected && item.icon && (
+                {item.icon && (
+                  <span className="w-3.5 shrink-0 flex items-center justify-center">
                     <item.icon size={13} className="opacity-70" />
-                  )}
-                </span>
+                  </span>
+                )}
                 <span className="truncate font-medium">{item.label}</span>
               </span>
-              {item.shortcut && (
-                <span className={`text-[11px] font-mono shrink-0 ${styles.shortcut}`}>{item.shortcut}</span>
-              )}
+              <span className="flex items-center gap-2 shrink-0">
+                {item.shortcut && (
+                  <span className={`text-[11px] font-mono ${styles.shortcut}`}>{item.shortcut}</span>
+                )}
+                {(item.checked || item.selected) && (
+                  <span className="w-3.5 flex items-center justify-center">
+                    {item.checked && <Check size={12} />}
+                    {item.selected && <span className="w-1.5 h-1.5 rounded-full bg-current" />}
+                  </span>
+                )}
+              </span>
             </button>
           );
         }

@@ -9,6 +9,8 @@ export interface ContextMenuItem {
   danger?: boolean;
   disabled?: boolean;
   divider?: boolean;
+  /** Shows a trailing checkmark on the right of the row, independent of `icon`. */
+  checked?: boolean;
   onClick?: () => void;
   submenu?: ContextMenuItem[];
 }

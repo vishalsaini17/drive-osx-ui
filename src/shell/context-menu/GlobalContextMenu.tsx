@@ -4,7 +4,7 @@ import { useContextMenuStore } from './contextMenuStore';
 import { themeFamily } from '../../platform/theme/themes';
 import { useShellTheme } from '../../platform/theme/useShellTheme';
 import { useSystemStore } from '../state/systemStore';
-import { ChevronRight } from 'lucide-react';
+import { ChevronRight, Check } from 'lucide-react';
 
 export default function GlobalContextMenu() {
   const {
@@ -176,6 +176,10 @@ export default function GlobalContextMenu() {
                     </span>
                   )}
 
+                  {item.checked && (
+                    <Check size={14} className="shrink-0 ml-1 text-purple-500" />
+                  )}
+
                   {hasSubmenu && (
                     <ChevronRight size={14} className={`shrink-0 ml-1 ${chevronClass}`} />
                   )}
@@ -198,7 +202,7 @@ export default function GlobalContextMenu() {
                             closeContextMenu();
                           }
                         }}
-                        className={`w-full text-left px-2.5 py-1.5 rounded-xl flex items-center gap-2 transition-colors cursor-pointer ${
+                        className={`w-full text-left px-2.5 py-1.5 rounded-xl flex items-center justify-between gap-2 transition-colors cursor-pointer ${
                           subItem.disabled
                             ? 'opacity-40 cursor-not-allowed'
                             : subItem.danger
@@ -206,12 +210,17 @@ export default function GlobalContextMenu() {
                             : itemHoverClass
                         }`}
                       >
-                        {subItem.icon && (
-                          <span className="w-4 h-4 flex items-center justify-center shrink-0 opacity-80">
-                            {subItem.icon}
-                          </span>
+                        <span className="flex items-center gap-2.5 truncate">
+                          {subItem.icon && (
+                            <span className="w-4 h-4 flex items-center justify-center shrink-0 opacity-80">
+                              {subItem.icon}
+                            </span>
+                          )}
+                          <span className="truncate font-medium">{subItem.label}</span>
+                        </span>
+                        {subItem.checked && (
+                          <Check size={14} className="shrink-0 ml-1 text-purple-500" />
                         )}
-                        <span className="truncate font-medium">{subItem.label}</span>
                       </button>
                     ))}
                   </div>

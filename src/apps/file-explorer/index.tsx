@@ -54,7 +54,8 @@ import {
   FolderX,
   FolderOpen,
   Loader2,
-  AlertCircle
+  AlertCircle,
+  Settings as SettingsIcon
 } from 'lucide-react';
 import { FileItem } from '../../platform/types';
 import { useSystemStore } from '../../shell/state/systemStore';
@@ -73,6 +74,7 @@ import MoveModal from './components/MoveModal';
 import FilePreviewModal from './components/FilePreviewModal';
 import PropertiesModal from './components/PropertiesModal';
 import OpenWithModal from './components/OpenWithModal';
+import AppSettingsModal from '../../shell/preferences/AppSettingsModal';
 
 /**
  * Marks a drag as an internal File Explorer item drag rather than an OS/browser
@@ -197,6 +199,12 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
 
   const fmPrefs = settings.appPreferences?.fileManager;
   const prefView = fmPrefs?.defaultView?.toLowerCase() === 'list' ? 'list' : 'grid';
+  // "Confirm Before Trash Move" (Settings) only ever gates moving something to
+  // the Recycle Bin, which is reversible — permanently erasing an item from
+  // the Recycle Bin itself always confirms regardless of this preference,
+  // since that action can't be undone.
+  const confirmOnDeletePref = fmPrefs?.confirmOnDelete ?? true;
+  const confirmMoveToTrash = (message: string) => !confirmOnDeletePref || confirm(message);
 
   // State Management
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
@@ -224,6 +232,7 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
   const [activePreviewItem, setActivePreviewItem] = useState<FileItem | null>(null);
   const [activePropertiesItem, setActivePropertiesItem] = useState<FileItem | null>(null);
   const [activeOpenWithItem, setActiveOpenWithItem] = useState<FileItem | null>(null);
+  const [isAppSettingsOpen, setIsAppSettingsOpen] = useState(false);
 
   // Set when this window was opened as a picker for another app (currently
   // just the editor's Open File…/Open Folder…) via `requestFilePick` —
@@ -605,6 +614,21 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
   const [sortField, setSortField] = useState<'name' | 'type' | 'date' | 'dateModified' | 'size'>('name');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
 
+  // Mirrors the app's own "Default File Sorting" setting (Settings, driven
+  // by AppRegistry's `fileManager` schema) — same reactive pattern as
+  // `defaultView` above: applies on mount, and again if the preference
+  // itself changes while the window is open.
+  useEffect(() => {
+    const SORT_BY_PREF_MAP: Record<string, typeof sortField> = {
+      Name: 'name',
+      'Date Modified': 'dateModified',
+      Type: 'type',
+      Size: 'size',
+    };
+    const mapped = fmPrefs?.sortBy ? SORT_BY_PREF_MAP[fmPrefs.sortBy] : undefined;
+    if (mapped) setSortField(mapped);
+  }, [fmPrefs?.sortBy]);
+
   // Address Bar path editing
   const [isPathEditing, setIsPathEditing] = useState<boolean>(false);
   const [pathInputText, setPathInputText] = useState<string>('');
@@ -722,7 +746,7 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
           }
         } else {
           const deletableIds = selectedFileIds.filter((id) => !files.find((f) => f.id === id)?.isSystem);
-          if (deletableIds.length > 0 && confirm(`Move selected ${deletableIds.length} item(s) to Recycle Bin?`)) {
+          if (deletableIds.length > 0 && confirmMoveToTrash(`Move selected ${deletableIds.length} item(s) to Recycle Bin?`)) {
             deletableIds.forEach((id) => {
               const item = files.find((f) => f.id === id);
               if (item) handleDeleteFile(item);
@@ -1721,7 +1745,7 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
         alert(`"${item.name}" is a default folder and cannot be deleted.`);
         return;
       }
-      if (!confirm(`Move "${item.name}" to the Recycle Bin?`)) return;
+      if (!confirmMoveToTrash(`Move "${item.name}" to the Recycle Bin?`)) return;
       await handleDeleteFile({ ...item, originalParentId: item.parentId });
     }
     setSelectedFileIds((prev) => prev.filter((id) => id !== item.id));
@@ -1746,7 +1770,7 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
       const deletable = items.filter((item) => !item.isSystem);
       const skipped = items.length - deletable.length;
       if (deletable.length === 0) return;
-      if (!confirm(`Move ${deletable.length} item(s) to the Recycle Bin?`)) return;
+      if (!confirmMoveToTrash(`Move ${deletable.length} item(s) to the Recycle Bin?`)) return;
       await Promise.all(deletable.map((item) => handleDeleteFile({ ...item, originalParentId: item.parentId })));
       if (skipped > 0) {
         addNotification({
@@ -2020,20 +2044,20 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
         ...SORT_FIELD_OPTIONS.map(({ field, label }) => ({
           id: `sort-${field}`,
           label,
-          icon: sortField === field ? <Check size={15} className="text-purple-500" /> : undefined,
+          checked: sortField === field,
           onClick: () => setSortField(field),
         })),
         { divider: true },
         {
           id: 'sort-asc',
           label: 'Ascending',
-          icon: sortOrder === 'asc' ? <Check size={15} className="text-purple-500" /> : undefined,
+          checked: sortOrder === 'asc',
           onClick: () => setSortOrder('asc'),
         },
         {
           id: 'sort-desc',
           label: 'Descending',
-          icon: sortOrder === 'desc' ? <Check size={15} className="text-purple-500" /> : undefined,
+          checked: sortOrder === 'desc',
           onClick: () => setSortOrder('desc'),
         },
       ],
@@ -2063,7 +2087,7 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
       GROUP_BY_OPTIONS.map(({ value, label }) => ({
         id: `group-${value}`,
         label,
-        icon: groupBy === value ? <Check size={15} className="text-purple-500" /> : undefined,
+        checked: groupBy === value,
         onClick: () => setGroupBy(value),
       })),
       'Group By'
@@ -2330,13 +2354,15 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
             {
               id: 'view-grid',
               label: 'Grid',
-              icon: viewMode === 'grid' ? <Check size={15} className="text-purple-400" /> : <Grid size={15} className="text-slate-400" />,
+              icon: <Grid size={15} className="text-slate-400" />,
+              checked: viewMode === 'grid',
               onClick: () => setViewMode('grid'),
             },
             {
               id: 'view-list',
               label: 'List',
-              icon: viewMode === 'list' ? <Check size={15} className="text-purple-400" /> : <List size={15} className="text-slate-400" />,
+              icon: <List size={15} className="text-slate-400" />,
+              checked: viewMode === 'list',
               onClick: () => setViewMode('list'),
             },
           ],
@@ -2349,20 +2375,20 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
             ...SORT_FIELD_OPTIONS.map(({ field, label }) => ({
               id: `ctx-sort-${field}`,
               label,
-              icon: sortField === field ? <Check size={15} className="text-purple-400" /> : undefined,
+              checked: sortField === field,
               onClick: () => setSortField(field),
             })),
             { divider: true },
             {
               id: 'ctx-sort-asc',
               label: 'Ascending',
-              icon: sortOrder === 'asc' ? <Check size={15} className="text-purple-400" /> : undefined,
+              checked: sortOrder === 'asc',
               onClick: () => setSortOrder('asc'),
             },
             {
               id: 'ctx-sort-desc',
               label: 'Descending',
-              icon: sortOrder === 'desc' ? <Check size={15} className="text-purple-400" /> : undefined,
+              checked: sortOrder === 'desc',
               onClick: () => setSortOrder('desc'),
             },
           ],
@@ -2374,7 +2400,7 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
           submenu: GROUP_BY_OPTIONS.map(({ value, label }) => ({
             id: `ctx-group-${value}`,
             label,
-            icon: groupBy === value ? <Check size={15} className="text-purple-400" /> : undefined,
+            checked: groupBy === value,
             onClick: () => setGroupBy(value),
           })),
         },
@@ -2971,6 +2997,14 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
               title="Toggle Details Pane"
             >
               <Info className="w-4 h-4" />
+            </button>
+            <span className="h-4 w-[1px] bg-black/10 mx-0.5" />
+            <button
+              onClick={() => setIsAppSettingsOpen(true)}
+              className="p-1.5 rounded hover:bg-white/35 cursor-pointer"
+              title="File Explorer Settings"
+            >
+              <SettingsIcon className="w-4 h-4" />
             </button>
           </div>
         </div>
@@ -3708,6 +3742,13 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
         isOpen={!!activeOpenWithItem}
         onClose={() => setActiveOpenWithItem(null)}
         onSelectApp={(appKey, item) => void handleOpenWithApp(appKey, item, true)}
+      />
+
+      <AppSettingsModal
+        isOpen={isAppSettingsOpen}
+        onClose={() => setIsAppSettingsOpen(false)}
+        appId="fileManager"
+        appTitle="File Explorer"
       />
     </div>
   );

@@ -9,11 +9,13 @@ import { buildStandardMenus } from './standardMenus';
 import { MenuItem, separator } from '../../platform/menus/types';
 import { useWindowMenus } from '../../platform/menus/AppMenuContext';
 import PreferencesDialog from '../preferences/PreferencesDialog';
+import AppSettingsModal from '../preferences/AppSettingsModal';
 import Modal from '../../design-system/components/Modal';
 import { coversDockZone, useDockZoneStore } from '../taskbar/dockZone';
 import { useAppTheme } from '../../platform/theme/useAppTheme';
 import { themeChrome } from '../../platform/theme/themes';
-import { Settings, X } from 'lucide-react';
+import { AppRegistry } from '../../platform/registry/AppRegistry';
+import { Settings, SlidersHorizontal, X } from 'lucide-react';
 
 /** Screen space the dock occupies, which a window may not be dropped behind. */
 function dockDeduction(dockSize: string | undefined): number {
@@ -62,6 +64,16 @@ export default function AppWindow({
   const [isAboutOpen, setIsAboutOpen] = useState(false);
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
   const [isPreferencesOpen, setIsPreferencesOpen] = useState(false);
+  const [isAppSettingsOpen, setIsAppSettingsOpen] = useState(false);
+
+  // Every app declares its own settings schema in the registry — this is
+  // what gives it a dedicated, app-scoped settings screen (AppSettingsModal)
+  // instead of only the shared, genuinely-global "Preferences…" dialog.
+  // Editor is the one exception: it already has its own much richer,
+  // hand-built Settings page (gear icon in its Activity Bar), so a second,
+  // shallower "Editor Settings…" here would just be a confusing duplicate.
+  const appSettingsSchema = AppRegistry.getAppManifest(app.appId)?.settingsSchema;
+  const hasAppSettings = app.appId !== 'editor' && !!appSettingsSchema && appSettingsSchema.length > 0;
 
   // Menus contributed by the application running in this window.
   const appMenus = useWindowMenus(app.id);
@@ -128,6 +140,16 @@ export default function AppWindow({
       ...appEntries,
       ...(appEntries.length > 0 ? [separator('after-app')] : []),
       { kind: 'submenu' as const, id: windowMenu.id, label: windowMenu.label, items: windowMenu.items },
+      ...(hasAppSettings
+        ? [
+            {
+              id: 'app-settings',
+              label: `${app.title} Settings…`,
+              icon: SlidersHorizontal,
+              onSelect: () => setIsAppSettingsOpen(true),
+            } as MenuItem,
+          ]
+        : []),
       {
         id: 'preferences',
         label: 'Preferences…',
@@ -138,7 +160,7 @@ export default function AppWindow({
       separator('before-help'),
       { kind: 'submenu' as const, id: helpMenu.id, label: helpMenu.label, items: helpMenu.items },
     ];
-  }, [appMenus, app, windows, openAppWindow, onMinimize, onMaximize, onClose, onFocus]);
+  }, [appMenus, app, windows, openAppWindow, onMinimize, onMaximize, onClose, onFocus, hasAppSettings]);
 
   const handleTitleBarContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -563,6 +585,15 @@ export default function AppWindow({
         appId={app.appId}
         appTitle={app.title}
       />
+
+      {hasAppSettings && (
+        <AppSettingsModal
+          isOpen={isAppSettingsOpen}
+          onClose={() => setIsAppSettingsOpen(false)}
+          appId={app.appId}
+          appTitle={app.title}
+        />
+      )}
 
       {/* ABOUT APP MODAL */}
       <Modal
