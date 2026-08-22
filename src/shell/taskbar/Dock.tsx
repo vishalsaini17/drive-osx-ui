@@ -70,19 +70,35 @@ export default function Dock() {
   const gestureWindowId = useDockZoneStore((state) => state.gestureWindowId);
   const gestureCoversDock = useDockZoneStore((state) => state.gestureCoversDock);
 
+  /**
+   * Which actual window a click on `appId`'s dock icon should act on: the
+   * currently focused window if it belongs to this app, otherwise this app's
+   * most recently focused open window, otherwise (nothing open) the app id
+   * itself — `openAppWindow`/`toggleWindow` create/open its primary window
+   * for that case, same as before multiple windows per app existed.
+   */
+  const resolveDockTargetId = (appId: string): string => {
+    const group = windows.filter((w) => w.appId === appId && w.isOpen);
+    if (group.length === 0) return appId;
+    const activeInGroup = group.find((w) => w.id === activeWindowId);
+    if (activeInGroup) return activeInGroup.id;
+    return [...group].sort((a, b) => b.zIndex - a.zIndex)[0].id;
+  };
+
   const handleDockIconContextMenu = (e: React.MouseEvent, app: any) => {
     e.preventDefault();
     e.stopPropagation();
 
     const isPinnedApp = isPinned(app.id);
     const isOpen = app.isOpen;
+    const targetId = resolveDockTargetId(app.id);
 
     const items: ContextMenuItem[] = [
       {
         id: 'open',
         label: isOpen ? `Show ${app.title}` : `Open ${app.title}`,
         onClick: () => {
-          toggleWindow(app.id);
+          toggleWindow(targetId);
         },
       },
       {
@@ -98,7 +114,7 @@ export default function Dock() {
           id: 'minimize',
           label: 'Minimize Window',
           onClick: () => {
-            handleMinimizeWindow(app.id);
+            handleMinimizeWindow(targetId);
           },
         },
         {
@@ -106,7 +122,7 @@ export default function Dock() {
           label: 'Quit / Close',
           danger: true,
           onClick: () => {
-            handleCloseWindow(app.id);
+            handleCloseWindow(targetId);
           },
         },
       ] : []),
@@ -157,15 +173,34 @@ export default function Dock() {
   const dockSize = settings.dockSize || 'md';
 
   /**
+   * One entry per *app*, not per open window — an app can now have several
+   * windows open at once (`openAppWindow(appId, { forceNewWindow: true })`),
+   * but it still gets exactly one dock icon, matching every real desktop.
+   * The representative is the app's primary window (`id === appId`, always
+   * present) so its stored geometry/iconName/title are the canonical ones;
+   * `isOpen` is true if *any* window of that app is open.
+   */
+  const appWindows = React.useMemo(() => {
+    const primaryByApp = new Map<string, typeof windows[number]>();
+    const openByApp = new Map<string, boolean>();
+    for (const w of windows) {
+      openByApp.set(w.appId, (openByApp.get(w.appId) ?? false) || w.isOpen);
+      const existing = primaryByApp.get(w.appId);
+      if (!existing || w.id === w.appId) primaryByApp.set(w.appId, w);
+    }
+    return Array.from(primaryByApp.values()).map((w) => ({ ...w, isOpen: openByApp.get(w.appId) ?? w.isOpen }));
+  }, [windows]);
+
+  /**
    * The dock's stored lists depend on *which* applications exist, never on
    * their geometry. The store replaces the whole `windows` array whenever any
    * window changes, so keying these effects on the array itself re-ran them —
    * `localStorage` reads included — for changes they do not care about.
    */
-  const appIdSignature = windows.map((w) => w.id).join('|');
+  const appIdSignature = appWindows.map((w) => w.id).join('|');
 
   useEffect(() => {
-    const otherAppIds = windows
+    const otherAppIds = appWindows
       .filter((w) => w.id !== 'launcher')
       .map((w) => w.id);
     const savedPinned = StorageService.get<string[] | null>('dock-pinned-apps', null);
@@ -212,7 +247,7 @@ export default function Dock() {
 
   useEffect(() => {
     const savedSequence = StorageService.get<string[]>('dock-app-sequence', []);
-    const otherAppIds = windows.filter(w => w.id !== 'launcher').map(w => w.id);
+    const otherAppIds = appWindows.filter(w => w.id !== 'launcher').map(w => w.id);
 
     const merged = [...savedSequence];
     otherAppIds.forEach(id => {
@@ -372,7 +407,7 @@ export default function Dock() {
   const paddingWidth = paddingWidths[dockSize] || paddingWidths.md;
   const outerGapWidth = dockSize === 'sm' ? 6 : (dockSize === 'md' ? 10 : 12);
 
-  const otherAppsSorted = [...windows.filter(w => w.id !== 'launcher')].sort((a, b) => {
+  const otherAppsSorted = [...appWindows.filter(w => w.id !== 'launcher')].sort((a, b) => {
     const indexA = dockAppOrder.indexOf(a.id);
     const indexB = dockAppOrder.indexOf(b.id);
     if (indexA === -1 && indexB === -1) return 0;
@@ -394,10 +429,10 @@ export default function Dock() {
   }
 
   const needsOverflow = totalApps > maxVisibleTotal;
-  let visibleApps: typeof windows = [];
-  let overflowApps: typeof windows = [];
+  let visibleApps: typeof appWindows = [];
+  let overflowApps: typeof appWindows = [];
 
-  const launcherApp = windows.find(w => w.id === 'launcher');
+  const launcherApp = appWindows.find(w => w.id === 'launcher');
 
   if (!needsOverflow) {
     visibleApps = [
@@ -469,7 +504,7 @@ export default function Dock() {
           {showAppDirectoryPopup && (
             <ApplicationMenuPopup
               onClose={() => setShowAppDirectoryPopup(false)}
-              apps={windows}
+              apps={appWindows}
               toggleWindow={toggleWindow}
               pinnedAppIds={pinnedAppIds}
               togglePin={togglePin}
@@ -541,7 +576,7 @@ export default function Dock() {
                 <motion.button
                   id={`dock-icon-${app.id}`}
                   onClick={() => {
-                    toggleWindow(app.id);
+                    toggleWindow(resolveDockTargetId(app.id));
                     setShowMorePopup(false);
                     setShowAppDirectoryPopup(false);
                     setShowPopup(false);
@@ -560,9 +595,12 @@ export default function Dock() {
                 {isActive && (
                   <span
                     /* Accent, and wider when focused: which window is running
-                       and which one has focus become two different readings. */
+                       and which one has focus become two different readings.
+                       Checked against every window of this app, not just its
+                       primary one — the focused window may be a second/third
+                       instance spawned via "New Window". */
                     className={`absolute rounded-full transition-all duration-300 ${activeSizes.dotBottom} ${
-                      activeWindowId === app.id ? 'w-4 h-1' : `${activeSizes.dot}`
+                      windows.some((w) => w.appId === app.id && w.id === activeWindowId) ? 'w-4 h-1' : `${activeSizes.dot}`
                     }`}
                     style={{
                       backgroundColor: shell.accentColor,

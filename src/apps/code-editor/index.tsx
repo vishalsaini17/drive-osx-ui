@@ -7,11 +7,9 @@ import { useAppMenu } from '../../platform/menus/AppMenuContext';
 import { separator } from '../../platform/menus/types';
 import { useContextMenuStore } from '../../shell/context-menu/contextMenuStore';
 import AppShell from '../../design-system/components/AppShell';
-import { FolderOpen } from 'lucide-react';
+import { FolderOpen, FileCode2, FilePlus, FolderInput } from 'lucide-react';
 import EditorTabBar from './components/EditorTabBar';
 import MonacoPane from './components/MonacoPane';
-import OpenFileModal from './components/OpenFileModal';
-import OpenFolderModal from './components/OpenFolderModal';
 import ExplorerSidebar from './components/ExplorerSidebar';
 import SearchPanel from './components/SearchPanel';
 import ActivityBar, { ActivityPanel } from './components/ActivityBar';
@@ -40,7 +38,7 @@ let untitledCounter = 0;
 const SETTINGS_TAB_ID = '__settings__';
 const DEFAULT_FONT_FAMILY = 'ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, monospace';
 
-export default function CodeEditor() {
+export default function CodeEditor({ windowId = 'editor' }: { windowId?: string }) {
   const files = useSystemStore((s) => s.files);
   const setFiles = useSystemStore((s) => s.setFiles);
   const settings = useSystemStore((s) => s.settings);
@@ -54,14 +52,17 @@ export default function CodeEditor() {
   const editorFileName = useSystemStore((s) => s.editorFileName);
   const editorFileContent = useSystemStore((s) => s.editorFileContent);
   const editorCurrentFolderId = useSystemStore((s) => s.editorCurrentFolderId);
+  const consumePendingEditorWindowFile = useSystemStore((s) => s.consumePendingEditorWindowFile);
+  const requestFilePick = useSystemStore((s) => s.requestFilePick);
+  const filePickerResult = useSystemStore((s) => s.filePickerResults[windowId]);
+  const consumeFilePickerResult = useSystemStore((s) => s.consumeFilePickerResult);
+  const focusWindow = useSystemStore((s) => s.focusWindow);
 
   const prefs = (settings.appPreferences?.editor ?? {}) as {
     wordWrap?: boolean;
     editorTheme?: EditorThemeName;
     tabSize?: string;
     autoSave?: boolean;
-    openFolderId?: string | null;
-    openFolderName?: string;
     breadcrumbsEnabled?: boolean;
     minimapEnabled?: boolean;
     lineNumbersEnabled?: boolean;
@@ -97,9 +98,14 @@ export default function CodeEditor() {
   const prettierTrailingComma = prefs.prettierTrailingComma ?? 'es5';
   const prettierPrintWidth = prefs.prettierPrintWidth ?? 80;
   const eslintEnabled = prefs.eslintEnabled ?? true;
-  // Undefined = no folder open yet (distinct from `null`, which is the
-  // real "Home" root folder — Open Folder can legitimately target either).
-  const openFolder = prefs.openFolderName !== undefined ? { id: prefs.openFolderId ?? null, name: prefs.openFolderName } : null;
+  // Which folder this window's Explorer/Search sidebars show, if any. Kept as
+  // local state rather than a persisted preference: a persisted "last open
+  // folder" meant every fresh launch of the editor silently reopened
+  // whatever folder someone had open last, instead of starting blank the way
+  // a newly opened window should. `null` here means "no folder open yet" —
+  // Open Folder can legitimately target the real "Home" root too, which is
+  // represented by `{ id: null, name: 'Home' }`, not by this being null.
+  const [openFolder, setOpenFolder] = useState<{ id: string | null; name: string } | null>(null);
 
   const setEditorPref = useCallback(
     (patch: Record<string, unknown>) => {
@@ -113,11 +119,13 @@ export default function CodeEditor() {
 
   const [tabs, setTabs] = useState<EditorTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
-  const [isOpenModalOpen, setIsOpenModalOpen] = useState(false);
-  const [isOpenFolderModalOpen, setIsOpenFolderModalOpen] = useState(false);
   const [recentFiles, setRecentFiles] = useState<{ id: string; name: string; folderId: string | null }[]>([]);
   const [activePanel, setActivePanel] = useState<ActivityPanel>('explorer');
-  const [sidebarVisible, setSidebarVisible] = useState(true);
+  // Collapsed by default — every window (a fresh launch, or an extra one
+  // opened via "New Window") starts with nothing to show here yet, so
+  // leading with the empty Explorer panel open just wastes space until the
+  // user opens a folder or clicks Explorer themselves.
+  const [sidebarVisible, setSidebarVisible] = useState(false);
   const [cursorPosition, setCursorPosition] = useState({ lineNumber: 1, column: 1 });
   const [markerCounts, setMarkerCounts] = useState({ errors: 0, warnings: 0 });
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -181,33 +189,45 @@ export default function CodeEditor() {
     [pushRecent]
   );
 
-  // File Explorer double-click / "Open With", and the terminal's `edit <file>`
-  // alias, both request a file be opened by writing these same systemStore
-  // fields and calling `openAppWindow('editor')` — unchanged from the old
-  // text-editor app, so both integrations keep working with no changes on
-  // their end.
+  // This app's one preallocated primary window — the id every other window
+  // in the platform shares with its own appId. A second/third editor window
+  // (spawned via "New Window", or via File Explorer's "Open With…") gets a
+  // one-off `windowId` instead, and must never react to the fields below:
+  // those target "whichever editor window is already open" (the primary),
+  // and a fresh window reacting to them too would pull in whatever file the
+  // primary happens to have last requested, not start with nothing.
+  const isPrimaryWindow = windowId === 'editor';
+
+  // File Explorer double-click and the terminal's `edit <file>` alias both
+  // request a file be opened by writing these same systemStore fields and
+  // calling `openAppWindow('editor')` — unchanged from the old text-editor
+  // app, so both integrations keep working with no changes on their end.
+  // Only the primary window ever consumes them (see `isPrimaryWindow` above).
   useEffect(() => {
-    if (!editorFileId) return;
+    if (!isPrimaryWindow || !editorFileId) return;
     const signature = `${editorFileId}:${editorFileName}`;
     if (lastOpenedSignatureRef.current === signature) return;
     lastOpenedSignatureRef.current = signature;
     openTab(editorFileId, editorFileName ?? 'Untitled', editorFileContent, editorCurrentFolderId);
-  }, [editorFileId, editorFileName, editorFileContent, editorCurrentFolderId, openTab]);
+  }, [isPrimaryWindow, editorFileId, editorFileName, editorFileContent, editorCurrentFolderId, openTab]);
 
-  // Nothing requested via the store and no tabs yet: start blank, same as
-  // opening any other document app fresh. Guarded against StrictMode's dev
-  // double-invoke of mount effects — without the ref, two blank tabs get
-  // created (module-level `untitledCounter` has no way to know the second
-  // call is a re-run, not a second real mount).
+  // On mount, this window may have a specific file waiting for it (spawned
+  // via File Explorer's "Open With…", which always opens a new window rather
+  // than reusing whichever one is already showing something else) — if so,
+  // open it. Otherwise the window starts with no tabs at all: a welcome
+  // screen is shown instead (see the render below) rather than manufacturing
+  // a throwaway "Untitled-N" tab nobody asked for. Guarded against
+  // StrictMode's dev double-invoke of mount effects, which would otherwise
+  // consume the pending file twice.
   const hasSeededRef = useRef(false);
   useEffect(() => {
     if (hasSeededRef.current) return;
     hasSeededRef.current = true;
-    if (tabs.length === 0 && !editorFileId) {
-      untitledCounter += 1;
-      openTab(null, `Untitled-${untitledCounter}`, '', null);
+    const pending = consumePendingEditorWindowFile(windowId);
+    if (pending) {
+      openTab(pending.fileId, pending.name, pending.content, pending.folderId);
     }
-    // Deliberately mount-only: this seeds the very first tab, not a sync.
+    // Deliberately mount-only: this seeds at most one tab, not a sync.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -460,27 +480,51 @@ export default function CodeEditor() {
     [openTab]
   );
 
-  const handleOpenFolder = useCallback(
-    (folder: { id: string | null; name: string }) => {
-      setEditorPref({ openFolderId: folder.id, openFolderName: folder.name });
-    },
-    [setEditorPref]
-  );
+  const handleOpenFolder = useCallback((folder: { id: string | null; name: string }) => {
+    setOpenFolder(folder);
+  }, []);
 
   const handleCloseFolder = useCallback(() => {
-    setEditorPref({ openFolderId: null, openFolderName: undefined });
-  }, [setEditorPref]);
-
-  const handleActivitySelect = useCallback((panel: ActivityPanel) => {
-    setActivePanel((current) => {
-      if (current === panel) {
-        setSidebarVisible((v) => !v);
-        return current;
-      }
-      setSidebarVisible(true);
-      return panel;
-    });
+    setOpenFolder(null);
   }, []);
+
+  // File > Open File…/Open Folder… launch the real File Manager app as a
+  // picker (`requestFilePick`) rather than a bespoke dialog. It resolves by
+  // writing into `filePickerResults[windowId]` and closing itself; this
+  // watches for that and acts on it here, in whichever window actually asked.
+  useEffect(() => {
+    if (!filePickerResult) return;
+    const result = consumeFilePickerResult(windowId);
+    if (!result) return;
+    focusWindow(windowId);
+    if (result.mode === 'file') {
+      void (async () => {
+        const full = await FileService.getFile(result.file.id);
+        openTab(result.file.id, result.file.name, full?.content ?? '', result.file.parentId);
+      })();
+    } else {
+      handleOpenFolder(result.folder);
+    }
+  }, [filePickerResult, windowId, consumeFilePickerResult, focusWindow, openTab, handleOpenFolder]);
+
+  // Clicking the already-active panel's icon collapses/expands the sidebar,
+  // same as VS Code's own Activity Bar; clicking a different one switches to
+  // it and makes sure it's shown. `setSidebarVisible` must not be called from
+  // inside `setActivePanel`'s updater — React (Strict Mode, dev only) invokes
+  // that updater twice to check for impurity, which turned this nested call
+  // into two real toggle dispatches that cancelled each other out, so the
+  // sidebar never appeared to collapse.
+  const handleActivitySelect = useCallback(
+    (panel: ActivityPanel) => {
+      if (activePanel === panel) {
+        setSidebarVisible((v) => !v);
+      } else {
+        setActivePanel(panel);
+        setSidebarVisible(true);
+      }
+    },
+    [activePanel]
+  );
 
   // A file/folder was created, renamed, deleted, or moved from inside the
   // Explorer tree. Resync the platform's shared file list for the folder
@@ -591,7 +635,7 @@ export default function CodeEditor() {
         handleNewTab();
       } else if (key === 'o') {
         event.preventDefault();
-        setIsOpenModalOpen(true);
+        requestFilePick(windowId, 'file');
       } else if (key === 'w') {
         event.preventDefault();
         if (activeTabId) handleCloseTab(activeTabId);
@@ -620,14 +664,14 @@ export default function CodeEditor() {
     ed?.focus();
   };
 
-  useAppMenu('editor', [
+  useAppMenu(windowId, [
     {
       id: 'file',
       label: 'File',
       items: [
         { id: 'new', label: 'New Text File', shortcut: 'Ctrl+N', onSelect: handleNewTab },
-        { id: 'open', label: 'Open File…', shortcut: 'Ctrl+O', onSelect: () => setIsOpenModalOpen(true) },
-        { id: 'open-folder', label: 'Open Folder…', onSelect: () => setIsOpenFolderModalOpen(true) },
+        { id: 'open', label: 'Open File…', shortcut: 'Ctrl+O', onSelect: () => requestFilePick(windowId, 'file') },
+        { id: 'open-folder', label: 'Open Folder…', onSelect: () => requestFilePick(windowId, 'folder') },
         recentFiles.length > 0
           ? {
               kind: 'submenu' as const,
@@ -672,7 +716,7 @@ export default function CodeEditor() {
         { id: 'close-editor', label: 'Close Editor', shortcut: 'Ctrl+W', disabled: !activeTabId, onSelect: () => activeTabId && handleCloseTab(activeTabId) },
         { id: 'close-all', label: 'Close All Editors', disabled: tabs.length === 0, onSelect: handleCloseAllTabs },
         { id: 'close-folder', label: 'Close Folder', disabled: !openFolder, onSelect: handleCloseFolder },
-        { id: 'close-window', label: 'Close Window', onSelect: () => handleCloseWindow('editor') },
+        { id: 'close-window', label: 'Close Window', onSelect: () => handleCloseWindow(windowId) },
       ],
     },
     {
@@ -796,14 +840,23 @@ export default function CodeEditor() {
                   onOpenFile={(f) => void handleSelectOpenFile(f)}
                   onCloseFolder={handleCloseFolder}
                   onMutated={handleExplorerMutated}
-                  onRootRenamed={(newName) => setEditorPref({ openFolderName: newName })}
+                  onRootRenamed={(newName) => setOpenFolder((prev) => (prev ? { ...prev, name: newName } : prev))}
                 />
               ) : (
                 <div className="flex-1 flex flex-col items-center justify-center gap-3 px-5 text-center">
                   <FolderOpen className="w-6 h-6 text-[var(--wb-fg)]/20" />
                   <p className="text-[12px] text-[var(--wb-fg)]/40">You have not yet opened a folder.</p>
                   <button
-                    onClick={() => setIsOpenFolderModalOpen(true)}
+                    onClick={(e) => {
+                      // The window container's own onClick refocuses this
+                      // window on every click inside it — harmless normally,
+                      // but it would run *after* this handler opens and
+                      // focuses the picker window, stealing focus straight
+                      // back. Stopping it here is the same opt-out the
+                      // titlebar's own minimize/maximize/close buttons use.
+                      e.stopPropagation();
+                      requestFilePick(windowId, 'folder');
+                    }}
                     className="px-3 py-1.5 bg-[var(--wb-accent-soft)] hover:bg-[var(--wb-accent-hover)] text-[var(--wb-on-accent)] text-[12px] font-medium rounded cursor-pointer"
                   >
                     Open Folder
@@ -874,51 +927,84 @@ export default function CodeEditor() {
                   eslintEnabled={eslintEnabled}
                   onChange={setEditorPref}
                 />
+              ) : !activeTab ? (
+                <div className="w-full h-full flex flex-col items-center justify-center gap-5 text-center px-6">
+                  <FileCode2 className="w-14 h-14 text-[var(--wb-fg)]/15" />
+                  <div>
+                    <h2 className="text-lg font-semibold text-[var(--wb-fg)]/80">Welcome to the Editor</h2>
+                    <p className="text-[13px] text-[var(--wb-fg)]/40 mt-1">Open a file or folder to get started.</p>
+                  </div>
+                  <div className="flex items-center gap-2.5">
+                    <button
+                      onClick={handleNewTab}
+                      className="flex items-center gap-2 px-3.5 py-2 rounded-lg text-[12px] font-medium bg-[var(--wb-fg)]/5 hover:bg-[var(--wb-fg)]/10 text-[var(--wb-fg)]/70 cursor-pointer"
+                    >
+                      <FilePlus className="w-3.5 h-3.5" /> New File
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        // See the sidebar's "Open Folder" button for why this is needed.
+                        e.stopPropagation();
+                        requestFilePick(windowId, 'file');
+                      }}
+                      className="flex items-center gap-2 px-3.5 py-2 rounded-lg text-[12px] font-medium bg-[var(--wb-fg)]/5 hover:bg-[var(--wb-fg)]/10 text-[var(--wb-fg)]/70 cursor-pointer"
+                    >
+                      <FolderInput className="w-3.5 h-3.5" /> Open File…
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        requestFilePick(windowId, 'folder');
+                      }}
+                      className="flex items-center gap-2 px-3.5 py-2 rounded-lg text-[12px] font-medium bg-[var(--wb-accent-soft)] hover:bg-[var(--wb-accent-hover)] text-[var(--wb-on-accent)] cursor-pointer"
+                    >
+                      <FolderOpen className="w-3.5 h-3.5" /> Open Folder…
+                    </button>
+                  </div>
+                </div>
               ) : (
-                activeTab && (
-                  <MonacoPane
-                    tabId={activeTab.id}
-                    language={activeTab.language}
-                    defaultValue={contentRef.current.get(activeTab.id) ?? ''}
-                    theme={monacoTheme}
-                    wordWrap={wordWrap}
-                    tabSize={tabSize}
-                    insertSpaces={insertSpaces}
-                    minimapEnabled={minimapEnabled}
-                    lineNumbersEnabled={lineNumbersEnabled}
-                    renderWhitespace={renderWhitespace}
-                    fontSize={fontSize}
-                    fontFamily={fontFamily}
-                    onChange={(value) => handleChange(activeTab.id, value)}
-                    onEditorMount={(ed) => {
-                      editorInstanceRef.current = ed;
-                      // The shared editor unmounts while Settings is open
-                      // (this pane isn't rendered at all then) and remounts
-                      // fresh on return — the model itself persists (Monaco
-                      // keeps models independent of the view), but nothing
-                      // else re-triggers a lint pass on a plain remount, so
-                      // it's run explicitly here on every mount.
-                      ed.onDidDispose(() => {
-                        if (editorInstanceRef.current === ed) editorInstanceRef.current = null;
-                      });
-                      lintActiveModelRef.current();
-                      const pos = ed.getPosition();
-                      if (pos) setCursorPosition({ lineNumber: pos.lineNumber, column: pos.column });
-                      ed.onDidChangeCursorPosition((e) => setCursorPosition({ lineNumber: e.position.lineNumber, column: e.position.column }));
-                      // Overrides Monaco's built-in Shift+Alt+F binding so the
-                      // native shortcut (and the right-click "Format Document"
-                      // entry Monaco shows once an action owns this id/keybinding)
-                      // routes through Prettier the same way the Edit menu's
-                      // "Format Document" item does — one behavior, not two.
-                      ed.addAction({
-                        id: 'app.formatDocument',
-                        label: 'Format Document',
-                        keybindings: [monaco.KeyMod.Shift | monaco.KeyMod.Alt | monaco.KeyCode.KeyF],
-                        run: () => void formatActiveDocumentRef.current(),
-                      });
-                    }}
-                  />
-                )
+                <MonacoPane
+                  tabId={activeTab.id}
+                  language={activeTab.language}
+                  defaultValue={contentRef.current.get(activeTab.id) ?? ''}
+                  theme={monacoTheme}
+                  wordWrap={wordWrap}
+                  tabSize={tabSize}
+                  insertSpaces={insertSpaces}
+                  minimapEnabled={minimapEnabled}
+                  lineNumbersEnabled={lineNumbersEnabled}
+                  renderWhitespace={renderWhitespace}
+                  fontSize={fontSize}
+                  fontFamily={fontFamily}
+                  onChange={(value) => handleChange(activeTab.id, value)}
+                  onEditorMount={(ed) => {
+                    editorInstanceRef.current = ed;
+                    // The shared editor unmounts while Settings is open
+                    // (this pane isn't rendered at all then) and remounts
+                    // fresh on return — the model itself persists (Monaco
+                    // keeps models independent of the view), but nothing
+                    // else re-triggers a lint pass on a plain remount, so
+                    // it's run explicitly here on every mount.
+                    ed.onDidDispose(() => {
+                      if (editorInstanceRef.current === ed) editorInstanceRef.current = null;
+                    });
+                    lintActiveModelRef.current();
+                    const pos = ed.getPosition();
+                    if (pos) setCursorPosition({ lineNumber: pos.lineNumber, column: pos.column });
+                    ed.onDidChangeCursorPosition((e) => setCursorPosition({ lineNumber: e.position.lineNumber, column: e.position.column }));
+                    // Overrides Monaco's built-in Shift+Alt+F binding so the
+                    // native shortcut (and the right-click "Format Document"
+                    // entry Monaco shows once an action owns this id/keybinding)
+                    // routes through Prettier the same way the Edit menu's
+                    // "Format Document" item does — one behavior, not two.
+                    ed.addAction({
+                      id: 'app.formatDocument',
+                      label: 'Format Document',
+                      keybindings: [monaco.KeyMod.Shift | monaco.KeyMod.Alt | monaco.KeyCode.KeyF],
+                      run: () => void formatActiveDocumentRef.current(),
+                    });
+                  }}
+                />
               )}
             </div>
           </div>
@@ -932,8 +1018,6 @@ export default function CodeEditor() {
           warningCount={markerCounts.warnings}
         />
       </AppShell>
-      <OpenFileModal isOpen={isOpenModalOpen} onClose={() => setIsOpenModalOpen(false)} allFiles={files} onSelectFile={(f) => void handleSelectOpenFile(f)} />
-      <OpenFolderModal isOpen={isOpenFolderModalOpen} onClose={() => setIsOpenFolderModalOpen(false)} onOpenFolder={handleOpenFolder} />
     </div>
   );
 }

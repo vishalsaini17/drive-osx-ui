@@ -62,7 +62,7 @@ function describeError(error: unknown): string {
   return 'Something went wrong. Please try again.';
 }
 
-export default function Messenger() {
+export default function Messenger({ windowId = 'messenger' }: { windowId?: string }) {
   const currentUser = useSystemStore((state) => state.currentUser);
   const pendingConversationId = useSystemStore((state) => state.pendingConversationId);
   const consumePendingConversation = useSystemStore((state) => state.consumePendingConversation);
@@ -426,7 +426,7 @@ export default function Messenger() {
   // ---------------------------------------------------------------------
   // Menus
   // ---------------------------------------------------------------------
-  useAppMenu('messenger', [
+  useAppMenu(windowId, [
     {
       id: 'chat',
       label: 'Chat',

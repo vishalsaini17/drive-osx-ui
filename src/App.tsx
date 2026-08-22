@@ -445,7 +445,7 @@ function DesktopLayout() {
             showStatusBar={app.id !== 'launcher'}
           >
             {/* Render app dynamically using ApplicationRenderer */}
-            <ApplicationRenderer appId={app.id} />
+            <ApplicationRenderer appId={app.appId} windowId={app.id} />
           </AppWindow>
         ))}
         </AppMenuProvider>

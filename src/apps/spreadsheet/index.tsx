@@ -100,7 +100,7 @@ interface HistoryEntry {
   label: string;
 }
 
-export default function SpreadsheetApp() {
+export default function SpreadsheetApp({ windowId = 'spreadsheet' }: { windowId?: string }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const formulaInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1306,7 +1306,7 @@ export default function SpreadsheetApp() {
     { format: 'number', icon: <HashIcon size={14} />, title: 'Number with separators' },
   ];
 
-  useAppMenu('spreadsheet', [
+  useAppMenu(windowId, [
     {
       id: 'file',
       label: 'File',

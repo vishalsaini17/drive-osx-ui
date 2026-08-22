@@ -29,7 +29,7 @@ import OpenBookModal from './components/OpenBookModal';
 
 type BookMetaState = Pick<BookDocument, 'metadata' | 'defaultPageSetup' | 'headers' | 'footers' | 'assets'>;
 
-export default function WordBook() {
+export default function WordBook({ windowId = 'wordbook' }: { windowId?: string }) {
   const files = useSystemStore((state) => state.files);
   const setFiles = useSystemStore((state) => state.setFiles);
   const settings = useSystemStore((state) => state.settings);
@@ -251,7 +251,7 @@ export default function WordBook() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [handleSave, handleSaveAs, handleNew]);
 
-  useAppMenu('wordbook', [
+  useAppMenu(windowId, [
     {
       id: 'file',
       label: 'File',

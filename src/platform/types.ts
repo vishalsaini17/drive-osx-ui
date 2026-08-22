@@ -88,8 +88,21 @@ export const DEFAULT_WORLD_CITIES: WorldCity[] = [
   },
 ];
 
+/** What a File Manager window opened as a picker (see `requestFilePick`) hands back to whichever window asked for it. */
+export type FilePickerResult =
+  | { mode: 'file'; file: { id: string; name: string; parentId: string | null } }
+  | { mode: 'folder'; folder: { id: string | null; name: string } };
+
 export interface WindowState {
   id: string;
+  /**
+   * The app this window belongs to (an `AppManifest.id`). Equal to `id` for
+   * every app's one preallocated primary window; a second, third, ... window
+   * of the same app (spawned via `openAppWindow(appId, { forceNewWindow: true })`)
+   * gets its own unique `id` but shares `appId`, so manifest-derived data
+   * (icon, per-app preferences) still resolves correctly for it.
+   */
+  appId: string;
   title: string;
   iconName: string;
   isOpen: boolean;

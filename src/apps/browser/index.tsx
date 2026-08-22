@@ -10,7 +10,7 @@ interface TabState {
   historyIndex: number;
 }
 
-export default function WebBrowser() {
+export default function WebBrowser({ windowId = 'browser' }: { windowId?: string }) {
   const notifyApiError = useSystemStore((state) => state.notifyApiError);
   const browserPrefs = useSystemStore((state) => state.settings.appPreferences?.browser);
   const homepage = browserPrefs?.homepage || 'https://duckduckgo.com';
@@ -138,7 +138,7 @@ export default function WebBrowser() {
   };
 
 
-  useAppMenu('browser', [
+  useAppMenu(windowId, [
     {
       id: 'file',
       label: 'File',

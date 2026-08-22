@@ -60,7 +60,7 @@ const TERMINAL_THEMES = [
   { id: 'obsidian', name: 'Mac Obsidian', bg: 'bg-[#181825]', text: 'text-slate-100', border: 'border-white/10', prompt: 'text-blue-400', headerBg: 'bg-[#11111b]' },
 ];
 
-export default function Terminal() {
+export default function Terminal({ windowId = 'terminal' }: { windowId?: string }) {
   const settings = useSystemStore((state) => state.settings);
   const setSettings = useSystemStore((state) => state.setSettings);
   const updateAppPreference = useSystemStore((state) => state.updateAppPreference);
@@ -1354,7 +1354,7 @@ export default function Terminal() {
   };
 
 
-  useAppMenu('terminal', [
+  useAppMenu(windowId, [
     {
       id: 'shell',
       label: 'Shell',

@@ -9,7 +9,7 @@ import HistoryPanel from './components/HistoryPanel';
 import { useAppMenu } from '../../platform/menus/AppMenuContext';
 import { separator } from '../../platform/menus/types';
 
-export default function CalculatorApp() {
+export default function CalculatorApp({ windowId = 'calculator' }: { windowId?: string }) {
   const [mode, setMode] = useState<CalculatorMode>('basic');
   const [display, setDisplay] = useState<string>('0');
   const [expression, setExpression] = useState<string>('');
@@ -290,7 +290,7 @@ export default function CalculatorApp() {
   };
 
 
-  useAppMenu('calculator', [
+  useAppMenu(windowId, [
     {
       id: 'edit',
       label: 'Edit',

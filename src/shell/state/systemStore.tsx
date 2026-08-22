@@ -1,7 +1,7 @@
 import React from 'react';
 import { create } from 'zustand';
-import { WindowState, FileItem, ChatMessage, SystemSettings, User, WorldCity, DEFAULT_WORLD_CITIES, CalendarEvent, SystemNotification } from '../../platform/types';
-import { AppRegistry } from '../../platform/registry/AppRegistry';
+import { WindowState, FileItem, ChatMessage, SystemSettings, User, WorldCity, DEFAULT_WORLD_CITIES, CalendarEvent, SystemNotification, FilePickerResult } from '../../platform/types';
+import { AppRegistry, AppManifest } from '../../platform/registry/AppRegistry';
 import { StorageService } from '../../platform/storage/StorageService';
 import { ApiService } from '../../platform/api/ApiService';
 import { FileService } from '../../platform/files/FileService';
@@ -73,6 +73,26 @@ interface SystemState {
   editorFileName: string | null;
   editorFileContent: string;
   editorCurrentFolderId: string | null;
+  /**
+   * Files requested into a brand-new (not reused) editor window, keyed by
+   * that window's own unique id — unlike `editorFileId` above, which targets
+   * whichever editor window is already open. A window consumes its own entry
+   * once, on mount, via `consumePendingEditorWindowFile`.
+   */
+  pendingEditorWindowFiles: Record<string, { fileId: string; name: string; content: string; folderId: string | null }>;
+  /**
+   * A File Manager window opened as a picker (`requestFilePick`) reads its own
+   * entry once, on mount, via `consumeFilePickerRequest` — keyed by that
+   * picker window's own unique id, same pattern as `pendingEditorWindowFiles`.
+   */
+  pendingFilePickerRequests: Record<string, { mode: 'file' | 'folder'; requesterWindowId: string }>;
+  /**
+   * What a picker resolved to, keyed by the *requesting* window's id (not the
+   * picker's — the picker window is gone by the time this is read). The
+   * requester watches its own entry and consumes it via
+   * `consumeFilePickerResult`.
+   */
+  filePickerResults: Record<string, FilePickerResult>;
   /** The folder id File Explorer's window currently reflects in its URL (`/folder/:folderId`), null for `/folder` (root). */
   fileManagerCurrentFolderId: string | null;
   messages: ChatMessage[];
@@ -139,6 +159,18 @@ interface SystemState {
   handleMoveWindow: (id: string, x: number, y: number) => void;
   handleResizeWindow: (id: string, w: number, h: number) => void;
   openTextFileInEditor: (fileId: string, name: string, content: string, folderId?: string | null) => void;
+  /** Always opens a fresh editor window for this file, never the one already showing something else. Returns that window's id. */
+  openTextFileInNewEditorWindow: (fileId: string, name: string, content: string, folderId?: string | null) => string;
+  /** Reads and clears one window's pending file request (see `pendingEditorWindowFiles`). */
+  consumePendingEditorWindowFile: (windowId: string) => { fileId: string; name: string; content: string; folderId: string | null } | null;
+  /** Opens a fresh File Manager window in picker mode for `requesterWindowId`. Returns the picker window's id. */
+  requestFilePick: (requesterWindowId: string, mode: 'file' | 'folder') => string;
+  /** Reads and clears one picker window's request (see `pendingFilePickerRequests`). */
+  consumeFilePickerRequest: (pickerWindowId: string) => { mode: 'file' | 'folder'; requesterWindowId: string } | null;
+  /** Delivers a picker's result to the window that requested it, then closes the picker window. */
+  resolveFilePicker: (pickerWindowId: string, requesterWindowId: string, result: FilePickerResult) => void;
+  /** Reads and clears a picker result waiting for this window (see `filePickerResults`). */
+  consumeFilePickerResult: (requesterWindowId: string) => FilePickerResult | null;
   setEditorCurrentFolderId: (folderId: string | null) => void;
   setFileManagerCurrentFolderId: (folderId: string | null) => void;
   resolveDefaultFolderId: (folderName: string) => string | null;
@@ -152,11 +184,62 @@ interface SystemState {
   setMessages: (updater: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[])) => void;
   setFiles: (updater: FileItem[] | ((prev: FileItem[]) => FileItem[])) => void;
   playClickSound: () => void;
-  openAppWindow: (id: string) => void;
+  /** Opens (or focuses) an app's window. `forceNewWindow` always spawns an additional, independent window instead. Returns the id of the window that ended up open/focused. */
+  openAppWindow: (id: string, options?: { forceNewWindow?: boolean }) => string;
   /** Last size and position per app, used when 'remember layout' is on. */
   rememberedGeometry?: Record<string, { x: number; y: number; w: number; h: number }>;
   rememberWindowGeometry: (id: string) => void;
   clampWindowsToViewport: () => void;
+}
+
+/**
+ * Where a newly created window for `manifest` should land — shared by the
+ * "app has no window yet" branch of `openAppWindow` and by its
+ * `forceNewWindow` branch, which used to duplicate this placement logic.
+ * `geometryKey` is `manifest.id` for an app's one primary window, or the
+ * fresh instance id for an extra spawned window (which never has a
+ * remembered geometry of its own, so it falls through to computed placement).
+ */
+function computeNewWindowGeometry(
+  state: Pick<SystemState, 'settings' | 'windows' | 'rememberedGeometry'>,
+  manifest: AppManifest,
+  geometryKey: string
+): { x: number; y: number; w: number; h: number } {
+  const prefs = state.settings;
+
+  let w = manifest.defaultWindow.w;
+  let h = manifest.defaultWindow.h;
+  if (prefs.defaultWindowMode === 'custom') {
+    if (prefs.defaultWindowWidth) w = Math.max(manifest.defaultWindow.minW, prefs.defaultWindowWidth);
+    if (prefs.defaultWindowHeight) h = Math.max(manifest.defaultWindow.minH, prefs.defaultWindowHeight);
+  }
+
+  let x = manifest.defaultWindow.x;
+  let y = manifest.defaultWindow.y;
+  const placement = prefs.defaultWindowPlacement ?? 'app-default';
+  if (placement === 'center') {
+    x = Math.max(0, Math.round((window.innerWidth - w) / 2));
+    y = Math.max(0, Math.round((window.innerHeight - h - 80) / 2));
+  } else if (placement === 'cascade') {
+    // Each additional window steps down and to the right.
+    const step = state.windows.filter((win) => win.isOpen).length % 8;
+    x = 60 + step * 28;
+    y = 50 + step * 28;
+  } else if (placement === 'custom') {
+    x = prefs.defaultWindowX ?? x;
+    y = prefs.defaultWindowY ?? y;
+  }
+
+  // A remembered geometry wins over the computed placement.
+  const remembered = prefs.rememberWindowGeometry ? state.rememberedGeometry?.[geometryKey] : undefined;
+  if (remembered) {
+    x = remembered.x;
+    y = remembered.y;
+    w = remembered.w;
+    h = remembered.h;
+  }
+
+  return { x, y, w, h };
 }
 
 export const useSystemStore = create<SystemState>((set, get) => ({
@@ -194,6 +277,7 @@ export const useSystemStore = create<SystemState>((set, get) => ({
   activeWindowId: null,
   windows: AppRegistry.getAppManifests().map((manifest, index) => ({
     id: manifest.id,
+    appId: manifest.id,
     title: manifest.title,
     iconName: manifest.iconName,
     isOpen: false,
@@ -213,6 +297,9 @@ export const useSystemStore = create<SystemState>((set, get) => ({
   editorFileName: null,
   editorFileContent: '',
   editorCurrentFolderId: null,
+  pendingEditorWindowFiles: {},
+  pendingFilePickerRequests: {},
+  filePickerResults: {},
   fileManagerCurrentFolderId: null,
   messages: [
     {
@@ -701,7 +788,16 @@ export const useSystemStore = create<SystemState>((set, get) => ({
     get().playClickSound();
     if (get().settings.rememberWindowGeometry) get().rememberWindowGeometry(id);
     set((state) => {
-      let updated = state.windows.map(w => w.id === id ? { ...w, isOpen: false } : w);
+      const closing = state.windows.find(w => w.id === id);
+      // A window spawned via `openAppWindow(appId, { forceNewWindow: true })`
+      // (its `id` differs from its `appId`) is an extra instance, not the
+      // app's one preallocated slot — drop it outright on close instead of
+      // just hiding it, so repeatedly opening/closing new windows doesn't
+      // pile up dead entries in `windows` forever.
+      const isSecondaryInstance = !!closing && closing.id !== closing.appId;
+      let updated = isSecondaryInstance
+        ? state.windows.filter(w => w.id !== id)
+        : state.windows.map(w => w.id === id ? { ...w, isOpen: false } : w);
 
       const openWindows = updated.filter(w => w.isOpen);
       let nextActiveId: string | null = null;
@@ -727,6 +823,24 @@ export const useSystemStore = create<SystemState>((set, get) => ({
       const activeApp = updated.find(w => w.id === state.activeWindowId);
       const isCurrentActiveClosed = !activeApp || !activeApp.isOpen || state.activeWindowId === id;
 
+      let rest: Partial<SystemState> = {};
+      if (isSecondaryInstance) {
+        // Drop this instance's leftovers so they don't accumulate across a
+        // long session: a remembered geometry entry (keyed by this window's
+        // one-off id, never reused), any file it was asked to open but never
+        // got around to consuming, and — if this was a File Manager window
+        // opened as a picker that's being closed via its own titlebar X
+        // rather than Select/Cancel — its unconsumed picker request.
+        const { [id]: _removedGeometry, ...restGeometry } = state.rememberedGeometry ?? {};
+        const { [id]: _removedPending, ...restPending } = state.pendingEditorWindowFiles;
+        const { [id]: _removedPickerRequest, ...restPickerRequests } = state.pendingFilePickerRequests;
+        rest = {
+          rememberedGeometry: restGeometry,
+          pendingEditorWindowFiles: restPending,
+          pendingFilePickerRequests: restPickerRequests,
+        };
+      }
+
       return {
         windows: updated,
         activeWindowId: isCurrentActiveClosed ? nextActiveId : state.activeWindowId,
@@ -735,6 +849,7 @@ export const useSystemStore = create<SystemState>((set, get) => ({
         // link) starts fresh at root instead of silently resuming wherever
         // this session last left off.
         ...(id === 'fileManager' ? { fileManagerCurrentFolderId: null } : null),
+        ...rest,
       };
     });
   },
@@ -796,52 +911,50 @@ export const useSystemStore = create<SystemState>((set, get) => ({
     });
   },
 
-  openAppWindow: (id) => {
+  openAppWindow: (id, options) => {
+    if (options?.forceNewWindow) {
+      const manifest = AppRegistry.getAppManifest(id);
+      if (!manifest) return id;
+      // Distinct from every app id and from any earlier instance id, so it
+      // never collides with the app's own primary window (id === appId) or
+      // a sibling instance spawned in this same session.
+      const instanceId = `${id}::${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+      set((state) => {
+        const prefs = state.settings;
+        const maximized = prefs.defaultWindowMode === 'maximized';
+        const { x, y, w, h } = computeNewWindowGeometry(state, manifest, instanceId);
+        const newWindow: WindowState = {
+          id: instanceId,
+          appId: id,
+          title: manifest.title,
+          iconName: manifest.iconName,
+          isOpen: true,
+          isMinimized: false,
+          isMaximized: maximized,
+          x, y, w, h,
+          minW: manifest.defaultWindow.minW,
+          minH: manifest.defaultWindow.minH,
+          zIndex: state.maxZIndex + 1,
+        };
+        return { windows: [...state.windows, newWindow], maxZIndex: state.maxZIndex + 1 };
+      });
+      get().focusWindow(instanceId);
+      get().clampWindowsToViewport();
+      return instanceId;
+    }
+
     set((state) => {
       const manifest = AppRegistry.getAppManifest(id);
       const existing = state.windows.find(w => w.id === id);
 
       if (!existing && manifest) {
-        // Window preferences override the application's own defaults.
         const prefs = state.settings;
         const maximized = prefs.defaultWindowMode === 'maximized';
+        const { x, y, w, h } = computeNewWindowGeometry(state, manifest, manifest.id);
 
-        let w = manifest.defaultWindow.w;
-        let h = manifest.defaultWindow.h;
-        if (prefs.defaultWindowMode === 'custom') {
-          if (prefs.defaultWindowWidth) w = Math.max(manifest.defaultWindow.minW, prefs.defaultWindowWidth);
-          if (prefs.defaultWindowHeight) h = Math.max(manifest.defaultWindow.minH, prefs.defaultWindowHeight);
-        }
-
-        let x = manifest.defaultWindow.x;
-        let y = manifest.defaultWindow.y;
-        const placement = prefs.defaultWindowPlacement ?? 'app-default';
-        if (placement === 'center') {
-          x = Math.max(0, Math.round((window.innerWidth - w) / 2));
-          y = Math.max(0, Math.round((window.innerHeight - h - 80) / 2));
-        } else if (placement === 'cascade') {
-          // Each additional window steps down and to the right.
-          const step = state.windows.filter((win) => win.isOpen).length % 8;
-          x = 60 + step * 28;
-          y = 50 + step * 28;
-        } else if (placement === 'custom') {
-          x = prefs.defaultWindowX ?? x;
-          y = prefs.defaultWindowY ?? y;
-        }
-
-        // A remembered geometry wins over the computed placement.
-        const remembered = prefs.rememberWindowGeometry
-          ? state.rememberedGeometry?.[manifest.id]
-          : undefined;
-        if (remembered) {
-          x = remembered.x;
-          y = remembered.y;
-          w = remembered.w;
-          h = remembered.h;
-        }
-
-        const newWindow = {
+        const newWindow: WindowState = {
           id: manifest.id,
+          appId: manifest.id,
           title: manifest.title,
           iconName: manifest.iconName,
           isOpen: true,
@@ -886,6 +999,7 @@ export const useSystemStore = create<SystemState>((set, get) => ({
     });
     get().focusWindow(id);
     get().clampWindowsToViewport();
+    return id;
   },
 
   clampWindowsToViewport: () => {
@@ -900,7 +1014,7 @@ export const useSystemStore = create<SystemState>((set, get) => ({
       const updated = state.windows.map((w) => {
         if (!w.isOpen || w.isMaximized) return w;
 
-        const manifest = AppRegistry.getAppManifest(w.id);
+        const manifest = AppRegistry.getAppManifest(w.appId);
         const reqMinW = manifest?.defaultWindow.minW ?? w.minW;
         const reqMinH = manifest?.defaultWindow.minH ?? w.minH;
 
@@ -935,6 +1049,65 @@ export const useSystemStore = create<SystemState>((set, get) => ({
       editorCurrentFolderId: folderId || null,
     });
     get().openAppWindow('editor');
+  },
+
+  openTextFileInNewEditorWindow: (fileId, name, content, folderId) => {
+    const windowId = get().openAppWindow('editor', { forceNewWindow: true });
+    set((state) => ({
+      pendingEditorWindowFiles: {
+        ...state.pendingEditorWindowFiles,
+        [windowId]: { fileId, name, content, folderId: folderId || null },
+      },
+    }));
+    return windowId;
+  },
+
+  consumePendingEditorWindowFile: (windowId) => {
+    const pending = get().pendingEditorWindowFiles[windowId] ?? null;
+    if (pending) {
+      set((state) => {
+        const { [windowId]: _consumed, ...rest } = state.pendingEditorWindowFiles;
+        return { pendingEditorWindowFiles: rest };
+      });
+    }
+    return pending;
+  },
+
+  requestFilePick: (requesterWindowId, mode) => {
+    const pickerWindowId = get().openAppWindow('fileManager', { forceNewWindow: true });
+    set((state) => ({
+      pendingFilePickerRequests: { ...state.pendingFilePickerRequests, [pickerWindowId]: { mode, requesterWindowId } },
+    }));
+    return pickerWindowId;
+  },
+
+  consumeFilePickerRequest: (pickerWindowId) => {
+    const pending = get().pendingFilePickerRequests[pickerWindowId] ?? null;
+    if (pending) {
+      set((state) => {
+        const { [pickerWindowId]: _consumed, ...rest } = state.pendingFilePickerRequests;
+        return { pendingFilePickerRequests: rest };
+      });
+    }
+    return pending;
+  },
+
+  resolveFilePicker: (pickerWindowId, requesterWindowId, result) => {
+    set((state) => ({
+      filePickerResults: { ...state.filePickerResults, [requesterWindowId]: result },
+    }));
+    get().handleCloseWindow(pickerWindowId);
+  },
+
+  consumeFilePickerResult: (requesterWindowId) => {
+    const result = get().filePickerResults[requesterWindowId] ?? null;
+    if (result) {
+      set((state) => {
+        const { [requesterWindowId]: _consumed, ...rest } = state.filePickerResults;
+        return { filePickerResults: rest };
+      });
+    }
+    return result;
   },
 
   setEditorCurrentFolderId: (folderId) => {

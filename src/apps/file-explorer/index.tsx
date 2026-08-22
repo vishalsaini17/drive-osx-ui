@@ -52,6 +52,7 @@ import {
   ChevronDown,
   MoreHorizontal,
   FolderX,
+  FolderOpen,
   Loader2,
   AlertCircle
 } from 'lucide-react';
@@ -169,7 +170,7 @@ function sizeBucketLabel(item: FileItem): string {
   return 'Small (under 1 MB)';
 }
 
-export default function FileManager() {
+export default function FileManager({ windowId = 'fileManager' }: { windowId?: string }) {
   // Central store integration
   const files = useSystemStore((state) => state.files);
   const setFiles = useSystemStore((state) => state.setFiles);
@@ -181,6 +182,10 @@ export default function FileManager() {
   const handleRestoreFile = useSystemStore((state) => state.handleRestoreFile);
   const handleEmptyTrash = useSystemStore((state) => state.handleEmptyTrash);
   const openTextFileInEditor = useSystemStore((state) => state.openTextFileInEditor);
+  const openTextFileInNewEditorWindow = useSystemStore((state) => state.openTextFileInNewEditorWindow);
+  const consumeFilePickerRequest = useSystemStore((state) => state.consumeFilePickerRequest);
+  const resolveFilePicker = useSystemStore((state) => state.resolveFilePicker);
+  const handleCloseWindow = useSystemStore((state) => state.handleCloseWindow);
   const toggleWindow = useSystemStore((state) => state.toggleWindow);
   const settings = useSystemStore((state) => state.settings);
   const setSettings = useSystemStore((state) => state.setSettings);
@@ -219,6 +224,21 @@ export default function FileManager() {
   const [activePreviewItem, setActivePreviewItem] = useState<FileItem | null>(null);
   const [activePropertiesItem, setActivePropertiesItem] = useState<FileItem | null>(null);
   const [activeOpenWithItem, setActiveOpenWithItem] = useState<FileItem | null>(null);
+
+  // Set when this window was opened as a picker for another app (currently
+  // just the editor's Open File…/Open Folder…) via `requestFilePick` —
+  // consumed once, on mount, so it's the picker for this window's whole
+  // lifetime rather than something that could be re-triggered later.
+  const [pickerContext, setPickerContext] = useState<{ mode: 'file' | 'folder'; requesterWindowId: string } | null>(null);
+  const pickerConsumedRef = useRef(false);
+  useEffect(() => {
+    if (pickerConsumedRef.current) return;
+    pickerConsumedRef.current = true;
+    const request = consumeFilePickerRequest(windowId);
+    if (request) setPickerContext(request);
+    // Deliberately mount-only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Details pane
   const [showDetailsPane, setShowDetailsPane] = useState<boolean>(false);
@@ -303,13 +323,24 @@ export default function FileManager() {
   const lastSyncedFolderIdRef = useRef<string | null>(null);
   const [folderNotFoundId, setFolderNotFoundId] = useState<string | null>(null);
 
+  // The browser URL is a single, tab-wide concept — it can only ever track
+  // one window. Only this app's primary window (the one every app is
+  // preallocated) owns it; an extra File Explorer window opened via "New
+  // Window" keeps its own independent `currentFolderId` and never reads or
+  // writes `fileManagerCurrentFolderId` at all. Without this gate, every open
+  // File Explorer window "adopted" whichever folder any one of them last
+  // wrote to the shared field, so navigating in one silently navigated all
+  // of them.
+  const isPrimaryWindow = windowId === 'fileManager';
+
   // This component's own navigation (clicking a folder, breadcrumbs, the
   // in-app Back/Forward buttons) → tell the shell so it can update the URL.
   useEffect(() => {
+    if (!isPrimaryWindow) return;
     if (currentFolderId === lastSyncedFolderIdRef.current) return;
     lastSyncedFolderIdRef.current = currentFolderId;
     setUrlFolderId(currentFolderId);
-  }, [currentFolderId, setUrlFolderId]);
+  }, [isPrimaryWindow, currentFolderId, setUrlFolderId]);
 
   // A URL the shell didn't get from us — a direct link, a reload, or the
   // browser's actual Back/Forward buttons — → adopt that folder here. Real
@@ -317,6 +348,7 @@ export default function FileManager() {
   // the URL lands on a clear "not found" state instead of silently opening
   // the wrong folder or an empty grid.
   useEffect(() => {
+    if (!isPrimaryWindow) return;
     if (urlFolderId === lastSyncedFolderIdRef.current) return;
 
     // The ref is only updated once we've actually committed to a folder
@@ -358,7 +390,7 @@ export default function FileManager() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [urlFolderId]);
+  }, [isPrimaryWindow, urlFolderId]);
 
   // Derived from `files` itself (rather than a one-off local variable) so it
   // stays correct as the shared file list changes, not just at mount.
@@ -2110,6 +2142,16 @@ export default function FileManager() {
 
   // Double Click execution
   const handleItemDoubleClick = (item: FileItem) => {
+    // In file-picker mode, a folder still just navigates (browsing to find
+    // the file), but a file double-click hands it straight back to whichever
+    // window asked for it instead of opening it in an app here.
+    if (pickerContext?.mode === 'file' && item.type === 'file') {
+      resolveFilePicker(windowId, pickerContext.requesterWindowId, {
+        mode: 'file',
+        file: { id: item.id, name: item.name, parentId: item.parentId },
+      });
+      return;
+    }
     if (item.type === 'folder') {
       navigateToFolder(item.id);
     } else {
@@ -2419,8 +2461,11 @@ export default function FileManager() {
     }
   };
 
-  // Open Selected App via OpenWith Modal
-  const handleOpenWithApp = async (appKey: string, item: FileItem) => {
+  // Open Selected App via OpenWith Modal. `forceNewWindow` distinguishes an
+  // explicit "Open With…" pick (always a fresh editor window, never one that
+  // already has something else open) from the plain "Open"/double-click path
+  // (reuses whichever editor window is already open, same as before).
+  const handleOpenWithApp = async (appKey: string, item: FileItem, forceNewWindow = false) => {
     // 'text-editor' is OpenWithModal's own manual-pick key; 'editor' is the
     // real AppRegistry id that double-click (via getAppForFile/EDITOR_REGISTRY)
     // actually passes here — without this second check double-clicking a
@@ -2433,7 +2478,12 @@ export default function FileManager() {
       // it back to ''. Fetch the real content here so a file saved from the
       // editor still shows its text the next time it's opened from Explorer.
       const full = await FileService.getFile(item.id);
-      openTextFileInEditor(item.id, item.name, full?.content ?? item.content ?? '', currentFolderId);
+      const content = full?.content ?? item.content ?? '';
+      if (forceNewWindow) {
+        openTextFileInNewEditorWindow(item.id, item.name, content, currentFolderId);
+      } else {
+        openTextFileInEditor(item.id, item.name, content, currentFolderId);
+      }
     } else if (appKey === 'image-viewer' || appKey === 'audio-player' || appKey === 'video-player' || appKey === 'code-viewer') {
       setActivePreviewItem(item);
     } else if (appKey === 'properties') {
@@ -2647,7 +2697,7 @@ export default function FileManager() {
 
   // Menus mirror the toolbar and context menus, so every command is also
   // reachable from the menu bar.
-  useAppMenu('fileManager', [
+  useAppMenu(windowId, [
     {
       id: 'file',
       label: 'File',
@@ -2926,6 +2976,55 @@ export default function FileManager() {
         </div>
 
       </div>
+
+      {/* ==================== 1B. FILE-PICKER BANNER (only when this window was opened as a picker) ==================== */}
+      {pickerContext && (
+        <div
+          data-name="file-explorer-picker-banner"
+          className="flex items-center justify-between gap-3 px-3 py-2 border-b border-purple-500/20 bg-purple-500/10 shrink-0"
+        >
+          <div className="flex items-center gap-2 text-xs font-medium text-purple-700">
+            {pickerContext.mode === 'folder' ? <FolderOpen className="w-4 h-4" /> : <FileText className="w-4 h-4" />}
+            {pickerContext.mode === 'folder' ? 'Choose a folder, then Select it.' : 'Choose a file to open — double-click, or select it and click Open.'}
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => handleCloseWindow(windowId)}
+              className="px-3 py-1.5 rounded-lg text-xs font-medium bg-black/5 hover:bg-black/10 cursor-pointer"
+            >
+              Cancel
+            </button>
+            {pickerContext.mode === 'folder' ? (
+              <button
+                disabled={currentFolderId !== null && VIRTUAL_FOLDER_IDS.has(currentFolderId)}
+                onClick={() =>
+                  resolveFilePicker(windowId, pickerContext.requesterWindowId, {
+                    mode: 'folder',
+                    folder: { id: currentFolderId, name: getBreadcrumbs()[getBreadcrumbs().length - 1]?.name ?? 'Home' },
+                  })
+                }
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-purple-600 hover:bg-purple-500 text-white disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+              >
+                Select "{getBreadcrumbs()[getBreadcrumbs().length - 1]?.name ?? 'Home'}"
+              </button>
+            ) : (
+              <button
+                disabled={selectedItem?.type !== 'file'}
+                onClick={() =>
+                  selectedItem &&
+                  resolveFilePicker(windowId, pickerContext.requesterWindowId, {
+                    mode: 'file',
+                    file: { id: selectedItem.id, name: selectedItem.name, parentId: selectedItem.parentId },
+                  })
+                }
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-purple-600 hover:bg-purple-500 text-white disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+              >
+                Open
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ==================== 2. MAIN LAYOUT: SIDEBAR, STAGE, DETAILS ==================== */}
       <div data-name="file-explorer-main-layout" className="flex-1 flex overflow-hidden relative" onContextMenu={(e) => handleContextMenu(e, null)}>
@@ -3608,7 +3707,7 @@ export default function FileManager() {
         item={activeOpenWithItem}
         isOpen={!!activeOpenWithItem}
         onClose={() => setActiveOpenWithItem(null)}
-        onSelectApp={handleOpenWithApp}
+        onSelectApp={(appKey, item) => void handleOpenWithApp(appKey, item, true)}
       />
     </div>
   );

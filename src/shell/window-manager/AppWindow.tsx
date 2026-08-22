@@ -66,9 +66,11 @@ export default function AppWindow({
   // Menus contributed by the application running in this window.
   const appMenus = useWindowMenus(app.id);
 
-  // This window's own theme preference, also read by Preferences → Appearance
-  // (opened below) and used to pick this window's chrome further down.
-  const appTheme = useAppTheme(app.id);
+  // The app's theme preference — shared by every window of this app (an
+  // extra instance's `id` is a one-off, but `appId` is the same manifest id
+  // its primary window uses), also read by Preferences → Appearance (opened
+  // below) and used to pick this window's chrome further down.
+  const appTheme = useAppTheme(app.appId);
 
   const effectiveMinW = minW ?? app.minW ?? 300;
   const effectiveMinH = minH ?? app.minH ?? 200;
@@ -103,7 +105,7 @@ export default function AppWindow({
   const menuItems: MenuItem[] = useMemo(() => {
     const [windowMenu, helpMenu] = buildStandardMenus({
       app,
-      onNewWindow: () => openAppWindow(app.id),
+      onNewWindow: () => openAppWindow(app.appId, { forceNewWindow: true }),
       onMinimize: () => onMinimize(app.id),
       onMaximize: () => onMaximize(app.id),
       onClose: () => onClose(app.id),
@@ -481,7 +483,7 @@ export default function AppWindow({
               alone the icon looks a hair low next to the text; -translate-y-px
               nudges it back to its optical center. */}
           <div className="w-4 h-4 flex items-center justify-center shrink-0 -translate-y-px">
-            {getAppIcon(app.id, 'w-4 h-4')}
+            {getAppIcon(app.appId, 'w-4 h-4')}
           </div>
           <span className="truncate">{app.title}</span>
         </div>
@@ -558,7 +560,7 @@ export default function AppWindow({
       <PreferencesDialog
         isOpen={isPreferencesOpen}
         onClose={() => setIsPreferencesOpen(false)}
-        appId={app.id}
+        appId={app.appId}
         appTitle={app.title}
       />
 
@@ -579,7 +581,7 @@ export default function AppWindow({
       >
         <div className="flex flex-col items-center text-center py-4 space-y-3">
           <div className="w-16 h-16 rounded-2xl bg-white/10 border border-white/10 flex items-center justify-center shadow-lg p-3">
-            {getAppIcon(app.id, 'w-10 h-10')}
+            {getAppIcon(app.appId, 'w-10 h-10')}
           </div>
           <div>
             <h3 className="text-base font-bold text-white tracking-wide">{app.title}</h3>

@@ -54,6 +54,14 @@ export const APPLICATION_MAP: Record<string, ApplicationComponent> = {
 
 export interface ApplicationRendererProps {
   appId: string;
+  /**
+   * The specific window instance rendering this app — its `appId` for the
+   * one window every app is preallocated, or a unique per-instance id for an
+   * extra window opened via `openAppWindow(appId, { forceNewWindow: true })`.
+   * Apps that register menus (`useAppMenu`) or otherwise need to distinguish
+   * "which of my own windows is this" (the code editor) key off it directly.
+   */
+  windowId?: string;
 }
 
 function LoadingApplication(): React.ReactElement {
@@ -77,7 +85,7 @@ function UnknownApplication({ appId }: { appId: string }): React.ReactElement {
   );
 }
 
-export const ApplicationRenderer: React.FC<ApplicationRendererProps> = ({ appId }) => {
+export const ApplicationRenderer: React.FC<ApplicationRendererProps> = ({ appId, windowId }) => {
   const Component = APPLICATION_MAP[appId];
 
   if (!Component) {
@@ -87,7 +95,7 @@ export const ApplicationRenderer: React.FC<ApplicationRendererProps> = ({ appId 
   return React.createElement(
     React.Suspense,
     { fallback: React.createElement(LoadingApplication) },
-    React.createElement(Component as React.ComponentType<any>),
+    React.createElement(Component as React.ComponentType<any>, { windowId }),
   );
 };
 

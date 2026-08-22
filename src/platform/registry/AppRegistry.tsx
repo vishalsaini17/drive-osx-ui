@@ -270,7 +270,7 @@ const registry: Record<string, AppRegistryEntry> = {
   editor: {
     manifest: {
       id: 'editor',
-      title: 'Code Editor',
+      title: 'Editor',
       iconName: 'FileCode',
       category: 'productivity',
       defaultWindow: { w: 960, h: 640, minW: 480, minH: 320, x: 180, y: 120 },

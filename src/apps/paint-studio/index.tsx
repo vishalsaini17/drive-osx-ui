@@ -103,7 +103,7 @@ function Diamond({ size = 16, className = '' }: { size?: number; className?: str
   );
 }
 
-export default function PaintApp() {
+export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1447,7 +1447,7 @@ export default function PaintApp() {
     </button>
   );
 
-  useAppMenu('paint', [
+  useAppMenu(windowId, [
     {
       id: 'file',
       label: 'File',
