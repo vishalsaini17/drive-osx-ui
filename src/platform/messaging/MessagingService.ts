@@ -33,23 +33,33 @@ export interface ChatRequest {
   counterpart: DirectoryUser;
 }
 
+/** A conversation participant, plus their role — meaningful for group conversations (the group info panel's Admin badge). */
+export interface ConversationParticipant extends DirectoryUser {
+  role: 'owner' | 'admin' | 'member';
+}
+
 export interface Conversation {
   id: string;
   kind: 'direct' | 'group';
   title: string;
+  /** A group's description. Null/empty for direct chats. */
   topic: string | null;
+  /** A group's avatar — an emoji shorthand or an `http…` URL, same convention as `DirectoryUser.avatarUrl`. Null for direct chats. */
+  avatarUrl: string | null;
   lastMessageAt: string | null;
   lastMessagePreview: string;
   unreadCount: number;
   isMuted: boolean;
   isPinned: boolean;
-  participants: DirectoryUser[];
+  /** Per-viewer, independent of any contact record — the only kind of "favourite" a group can have. */
+  isFavourite: boolean;
+  participants: ConversationParticipant[];
 }
 
-/** An attachment on a message — currently only voice notes produce these. */
+/** An attachment on a message — a voice note, or a document/photo/video/audio file sent via the "+" menu. */
 export interface MessageAttachment {
   id: string;
-  kind: 'voice' | 'file' | 'image';
+  kind: 'voice' | 'file' | 'image' | 'video';
   name: string;
   mimeType: string;
   size: number;
@@ -134,6 +144,15 @@ export const MessagingService = {
     return response.conversations ?? [];
   },
 
+  /** Membership is restricted to the caller's contacts — see the service's doc comment. */
+  async createGroup(title: string, memberUserIds: string[]): Promise<Conversation> {
+    const response = await http.post<{ conversation: Conversation }>(`${BASE}/groups`, {
+      title,
+      memberUserIds,
+    });
+    return response.conversation;
+  },
+
   /**
    * Finds an existing direct conversation with a user, reviving it if the
    * caller had deleted their copy. "Start a conversation" calls this first
@@ -186,6 +205,17 @@ export const MessagingService = {
     return response.data;
   },
 
+  /** Sends a document, photo, video, or audio file from the "+" menu. */
+  async sendFileMessage(conversationId: string, file: File): Promise<Message> {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    const response = await http.post<{ data: Message }>(
+      `${BASE}/conversations/${conversationId}/attachment`,
+      form,
+    );
+    return response.data;
+  },
+
   async markRead(conversationId: string): Promise<void> {
     await http.post(`${BASE}/conversations/${conversationId}/read`);
   },
@@ -212,6 +242,44 @@ export const MessagingService = {
       `${BASE}/conversations/${conversationId}/media`,
     );
     return response.media ?? [];
+  },
+
+  /** Favouriting is per-conversation, so it works for groups too — see `Conversation.isFavourite`. */
+  async setConversationFavourite(conversationId: string, isFavourite: boolean): Promise<void> {
+    await http.post(`${BASE}/conversations/${conversationId}/${isFavourite ? 'favourite' : 'unfavourite'}`);
+  },
+
+  /** Admin-only — see the service's doc comment. */
+  async setGroupDescription(conversationId: string, description: string): Promise<void> {
+    await http.post(`${BASE}/conversations/${conversationId}/description`, { description });
+  },
+
+  /** Admin-only. */
+  async renameGroup(conversationId: string, title: string): Promise<void> {
+    await http.post(`${BASE}/conversations/${conversationId}/rename`, { title });
+  },
+
+  /** Admin-only. An emoji shorthand or an `http…` URL, same convention as a user's own avatar. */
+  async setGroupAvatar(conversationId: string, avatarUrl: string): Promise<void> {
+    await http.post(`${BASE}/conversations/${conversationId}/avatar`, { avatarUrl });
+  },
+
+  /** Admin-only, and restricted to the caller's own contacts — see the service's doc comment. */
+  async addGroupMember(conversationId: string, userId: string): Promise<Conversation> {
+    const response = await http.post<{ conversation: Conversation }>(
+      `${BASE}/conversations/${conversationId}/members`,
+      { userId },
+    );
+    return response.conversation;
+  },
+
+  /** Removes the caller from the group outright — unlike `deleteConversation`, there is no reviving it. */
+  async leaveGroup(conversationId: string): Promise<void> {
+    await http.post(`${BASE}/conversations/${conversationId}/leave`);
+  },
+
+  async reportGroup(conversationId: string, reason: string): Promise<void> {
+    await http.post(`${BASE}/conversations/${conversationId}/report`, { reason });
   },
 };
 

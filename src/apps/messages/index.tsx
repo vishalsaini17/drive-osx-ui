@@ -2,7 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Send, Search, X, Plus, MessageSquare, UserPlus, Check, CheckCheck, Ban, Clock,
   AtSign, Loader2, WifiOff, RefreshCw, Inbox, UserCheck, Trash2, BookUser,
-  Phone, Video, ChevronUp, ChevronDown, Mic, Smile,
+  Phone, Video, ChevronUp, ChevronDown, Mic, Smile, Users, FileText,
+  Image as ImageIcon, Camera, Music, Download, HardDrive,
 } from 'lucide-react';
 import { useSystemStore } from '../../shell/state/systemStore';
 import { useAppMenu } from '../../platform/menus/AppMenuContext';
@@ -14,6 +15,7 @@ import {
   type Message, type MessageDeliveryStatus, type PresenceStatus,
 } from '../../platform/messaging/MessagingService';
 import { ContactsService, type Contact } from '../../platform/contacts/ContactsService';
+import { FileService } from '../../platform/files/FileService';
 import { MeetingService } from '../../platform/meetings/MeetingService';
 import { EventBus } from '../../platform/events/EventBus';
 import {
@@ -22,6 +24,7 @@ import {
 import { useMessengerTheme } from './useMessengerTheme';
 import { APP_THEME_CHOICES } from '../../platform/theme/appTheme';
 import ContactDetailsPanel from './ContactDetailsPanel';
+import GroupDetailsPanel from './GroupDetailsPanel';
 import EmojiStickerPicker from './EmojiStickerPicker';
 
 const PRESENCE_DOT: Record<PresenceStatus, string> = {
@@ -73,20 +76,20 @@ function describeError(error: unknown): string {
  * and collapsing them into one "denied" message left people trying to grant
  * a permission that was never the issue.
  */
-function describeMicrophoneError(error: unknown): string {
+function describeMediaDeviceError(error: unknown, device: 'microphone' | 'camera'): string {
   const name = error instanceof DOMException ? error.name : '';
   switch (name) {
     case 'NotAllowedError':
     case 'PermissionDeniedError':
-      return 'Microphone access was denied. Allow it in the browser’s site settings, then try again.';
+      return `${device === 'camera' ? 'Camera' : 'Microphone'} access was denied. Allow it in the browser’s site settings, then try again.`;
     case 'NotFoundError':
     case 'DevicesNotFoundError':
-      return 'No microphone was found on this device.';
+      return `No ${device} was found on this device.`;
     case 'NotReadableError':
     case 'TrackStartError':
-      return 'The microphone is already in use by another application.';
+      return `The ${device} is already in use by another application.`;
     default:
-      return 'Could not access the microphone. Please try again.';
+      return `Could not access the ${device}. Please try again.`;
   }
 }
 
@@ -123,6 +126,12 @@ function formatDuration(totalSeconds: number): string {
   return `${minutes}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 /** Single tick (sent), double tick (delivered), blue double tick (read) — shown only on your own messages. */
 function MessageTicks({ status, textSubtle }: { status?: MessageDeliveryStatus; textSubtle: string }) {
   if (!status) return null;
@@ -153,6 +162,9 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
   const pendingConversationId = useSystemStore((state) => state.pendingConversationId);
   const consumePendingConversation = useSystemStore((state) => state.consumePendingConversation);
   const openAppWindow = useSystemStore((state) => state.openAppWindow);
+  const requestFilePick = useSystemStore((state) => state.requestFilePick);
+  const filePickerResult = useSystemStore((state) => state.filePickerResults[windowId]);
+  const consumeFilePickerResult = useSystemStore((state) => state.consumeFilePickerResult);
   const { palette, choice: themeChoice } = useMessengerTheme();
 
   // ---------------------------------------------------------------------
@@ -162,6 +174,10 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
   const [requests, setRequests] = useState<ChatRequest[]>([]);
   const [messages, setMessages] = useState<Record<string, Message[]>>({});
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  // The caller's full address book — used for the "Favourites" filter tab and
+  // for picking group members, both of which need every contact at once
+  // rather than the lazily-loaded single peer the contact panel fetches.
+  const [allContacts, setAllContacts] = useState<Contact[]>([]);
 
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
@@ -174,12 +190,40 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
   // UI state
   // ---------------------------------------------------------------------
   const [filter, setFilter] = useState('');
+  const [conversationFilter, setConversationFilter] = useState<'all' | 'unread' | 'favourites' | 'groups'>('all');
   const [draft, setDraft] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [showNewChat, setShowNewChat] = useState(false);
   const [showRequests, setShowRequests] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const draftInputRef = useRef<HTMLInputElement>(null);
+
+  // -----------------------------------------------------------------------
+  // New group
+  // -----------------------------------------------------------------------
+  const [showNewGroup, setShowNewGroup] = useState(false);
+  const [groupName, setGroupName] = useState('');
+  const [groupMemberIds, setGroupMemberIds] = useState<Set<string>>(new Set());
+  const [isCreatingGroup, setIsCreatingGroup] = useState(false);
+
+  // -----------------------------------------------------------------------
+  // "+" attachment menu
+  // -----------------------------------------------------------------------
+  const [showAttachMenu, setShowAttachMenu] = useState(false);
+  const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
+  const documentInputRef = useRef<HTMLInputElement>(null);
+  const mediaInputRef = useRef<HTMLInputElement>(null);
+  const audioFileInputRef = useRef<HTMLInputElement>(null);
+
+  // -----------------------------------------------------------------------
+  // Camera — a real live capture (getUserMedia), not the OS file picker.
+  // -----------------------------------------------------------------------
+  const [showCameraCapture, setShowCameraCapture] = useState(false);
+  const [isCameraLoading, setIsCameraLoading] = useState(false);
+  const [cameraPhotoBlob, setCameraPhotoBlob] = useState<Blob | null>(null);
+  const [cameraPhotoUrl, setCameraPhotoUrl] = useState<string | null>(null);
+  const cameraStreamRef = useRef<MediaStream | null>(null);
+  const cameraVideoRef = useRef<HTMLVideoElement>(null);
 
   const [directoryTerm, setDirectoryTerm] = useState('');
   const [directoryResults, setDirectoryResults] = useState<DirectoryUser[]>([]);
@@ -205,6 +249,18 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
   const [mediaError, setMediaError] = useState<string | null>(null);
   const [deletingMediaId, setDeletingMediaId] = useState<string | null>(null);
   const [panelError, setPanelError] = useState<string | null>(null);
+
+  // -----------------------------------------------------------------------
+  // Group details panel (same idea, for group conversations)
+  // -----------------------------------------------------------------------
+  const [showGroupPanel, setShowGroupPanel] = useState(false);
+  const [isTogglingGroupFavourite, setIsTogglingGroupFavourite] = useState(false);
+  const [isUpdatingDescription, setIsUpdatingDescription] = useState(false);
+  const [isRenamingGroup, setIsRenamingGroup] = useState(false);
+  const [isChangingAvatar, setIsChangingAvatar] = useState(false);
+  const [isAddingMember, setIsAddingMember] = useState(false);
+  const [isExitingGroup, setIsExitingGroup] = useState(false);
+  const [isReportingGroup, setIsReportingGroup] = useState(false);
 
   // -----------------------------------------------------------------------
   // In-conversation message search
@@ -243,8 +299,8 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
   const [showSidebar, setShowSidebar] = useState(true);
   useEffect(() => setShowSidebar(!isCompact), [isCompact]);
 
-  // A microphone stream left open after the window closes keeps the
-  // browser's recording indicator lit for no reason.
+  // A microphone or camera stream left open after the window closes keeps
+  // the browser's recording indicator lit for no reason.
   useEffect(() => {
     return () => {
       recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
@@ -252,6 +308,7 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
         mediaRecorderRef.current.onstop = null;
         mediaRecorderRef.current.stop();
       }
+      cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
     };
   }, []);
 
@@ -261,12 +318,14 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
   const refresh = useCallback(async () => {
     setLoadError(null);
     try {
-      const [conversationList, requestList] = await Promise.all([
+      const [conversationList, requestList, contactList] = await Promise.all([
         MessagingService.listConversations(),
         MessagingService.listRequests(),
+        ContactsService.list(),
       ]);
       setConversations(conversationList);
       setRequests(requestList);
+      setAllContacts(contactList);
     } catch (error) {
       setLoadError(describeError(error));
     } finally {
@@ -497,6 +556,36 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
     }
   };
 
+  const toggleGroupMember = (userId: string) => {
+    setGroupMemberIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(userId)) next.delete(userId);
+      else next.add(userId);
+      return next;
+    });
+  };
+
+  const createGroup = async () => {
+    const title = groupName.trim();
+    const memberUserIds = Array.from(groupMemberIds);
+    if (!title || memberUserIds.length < 2 || isCreatingGroup) return;
+    setIsCreatingGroup(true);
+    setActionError(null);
+    try {
+      const conversation = await MessagingService.createGroup(title, memberUserIds);
+      setConversations((prev) => [conversation, ...prev]);
+      setShowNewGroup(false);
+      setGroupName('');
+      setGroupMemberIds(new Set());
+      setActiveConversationId(conversation.id);
+      setNotice(`Group "${title}" created`);
+    } catch (error) {
+      setActionError(describeError(error));
+    } finally {
+      setIsCreatingGroup(false);
+    }
+  };
+
   const respondToRequest = async (request: ChatRequest, action: 'accept' | 'reject') => {
     setActionError(null);
     try {
@@ -591,11 +680,34 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
   const incomingRequests = requests.filter((request) => request.direction === 'incoming');
   const outgoingRequests = requests.filter((request) => request.direction === 'outgoing');
 
+  const favouriteUserIds = useMemo(
+    () => new Set(allContacts.filter((contact) => contact.isFavourite && contact.userId).map((contact) => contact.userId!)),
+    [allContacts],
+  );
+
   const visibleConversations = useMemo(() => {
+    let list = conversations;
+    if (conversationFilter === 'unread') {
+      list = list.filter((conversation) => conversation.unreadCount > 0);
+    } else if (conversationFilter === 'favourites') {
+      // Direct chats: favourited via the peer's contact record. Groups have
+      // no single contact behind them, so they carry their own
+      // conversation-level favourite instead (see `isFavourite`).
+      list = list.filter((conversation) =>
+        conversation.kind === 'group'
+          ? conversation.isFavourite
+          : conversation.participants.some(
+              (participant) => participant.username !== currentUser?.username && favouriteUserIds.has(participant.id),
+            ),
+      );
+    } else if (conversationFilter === 'groups') {
+      list = list.filter((conversation) => conversation.kind === 'group');
+    }
+
     const term = filter.trim().toLowerCase();
-    if (!term) return conversations;
-    return conversations.filter((conversation) => conversation.title.toLowerCase().includes(term));
-  }, [conversations, filter]);
+    if (!term) return list;
+    return list.filter((conversation) => conversation.title.toLowerCase().includes(term));
+  }, [conversations, filter, conversationFilter, favouriteUserIds, currentUser?.username]);
 
   const peer = useMemo(() => {
     // Without a known viewer, "not the viewer" matches everyone, and `.find`
@@ -603,7 +715,12 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
     // which is the viewer's own record exactly when they are that
     // participant. Requiring `currentUser` first turns that into "no peer
     // yet" instead of "peer is myself".
-    if (!currentUser?.username) return null;
+    //
+    // Groups have no single "peer" either — leaving this null for them is
+    // what makes the header, calls, contact panel and composer's block
+    // banner all fall back to their group-appropriate (or simply absent)
+    // behaviour without each needing its own group/direct branch.
+    if (!currentUser?.username || activeConversation?.kind === 'group') return null;
     return (
       activeConversation?.participants.find(
         (participant) => participant.username !== currentUser.username,
@@ -655,10 +772,12 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
   // it after switching would attach the clip to the wrong conversation.
   useEffect(() => {
     setShowContactPanel(false);
+    setShowGroupPanel(false);
     setShowMessageSearch(false);
     setMessageSearchQuery('');
     setMessageSearchIndex(0);
     setShowEmojiPicker(false);
+    setShowAttachMenu(false);
 
     const recorder = mediaRecorderRef.current;
     if (recorder && recorder.state !== 'inactive') {
@@ -675,6 +794,15 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
     mediaRecorderRef.current = null;
     setRecordingState('idle');
     setRecordingSeconds(0);
+
+    cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
+    cameraStreamRef.current = null;
+    setShowCameraCapture(false);
+    setCameraPhotoBlob(null);
+    setCameraPhotoUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
   }, [activeConversationId]);
 
   /**
@@ -709,7 +837,7 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
   // Media is fetched lazily — only while the panel is actually open — rather
   // than on every conversation switch, since it is not needed until then.
   useEffect(() => {
-    if (!showContactPanel || !activeConversationId) return;
+    if ((!showContactPanel && !showGroupPanel) || !activeConversationId) return;
     let cancelled = false;
     setIsLoadingMedia(true);
     setMediaError(null);
@@ -726,7 +854,7 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
     return () => {
       cancelled = true;
     };
-  }, [showContactPanel, activeConversationId]);
+  }, [showContactPanel, showGroupPanel, activeConversationId]);
 
   const toggleFavourite = async () => {
     if (!peer || !activePeerContact) return;
@@ -804,12 +932,13 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
    * is closed on their side), and Meet opens for the caller.
    */
   const startCall = async (kind: 'voice' | 'video') => {
-    if (!activeConversationId || !peer || isPeerBlocked) return;
+    if (!activeConversationId || (!peer && activeConversation?.kind !== 'group') || isPeerBlocked) return;
     setCallInProgress(kind);
     setPanelError(null);
     try {
+      const callTarget = peer ? peer.fullName : activeConversation?.title ?? 'the group';
       const meeting = await MeetingService.createMeeting({
-        title: `${kind === 'video' ? 'Video' : 'Voice'} call with ${peer.fullName}`,
+        title: `${kind === 'video' ? 'Video' : 'Voice'} call with ${callTarget}`,
         allowChat: true,
       });
       await MeetingService.startMeeting(meeting.id);
@@ -867,6 +996,116 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
   };
 
   // -----------------------------------------------------------------------
+  // Group info panel
+  // -----------------------------------------------------------------------
+
+  const toggleGroupFavourite = async () => {
+    if (!activeConversationId || !activeConversation) return;
+    setIsTogglingGroupFavourite(true);
+    setPanelError(null);
+    try {
+      await MessagingService.setConversationFavourite(activeConversationId, !activeConversation.isFavourite);
+      setConversations((prev) =>
+        prev.map((c) => (c.id === activeConversationId ? { ...c, isFavourite: !activeConversation.isFavourite } : c)),
+      );
+    } catch (error) {
+      setPanelError(describeError(error));
+    } finally {
+      setIsTogglingGroupFavourite(false);
+    }
+  };
+
+  const updateGroupDescription = async (description: string) => {
+    if (!activeConversationId) return;
+    setIsUpdatingDescription(true);
+    setPanelError(null);
+    try {
+      await MessagingService.setGroupDescription(activeConversationId, description);
+      setConversations((prev) =>
+        prev.map((c) => (c.id === activeConversationId ? { ...c, topic: description || null } : c)),
+      );
+    } catch (error) {
+      setPanelError(describeError(error));
+    } finally {
+      setIsUpdatingDescription(false);
+    }
+  };
+
+  const renameGroupHandler = async (title: string) => {
+    if (!activeConversationId) return;
+    setIsRenamingGroup(true);
+    setPanelError(null);
+    try {
+      await MessagingService.renameGroup(activeConversationId, title);
+      setConversations((prev) => prev.map((c) => (c.id === activeConversationId ? { ...c, title } : c)));
+    } catch (error) {
+      setPanelError(describeError(error));
+    } finally {
+      setIsRenamingGroup(false);
+    }
+  };
+
+  const changeGroupAvatar = async (avatarUrl: string) => {
+    if (!activeConversationId) return;
+    setIsChangingAvatar(true);
+    setPanelError(null);
+    try {
+      await MessagingService.setGroupAvatar(activeConversationId, avatarUrl);
+      setConversations((prev) => prev.map((c) => (c.id === activeConversationId ? { ...c, avatarUrl } : c)));
+    } catch (error) {
+      setPanelError(describeError(error));
+    } finally {
+      setIsChangingAvatar(false);
+    }
+  };
+
+  const addMemberToGroup = async (userId: string) => {
+    if (!activeConversationId) return;
+    setIsAddingMember(true);
+    setPanelError(null);
+    try {
+      const updated = await MessagingService.addGroupMember(activeConversationId, userId);
+      setConversations((prev) => prev.map((c) => (c.id === activeConversationId ? updated : c)));
+      setNotice('Member added');
+    } catch (error) {
+      setPanelError(describeError(error));
+    } finally {
+      setIsAddingMember(false);
+    }
+  };
+
+  const exitGroup = async () => {
+    if (!activeConversationId) return;
+    setIsExitingGroup(true);
+    setPanelError(null);
+    try {
+      await MessagingService.leaveGroup(activeConversationId);
+      setConversations((prev) => prev.filter((c) => c.id !== activeConversationId));
+      setShowGroupPanel(false);
+      setActiveConversationId(null);
+      setNotice('You left the group');
+    } catch (error) {
+      setPanelError(describeError(error));
+    } finally {
+      setIsExitingGroup(false);
+    }
+  };
+
+  const reportGroupHandler = async (reason: string) => {
+    if (!activeConversationId || !reason.trim()) return;
+    setIsReportingGroup(true);
+    setPanelError(null);
+    try {
+      await MessagingService.reportGroup(activeConversationId, reason);
+      setNotice('Report submitted — thanks for letting us know');
+    } catch (error) {
+      setPanelError(describeError(error));
+    } finally {
+      setIsReportingGroup(false);
+    }
+  };
+
+  // -----------------------------------------------------------------------
   // Voice messages
   // -----------------------------------------------------------------------
 
@@ -920,7 +1159,7 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
         setRecordingSeconds(Math.round((Date.now() - recordingStartRef.current) / 1000));
       }, 250);
     } catch (error) {
-      setActionError(describeMicrophoneError(error));
+      setActionError(describeMediaDeviceError(error, 'microphone'));
       stopMicStream();
     }
   };
@@ -974,6 +1213,177 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
     recorder.stop();
   };
 
+  // -----------------------------------------------------------------------
+  // "+" attachment menu — document, images & videos, camera, audio file
+  // -----------------------------------------------------------------------
+
+  function previewForAttachment(message: Message, fallbackName: string): string {
+    const kind = message.attachments[0]?.kind;
+    if (kind === 'image') return '📷 Photo';
+    if (kind === 'video') return '🎥 Video';
+    return `📎 ${fallbackName}`;
+  }
+
+  const sendSelectedFile = async (file: File | null | undefined) => {
+    if (!file || !activeConversationId) return;
+    setShowAttachMenu(false);
+    setIsUploadingAttachment(true);
+    setActionError(null);
+    try {
+      const message = await MessagingService.sendFileMessage(activeConversationId, file);
+      setMessages((prev) => ({
+        ...prev,
+        [activeConversationId]: [...(prev[activeConversationId] ?? []), message],
+      }));
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === activeConversationId
+            ? { ...c, lastMessagePreview: previewForAttachment(message, file.name), lastMessageAt: message.createdAt }
+            : c,
+        ),
+      );
+    } catch (error) {
+      setActionError(describeError(error));
+    } finally {
+      setIsUploadingAttachment(false);
+    }
+  };
+
+  // -----------------------------------------------------------------------
+  // Camera — opens the real device camera (getUserMedia) so "Camera" in the
+  // attach menu behaves like an actual capture, not another file picker.
+  // -----------------------------------------------------------------------
+
+  const startCameraStream = async () => {
+    setIsCameraLoading(true);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+      cameraStreamRef.current = stream;
+      if (cameraVideoRef.current) {
+        cameraVideoRef.current.srcObject = stream;
+        await cameraVideoRef.current.play().catch(() => undefined);
+      }
+    } catch (error) {
+      setActionError(describeMediaDeviceError(error, 'camera'));
+      setShowCameraCapture(false);
+    } finally {
+      setIsCameraLoading(false);
+    }
+  };
+
+  const openCamera = () => {
+    setShowAttachMenu(false);
+    setActionError(null);
+
+    // Same secure-context check the voice recorder needs: getUserMedia does
+    // not exist at all outside https:/localhost, and without this the
+    // failure looked identical to a denied permission.
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setActionError(
+        window.isSecureContext
+          ? 'This browser does not support camera capture.'
+          : 'Camera capture needs a secure connection (HTTPS, or localhost). Open Messenger over HTTPS to use the camera.',
+      );
+      return;
+    }
+
+    setCameraPhotoBlob(null);
+    setCameraPhotoUrl(null);
+    setShowCameraCapture(true);
+    void startCameraStream();
+  };
+
+  const closeCamera = () => {
+    cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
+    cameraStreamRef.current = null;
+    setCameraPhotoUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+    setCameraPhotoBlob(null);
+    setShowCameraCapture(false);
+  };
+
+  /** Freezes the current frame into a JPEG and stops the live feed while it's previewed. */
+  const capturePhoto = () => {
+    const video = cameraVideoRef.current;
+    if (!video || video.videoWidth === 0) return;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    canvas.toBlob(
+      (blob) => {
+        if (!blob) return;
+        setCameraPhotoBlob(blob);
+        setCameraPhotoUrl(URL.createObjectURL(blob));
+        cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
+        cameraStreamRef.current = null;
+      },
+      'image/jpeg',
+      0.92,
+    );
+  };
+
+  const retakePhoto = () => {
+    setCameraPhotoUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+    setCameraPhotoBlob(null);
+    void startCameraStream();
+  };
+
+  const sendCapturedPhoto = async () => {
+    if (!cameraPhotoBlob) return;
+    const file = new File([cameraPhotoBlob], `photo-${Date.now()}.jpg`, { type: 'image/jpeg' });
+    await sendSelectedFile(file);
+    closeCamera();
+  };
+
+  /**
+   * "From Drive" opens the real File Explorer as a picker (`requestFilePick`)
+   * rather than a bespoke dialog — the same mechanism the code editor's Open
+   * File uses. It resolves by writing into `filePickerResults[windowId]` and
+   * closing itself; this watches for that and, since a picked Drive file is
+   * metadata only, fetches its bytes via a signed download URL before
+   * handing it to the same upload path a local file would take.
+   */
+  useEffect(() => {
+    if (!filePickerResult) return;
+    const result = consumeFilePickerResult(windowId);
+    if (!result || result.mode !== 'file') return;
+
+    void (async () => {
+      setIsUploadingAttachment(true);
+      setActionError(null);
+      try {
+        const [meta, url] = await Promise.all([
+          FileService.getFile(result.file.id),
+          FileService.downloadUrl(result.file.id),
+        ]);
+        if (!meta) throw new Error('That file could not be found in Drive.');
+        const response = await fetch(url);
+        if (!response.ok) throw new Error('Could not download that file from Drive.');
+        const blob = await response.blob();
+        const file = new File([blob], meta.name, { type: meta.mimeType || blob.type });
+        await sendSelectedFile(file);
+      } catch (error) {
+        setActionError(error instanceof Error ? error.message : 'Could not attach that file from Drive.');
+        setIsUploadingAttachment(false);
+      }
+    })();
+  }, [filePickerResult, windowId, consumeFilePickerResult]);
+
+  const pickFromDrive = () => {
+    setShowAttachMenu(false);
+    requestFilePick(windowId, 'file');
+  };
+
   // ---------------------------------------------------------------------
   // Menus
   // ---------------------------------------------------------------------
@@ -1009,6 +1419,13 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
           disabled: !peer,
           onSelect: () => setShowContactPanel((value) => !value),
         },
+        {
+          id: 'group-panel',
+          label: 'Group Info',
+          checked: showGroupPanel,
+          disabled: activeConversation?.kind !== 'group',
+          onSelect: () => setShowGroupPanel((value) => !value),
+        },
         // Theme is not repeated here: the window menu offers it for every
         // application, and two entries for one setting invite disagreement.
       ],
@@ -1022,17 +1439,26 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
     name,
     status,
     size = 34,
+    avatarUrl,
   }: {
     name: string;
     status?: PresenceStatus;
     size?: number;
+    /** A group's avatar — an emoji shorthand or an `http…` URL. Falls back to initials when unset. */
+    avatarUrl?: string | null;
   }) => (
     <div className="relative shrink-0">
       <div
-        className="rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center text-white font-bold shadow-sm"
-        style={{ width: size, height: size, fontSize: size * 0.36 }}
+        className="rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center text-white font-bold shadow-sm overflow-hidden"
+        style={{ width: size, height: size, fontSize: size * 0.42 }}
       >
-        {initials(name)}
+        {avatarUrl?.startsWith('http') ? (
+          <img src={avatarUrl} alt={name} className="w-full h-full object-cover" />
+        ) : avatarUrl ? (
+          avatarUrl
+        ) : (
+          <span style={{ fontSize: size * 0.36 }}>{initials(name)}</span>
+        )}
       </div>
       {status && (
         <span
@@ -1117,6 +1543,14 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                 )}
               </button>
               <button
+                onClick={() => setShowNewGroup(true)}
+                className={`p-2 rounded-xl ${palette.hover} cursor-pointer`}
+                title="New group"
+                aria-label="New group"
+              >
+                <Users size={15} className={palette.textMuted} />
+              </button>
+              <button
                 onClick={() => setShowNewChat(true)}
                 className="p-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white cursor-pointer"
                 title="New chat request"
@@ -1136,6 +1570,27 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                 className={`w-full pl-8 pr-3 py-1.5 rounded-xl border text-xs focus:outline-none focus:border-blue-500 ${palette.inputBg} ${palette.text}`}
               />
             </div>
+          </div>
+
+          <div className="px-2.5 pb-2.5 flex items-center gap-1.5 shrink-0">
+            {(
+              [
+                ['all', 'All'],
+                ['unread', 'Unread'],
+                ['favourites', 'Favourites'],
+                ['groups', 'Groups'],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setConversationFilter(key)}
+                className={`px-2.5 py-1 rounded-full text-[10px] font-bold cursor-pointer whitespace-nowrap ${
+                  conversationFilter === key ? 'bg-blue-600 text-white' : `${palette.hover} ${palette.textMuted}`
+                }`}
+              >
+                {label}
+              </button>
+            ))}
           </div>
 
           <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-2 custom-scrollbar">
@@ -1158,9 +1613,17 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
               <div className="px-3 py-8 text-center">
                 <MessageSquare size={22} className={`mx-auto mb-2 ${palette.textSubtle}`} />
                 <p className={`text-[11px] ${palette.textMuted} leading-relaxed`}>
-                  {filter ? `No conversations match “${filter}”.` : 'No conversations yet.'}
+                  {filter
+                    ? `No conversations match “${filter}”.`
+                    : conversationFilter === 'unread'
+                    ? 'No unread conversations.'
+                    : conversationFilter === 'favourites'
+                    ? 'No conversations with a favourite contact yet.'
+                    : conversationFilter === 'groups'
+                    ? 'No groups yet.'
+                    : 'No conversations yet.'}
                 </p>
-                {!filter && (
+                {!filter && conversationFilter === 'all' && (
                   <button
                     onClick={() => setShowNewChat(true)}
                     className="mt-2 px-2.5 py-1 rounded-lg bg-blue-600 text-white text-[11px] font-bold cursor-pointer"
@@ -1171,7 +1634,10 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
               </div>
             ) : (
               visibleConversations.map((conversation) => {
-                const other = conversation.participants.find((p) => p.username !== currentUser?.username);
+                const isGroup = conversation.kind === 'group';
+                const other = isGroup
+                  ? undefined
+                  : conversation.participants.find((p) => p.username !== currentUser?.username);
                 const isActive = conversation.id === activeConversationId;
                 return (
                   <button
@@ -1188,10 +1654,12 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                       name={other?.fullName ?? conversation.title}
                       status={other?.status}
                       size={32}
+                      avatarUrl={isGroup ? conversation.avatarUrl : undefined}
                     />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between gap-1.5">
-                        <span className={`text-xs font-bold truncate ${palette.text}`}>
+                        <span className={`text-xs font-bold truncate flex items-center gap-1 ${palette.text}`}>
+                          {isGroup && <Users size={11} className={palette.textSubtle} />}
                           {conversation.title}
                         </span>
                         <span className={`text-[9px] shrink-0 ${palette.textSubtle}`}>
@@ -1260,17 +1728,27 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
             )}
             {activeConversation ? (
               <button
-                onClick={() => peer && setShowContactPanel((value) => !value)}
-                disabled={!peer}
-                title={peer ? `View ${peer.fullName}'s details` : undefined}
+                onClick={() => {
+                  if (peer) setShowContactPanel((value) => !value);
+                  else if (activeConversation.kind === 'group') setShowGroupPanel((value) => !value);
+                }}
+                disabled={!peer && activeConversation.kind !== 'group'}
+                title={
+                  peer
+                    ? `View ${peer.fullName}'s details`
+                    : activeConversation.kind === 'group'
+                    ? `View "${activeConversation.title}" group info`
+                    : undefined
+                }
                 className={`flex items-center gap-2 min-w-0 rounded-xl -m-1 p-1 text-left cursor-pointer disabled:cursor-default ${
-                  peer ? palette.hover : ''
+                  peer || activeConversation.kind === 'group' ? palette.hover : ''
                 }`}
               >
                 <Avatar
                   name={peer?.fullName ?? activeConversation.title}
                   status={peer?.status}
                   size={32}
+                  avatarUrl={activeConversation.kind === 'group' ? activeConversation.avatarUrl : undefined}
                 />
                 <div className="min-w-0">
                   <div className={`text-xs font-bold truncate ${palette.text}`}>
@@ -1299,13 +1777,13 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
 
           {/* Theme lives in the window menu (View → Theme), not here. */}
           <div className="flex items-center gap-1 shrink-0">
-            {peer && (
+            {(peer || activeConversation?.kind === 'group') && (
               <>
                 <button
                   onClick={() => void startCall('voice')}
                   disabled={isPeerBlocked || callInProgress !== null}
                   className={`p-2 rounded-xl ${palette.hover} cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed`}
-                  title={isPeerBlocked ? `Unblock ${peer.fullName} to call` : 'Voice call'}
+                  title={isPeerBlocked ? `Unblock ${peer?.fullName} to call` : 'Voice call'}
                   aria-label="Voice call"
                 >
                   <Phone size={15} className={palette.textMuted} />
@@ -1314,7 +1792,7 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                   onClick={() => void startCall('video')}
                   disabled={isPeerBlocked || callInProgress !== null}
                   className={`p-2 rounded-xl ${palette.hover} cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed`}
-                  title={isPeerBlocked ? `Unblock ${peer.fullName} to call` : 'Video call'}
+                  title={isPeerBlocked ? `Unblock ${peer?.fullName} to call` : 'Video call'}
                   aria-label="Video call"
                 >
                   <Video size={15} className={palette.textMuted} />
@@ -1329,16 +1807,18 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                 >
                   <Search size={15} className={showMessageSearch ? '' : palette.textMuted} />
                 </button>
-                <button
-                  onClick={() => void savePeerToContacts(peer)}
-                  disabled={savingContact}
-                  className={`p-2 rounded-xl ${palette.hover} cursor-pointer disabled:opacity-50 disabled:cursor-wait`}
-                  title={`Save ${peer.fullName} to Contacts`}
-                  aria-label={`Save ${peer.fullName} to Contacts`}
-                >
-                  <BookUser size={15} className={palette.textMuted} />
-                </button>
               </>
+            )}
+            {peer && (
+              <button
+                onClick={() => void savePeerToContacts(peer)}
+                disabled={savingContact}
+                className={`p-2 rounded-xl ${palette.hover} cursor-pointer disabled:opacity-50 disabled:cursor-wait`}
+                title={`Save ${peer.fullName} to Contacts`}
+                aria-label={`Save ${peer.fullName} to Contacts`}
+              >
+                <BookUser size={15} className={palette.textMuted} />
+              </button>
             )}
           </div>
         </div>
@@ -1439,7 +1919,10 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
               ) : (
                 activeMessages.map((message) => {
                   const voiceAttachment = message.attachments.find((a) => a.kind === 'voice');
-                  const isEmojiOnly = !voiceAttachment && isEmojiOnlyMessage(message.body);
+                  const mediaAttachment = message.attachments.find((a) => a.kind === 'image' || a.kind === 'video');
+                  const fileAttachment = message.attachments.find((a) => a.kind === 'file');
+                  const isEmojiOnly =
+                    !voiceAttachment && !mediaAttachment && !fileAttachment && isEmojiOnlyMessage(message.body);
                   const isActiveMatch = showMessageSearch && message.id === activeSearchMatchId;
                   return (
                     <div
@@ -1487,6 +1970,46 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                               className="h-8 max-w-[220px]"
                             />
                           </div>
+                        ) : mediaAttachment ? (
+                          <div
+                            className={`overflow-hidden rounded-2xl border ${palette.border} ${
+                              message.isMine ? 'rounded-tr-none' : 'rounded-tl-none'
+                            }`}
+                          >
+                            {mediaAttachment.kind === 'image' ? (
+                              <a href={mediaAttachment.url} target="_blank" rel="noreferrer">
+                                <img
+                                  src={mediaAttachment.url}
+                                  alt={mediaAttachment.name}
+                                  className="max-w-[240px] max-h-[240px] object-cover block"
+                                />
+                              </a>
+                            ) : (
+                              <video controls src={mediaAttachment.url} className="max-w-[240px] max-h-[240px] block" />
+                            )}
+                          </div>
+                        ) : fileAttachment ? (
+                          <a
+                            href={fileAttachment.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className={`flex items-center gap-2.5 p-2.5 rounded-2xl min-w-0 ${
+                              message.isMine
+                                ? `${palette.bubbleMine} rounded-tr-none`
+                                : `${palette.bubbleTheirs} rounded-tl-none`
+                            }`}
+                          >
+                            <span className="p-2 rounded-xl bg-black/10 shrink-0">
+                              <FileText size={16} />
+                            </span>
+                            <span className="min-w-0">
+                              <span className="block text-xs font-bold truncate max-w-[160px]">
+                                {fileAttachment.name}
+                              </span>
+                              <span className="block text-[10px] opacity-80">{formatFileSize(fileAttachment.size)}</span>
+                            </span>
+                            <Download size={13} className="shrink-0 opacity-70" />
+                          </a>
                         ) : isEmojiOnly ? (
                           <div className="text-4xl leading-tight">
                             {showMessageSearch && messageSearchQuery.trim()
@@ -1566,7 +2089,117 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
             ) : (
               <div className={`p-2.5 ${palette.panelBg} border-t ${palette.border} shrink-0 flex items-center gap-2 relative`}>
                 <button
-                  onClick={() => setShowEmojiPicker((value) => !value)}
+                  onClick={() => {
+                    setShowEmojiPicker(false);
+                    setShowAttachMenu((value) => !value);
+                  }}
+                  disabled={isUploadingAttachment}
+                  className={`p-2.5 shrink-0 rounded-xl cursor-pointer disabled:opacity-50 disabled:cursor-wait ${
+                    showAttachMenu ? 'bg-blue-600/15 text-blue-600' : palette.hover
+                  }`}
+                  title="Attach"
+                  aria-label="Attach"
+                >
+                  {isUploadingAttachment ? (
+                    <Loader2 size={17} className={`animate-spin ${palette.textMuted}`} />
+                  ) : (
+                    <Plus size={17} className={showAttachMenu ? '' : palette.textMuted} />
+                  )}
+                </button>
+
+                {showAttachMenu && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setShowAttachMenu(false)} />
+                    <div
+                      className={`absolute bottom-full left-2 mb-2 z-50 w-52 rounded-2xl border shadow-2xl overflow-hidden ${palette.panelBg} ${palette.border}`}
+                    >
+                      <button
+                        onClick={() => documentInputRef.current?.click()}
+                        className={`w-full px-3 py-2.5 flex items-center gap-2.5 text-left cursor-pointer ${palette.hover}`}
+                      >
+                        <span className="p-1.5 rounded-lg bg-indigo-500/15">
+                          <FileText size={15} className="text-indigo-500" />
+                        </span>
+                        <span className={`text-xs font-bold ${palette.text}`}>Document</span>
+                      </button>
+                      <button
+                        onClick={() => mediaInputRef.current?.click()}
+                        className={`w-full px-3 py-2.5 flex items-center gap-2.5 text-left cursor-pointer ${palette.hover}`}
+                      >
+                        <span className="p-1.5 rounded-lg bg-fuchsia-500/15">
+                          <ImageIcon size={15} className="text-fuchsia-500" />
+                        </span>
+                        <span className={`text-xs font-bold ${palette.text}`}>Images &amp; Videos</span>
+                      </button>
+                      <button
+                        onClick={openCamera}
+                        className={`w-full px-3 py-2.5 flex items-center gap-2.5 text-left cursor-pointer ${palette.hover}`}
+                      >
+                        <span className="p-1.5 rounded-lg bg-rose-500/15">
+                          <Camera size={15} className="text-rose-500" />
+                        </span>
+                        <span className={`text-xs font-bold ${palette.text}`}>Camera</span>
+                      </button>
+                      <button
+                        onClick={() => audioFileInputRef.current?.click()}
+                        className={`w-full px-3 py-2.5 flex items-center gap-2.5 text-left cursor-pointer ${palette.hover}`}
+                      >
+                        <span className="p-1.5 rounded-lg bg-amber-500/15">
+                          <Music size={15} className="text-amber-500" />
+                        </span>
+                        <span className={`text-xs font-bold ${palette.text}`}>Audio</span>
+                      </button>
+                      <div className={`my-1 border-t ${palette.border}`} />
+                      <button
+                        onClick={pickFromDrive}
+                        className={`w-full px-3 py-2.5 flex items-center gap-2.5 text-left cursor-pointer ${palette.hover}`}
+                      >
+                        <span className="p-1.5 rounded-lg bg-blue-500/15">
+                          <HardDrive size={15} className="text-blue-500" />
+                        </span>
+                        <span className={`text-xs font-bold ${palette.text}`}>From Drive</span>
+                      </button>
+                    </div>
+                  </>
+                )}
+
+                {/* Hidden pickers, one per attach-menu option — a plain input's `accept`/`capture`
+                    is the only way to steer the OS/browser picker toward the right source. */}
+                <input
+                  ref={documentInputRef}
+                  type="file"
+                  className="hidden"
+                  onChange={(event) => {
+                    void sendSelectedFile(event.target.files?.[0]);
+                    event.target.value = '';
+                  }}
+                />
+                <input
+                  ref={mediaInputRef}
+                  type="file"
+                  accept="image/*,video/*"
+                  className="hidden"
+                  onChange={(event) => {
+                    void sendSelectedFile(event.target.files?.[0]);
+                    event.target.value = '';
+                  }}
+                />
+                <input
+                  ref={audioFileInputRef}
+                  type="file"
+                  accept="audio/*"
+                  className="hidden"
+                  onChange={(event) => {
+                    void sendSelectedFile(event.target.files?.[0]);
+                    event.target.value = '';
+                  }}
+                />
+
+                <button
+                  onClick={() => {
+                    setShowAttachMenu(false);
+                    setShowEmojiPicker((value) => !value);
+                  }}
                   className={`p-2.5 shrink-0 rounded-xl cursor-pointer ${
                     showEmojiPicker ? 'bg-blue-600/15 text-blue-600' : palette.hover
                   }`}
@@ -1660,6 +2293,107 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
             />
           </div>
         </>
+      )}
+
+      {/* ================= GROUP INFO ================= */}
+      {showGroupPanel && activeConversation && activeConversation.kind === 'group' && activeConversationId && (
+        <>
+          {isCompact && (
+            <div className="absolute inset-0 bg-black/40 z-30" onClick={() => setShowGroupPanel(false)} />
+          )}
+          <div className={isCompact ? 'absolute inset-y-0 right-0 z-40 shadow-2xl' : 'contents'}>
+            <GroupDetailsPanel
+              conversation={activeConversation}
+              currentUsername={currentUser?.username}
+              palette={palette}
+              onClose={() => setShowGroupPanel(false)}
+              onToggleFavourite={toggleGroupFavourite}
+              isTogglingFavourite={isTogglingGroupFavourite}
+              onStartCall={startCall}
+              callInProgress={callInProgress}
+              onUpdateDescription={updateGroupDescription}
+              isUpdatingDescription={isUpdatingDescription}
+              onRenameGroup={renameGroupHandler}
+              isRenamingGroup={isRenamingGroup}
+              onChangeAvatar={changeGroupAvatar}
+              isChangingAvatar={isChangingAvatar}
+              allContacts={allContacts}
+              onAddMember={addMemberToGroup}
+              isAddingMember={isAddingMember}
+              onClearChat={clearChat}
+              isClearingChat={isClearingChat}
+              onExitGroup={exitGroup}
+              isExitingGroup={isExitingGroup}
+              onReportGroup={reportGroupHandler}
+              isReportingGroup={isReportingGroup}
+              media={mediaByConversation[activeConversationId] ?? []}
+              isLoadingMedia={isLoadingMedia}
+              mediaError={mediaError}
+              onDeleteMedia={deleteMediaItem}
+              deletingMediaId={deletingMediaId}
+              error={panelError}
+              onDismissError={() => setPanelError(null)}
+            />
+          </div>
+        </>
+      )}
+
+      {/* ================= CAMERA ================= */}
+      {showCameraCapture && (
+        <div className="absolute inset-0 z-50 bg-black flex flex-col items-center justify-center p-4">
+          <button
+            onClick={closeCamera}
+            className="absolute top-4 right-4 p-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white cursor-pointer"
+            title="Close camera"
+            aria-label="Close camera"
+          >
+            <X size={18} />
+          </button>
+
+          <div className="w-full max-w-lg flex flex-col items-center gap-4">
+            {cameraPhotoUrl ? (
+              <img src={cameraPhotoUrl} alt="Captured" className="w-full rounded-2xl" />
+            ) : (
+              <div className="w-full aspect-video rounded-2xl overflow-hidden bg-slate-900 flex items-center justify-center relative">
+                <video ref={cameraVideoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
+                {isCameraLoading && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+                    <Loader2 size={24} className="animate-spin text-white" />
+                  </div>
+                )}
+              </div>
+            )}
+
+            {cameraPhotoUrl ? (
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={retakePhoto}
+                  className="px-4 py-2 rounded-xl border border-white/30 text-white text-xs font-bold cursor-pointer hover:bg-white/10"
+                >
+                  Retake
+                </button>
+                <button
+                  onClick={() => void sendCapturedPhoto()}
+                  disabled={isUploadingAttachment}
+                  className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-bold cursor-pointer flex items-center gap-1.5"
+                >
+                  {isUploadingAttachment && <Loader2 size={13} className="animate-spin" />}
+                  Send
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={capturePhoto}
+                disabled={isCameraLoading}
+                title="Capture"
+                aria-label="Capture"
+                className="w-16 h-16 rounded-full border-4 border-white disabled:opacity-40 disabled:cursor-wait cursor-pointer flex items-center justify-center"
+              >
+                <span className="w-12 h-12 rounded-full bg-white" />
+              </button>
+            )}
+          </div>
+        </div>
       )}
 
       {/* ================= NEW CHAT REQUEST ================= */}
@@ -1797,6 +2531,92 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ================= NEW GROUP ================= */}
+      {showNewGroup && (
+        <div className="absolute inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div
+            className={`w-full max-w-md rounded-2xl border shadow-2xl flex flex-col overflow-hidden ${palette.panelBg} ${palette.border}`}
+            style={{ maxHeight: '85%' }}
+          >
+            <div className={`px-4 py-3 border-b ${palette.border} flex items-center justify-between shrink-0`}>
+              <div>
+                <h3 className={`text-sm font-bold ${palette.text}`}>New group</h3>
+                <p className={`text-[11px] ${palette.textMuted}`}>Name your group and add at least two contacts.</p>
+              </div>
+              <button
+                onClick={() => {
+                  setShowNewGroup(false);
+                  setGroupName('');
+                  setGroupMemberIds(new Set());
+                }}
+                className={`p-1.5 rounded-lg ${palette.hover} cursor-pointer`}
+              >
+                <X size={15} className={palette.textMuted} />
+              </button>
+            </div>
+
+            <div className="p-4 space-y-3 overflow-y-auto custom-scrollbar min-h-0">
+              <div>
+                <label className={`text-[11px] font-bold ${palette.textMuted}`}>Group name</label>
+                <input
+                  autoFocus
+                  value={groupName}
+                  onChange={(event) => setGroupName(event.target.value.slice(0, 120))}
+                  placeholder="e.g. Weekend Trip"
+                  className={`w-full mt-1 px-3 py-2 rounded-xl border text-xs focus:outline-none focus:border-blue-500 ${palette.inputBg} ${palette.text}`}
+                />
+              </div>
+
+              <div>
+                <label className={`text-[11px] font-bold ${palette.textMuted}`}>
+                  Members ({groupMemberIds.size} selected — pick at least 2)
+                </label>
+                <div className="mt-1 max-h-56 overflow-y-auto custom-scrollbar space-y-1">
+                  {allContacts.filter((c) => c.userId).length === 0 ? (
+                    <p className={`text-[11px] text-center py-6 ${palette.textMuted}`}>
+                      You need at least two contacts to start a group — message someone first.
+                    </p>
+                  ) : (
+                    allContacts
+                      .filter((contact) => contact.userId)
+                      .map((contact) => {
+                        const selected = groupMemberIds.has(contact.userId!);
+                        return (
+                          <button
+                            key={contact.id}
+                            onClick={() => toggleGroupMember(contact.userId!)}
+                            className={`w-full p-2 rounded-xl flex items-center gap-2.5 text-left cursor-pointer border ${
+                              selected ? palette.activeItem : `border-transparent ${palette.hover}`
+                            }`}
+                          >
+                            <Avatar name={contact.displayName} size={28} />
+                            <div className="flex-1 min-w-0">
+                              <div className={`text-xs font-bold truncate ${palette.text}`}>{contact.displayName}</div>
+                              {contact.username && (
+                                <div className={`text-[10px] truncate ${palette.textMuted}`}>@{contact.username}</div>
+                              )}
+                            </div>
+                            {selected && <Check size={14} className="text-blue-600 shrink-0" />}
+                          </button>
+                        );
+                      })
+                  )}
+                </div>
+              </div>
+
+              <button
+                onClick={createGroup}
+                disabled={!groupName.trim() || groupMemberIds.size < 2 || isCreatingGroup}
+                className="w-full py-2 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-xs font-bold cursor-pointer flex items-center justify-center gap-1.5"
+              >
+                {isCreatingGroup ? <Loader2 size={13} className="animate-spin" /> : <Users size={13} />}
+                Create group
+              </button>
+            </div>
           </div>
         </div>
       )}
