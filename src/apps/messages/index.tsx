@@ -4,6 +4,7 @@ import {
   AtSign, Loader2, WifiOff, RefreshCw, Inbox, UserCheck, Trash2, BookUser,
   Phone, Video, ChevronUp, ChevronDown, Mic, Smile, Users, FileText,
   Image as ImageIcon, Camera, Music, Download, HardDrive,
+  Pin, CornerUpLeft, Forward, Copy, SmilePlus,
 } from 'lucide-react';
 import { useSystemStore } from '../../shell/state/systemStore';
 import { useAppMenu } from '../../platform/menus/AppMenuContext';
@@ -11,7 +12,7 @@ import { separator } from '../../platform/menus/types';
 import WindowStatus from '../../shell/window-manager/WindowStatusContext';
 import { ApiError } from '../../platform/api/http';
 import {
-  MessagingService, type ChatRequest, type Conversation, type DirectoryUser, type MediaItem,
+  MessagingService, type ChatRequest, type Conversation, type DirectoryUser, type MediaItem, type LinkItem,
   type Message, type MessageDeliveryStatus, type PresenceStatus,
 } from '../../platform/messaging/MessagingService';
 import { ContactsService, type Contact } from '../../platform/contacts/ContactsService';
@@ -157,6 +158,54 @@ function isEmojiOnlyMessage(text: string): boolean {
   return compact.length > 0 && EMOJI_ONLY_REGEX.test(compact);
 }
 
+/** What "Copy" puts on the clipboard for a message with no text of its own. */
+function describeMessageForCopy(message: Message): string {
+  if (message.body) return message.body;
+  const attachment = message.attachments[0];
+  if (!attachment) return '';
+  if (attachment.kind === 'voice') return 'Voice message';
+  if (attachment.kind === 'image') return 'Photo';
+  if (attachment.kind === 'video') return 'Video';
+  return attachment.name;
+}
+
+/**
+ * `navigator.clipboard.writeText` regularly throws "denied" inside an
+ * embedded/iframed window like this app's own shell even when the user did
+ * nothing wrong — no permission prompt, no insecure context, just a document
+ * that doesn't count as "focused" from the Clipboard API's point of view.
+ * The old `execCommand('copy')` path doesn't have that requirement, so it's
+ * the fallback here rather than surfacing the denial as a hard failure.
+ */
+async function copyToClipboard(text: string): Promise<boolean> {
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // Fall through to the legacy path below.
+    }
+  }
+  try {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.top = '-1000px';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(textarea);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+/** The reaction popover's one-tap shortcuts — "more" opens the full emoji picker for anything else. */
+const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
+
 export default function Messenger({ windowId = 'messenger' }: { windowId?: string }) {
   const currentUser = useSystemStore((state) => state.currentUser);
   const pendingConversationId = useSystemStore((state) => state.pendingConversationId);
@@ -248,6 +297,9 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
   const [isLoadingMedia, setIsLoadingMedia] = useState(false);
   const [mediaError, setMediaError] = useState<string | null>(null);
   const [deletingMediaId, setDeletingMediaId] = useState<string | null>(null);
+  const [linksByConversation, setLinksByConversation] = useState<Record<string, LinkItem[]>>({});
+  const [isLoadingLinks, setIsLoadingLinks] = useState(false);
+  const [linksError, setLinksError] = useState<string | null>(null);
   const [panelError, setPanelError] = useState<string | null>(null);
 
   // -----------------------------------------------------------------------
@@ -269,6 +321,22 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
   const [messageSearchQuery, setMessageSearchQuery] = useState('');
   const [messageSearchIndex, setMessageSearchIndex] = useState(0);
   const messageNodeRefs = useRef<Record<string, HTMLDivElement | null>>({});
+
+  // -----------------------------------------------------------------------
+  // Per-message actions — react, reply, copy, forward, pin, delete
+  // -----------------------------------------------------------------------
+  const [openMessageMenuId, setOpenMessageMenuId] = useState<string | null>(null);
+  const [reactingToMessageId, setReactingToMessageId] = useState<string | null>(null);
+  const [togglingReactionId, setTogglingReactionId] = useState<string | null>(null);
+  const [togglingPinId, setTogglingPinId] = useState<string | null>(null);
+  const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
+  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
+  const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
+  const [forwardTargetIds, setForwardTargetIds] = useState<Set<string>>(new Set());
+  const [isForwarding, setIsForwarding] = useState(false);
+  const [pinnedMessages, setPinnedMessages] = useState<Message[]>([]);
+  const [showPinnedList, setShowPinnedList] = useState(false);
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
 
   // -----------------------------------------------------------------------
   // Voice messages
@@ -640,8 +708,13 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
     if (!body || !activeConversationId || isSending) return;
     setIsSending(true);
     setActionError(null);
+    const replyToId = replyingTo?.id;
     try {
-      const message = await MessagingService.sendMessage(activeConversationId, body);
+      const message = await MessagingService.sendMessage(
+        activeConversationId,
+        body,
+        replyToId ? { replyToId } : {},
+      );
       setMessages((prev) => ({
         ...prev,
         [activeConversationId]: [...(prev[activeConversationId] ?? []), message],
@@ -653,6 +726,7 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
             : c,
         ),
       );
+      setReplyingTo(null);
     } catch (error) {
       setActionError(describeError(error));
     } finally {
@@ -728,6 +802,17 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
     );
   }, [activeConversation, currentUser?.username]);
 
+  /**
+   * The viewer's own backend user id, read off the active conversation's
+   * participant list rather than `currentUser` — the shell's `User` type
+   * (systemStore) carries no id, only username/name, and reactions are keyed
+   * by the messaging backend's user id.
+   */
+  const currentUserId = useMemo(
+    () => activeConversation?.participants.find((participant) => participant.username === currentUser?.username)?.id ?? null,
+    [activeConversation, currentUser?.username],
+  );
+
   const activeMessages = activeConversationId ? messages[activeConversationId] ?? [] : [];
   const activePeerContact = peer ? peerContacts[peer.id] ?? null : null;
   const isPeerBlocked = activePeerContact?.isBlocked ?? false;
@@ -778,6 +863,11 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
     setMessageSearchIndex(0);
     setShowEmojiPicker(false);
     setShowAttachMenu(false);
+    setOpenMessageMenuId(null);
+    setReactingToMessageId(null);
+    setReplyingTo(null);
+    setForwardingMessage(null);
+    setShowPinnedList(false);
 
     const recorder = mediaRecorderRef.current;
     if (recorder && recorder.state !== 'inactive') {
@@ -834,8 +924,9 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
     };
   }, [peer, currentUser?.username]);
 
-  // Media is fetched lazily — only while the panel is actually open — rather
-  // than on every conversation switch, since it is not needed until then.
+  // Media and links are fetched lazily — only while the panel is actually
+  // open — rather than on every conversation switch, since neither is needed
+  // until then.
   useEffect(() => {
     if ((!showContactPanel && !showGroupPanel) || !activeConversationId) return;
     let cancelled = false;
@@ -855,6 +946,45 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
       cancelled = true;
     };
   }, [showContactPanel, showGroupPanel, activeConversationId]);
+
+  useEffect(() => {
+    if ((!showContactPanel && !showGroupPanel) || !activeConversationId) return;
+    let cancelled = false;
+    setIsLoadingLinks(true);
+    setLinksError(null);
+    MessagingService.listLinks(activeConversationId)
+      .then((items) => {
+        if (!cancelled) setLinksByConversation((prev) => ({ ...prev, [activeConversationId]: items }));
+      })
+      .catch((error) => {
+        if (!cancelled) setLinksError(describeError(error));
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingLinks(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [showContactPanel, showGroupPanel, activeConversationId]);
+
+  // Pinned messages drive the chat header's pin banner, so — unlike media and
+  // links above — they are needed as soon as a conversation opens, not only
+  // once a side panel is.
+  useEffect(() => {
+    setPinnedMessages([]);
+    if (!activeConversationId) return;
+    let cancelled = false;
+    MessagingService.listPinnedMessages(activeConversationId)
+      .then((items) => {
+        if (!cancelled) setPinnedMessages(items);
+      })
+      .catch(() => {
+        // Non-critical: the banner just stays empty if this fails.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeConversationId]);
 
   const toggleFavourite = async () => {
     if (!peer || !activePeerContact) return;
@@ -955,13 +1085,7 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
             : c,
         ),
       );
-      let copied = false;
-      try {
-        await navigator.clipboard.writeText(meeting.meetingCode);
-        copied = true;
-      } catch {
-        // Clipboard access can be denied; the code is still visible in the chat message above.
-      }
+      const copied = await copyToClipboard(meeting.meetingCode);
       setNotice(
         copied
           ? `Call started — meeting code ${meeting.meetingCode} copied to clipboard`
@@ -979,7 +1103,9 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
     setDeletingMediaId(item.id);
     setPanelError(null);
     try {
-      await MessagingService.deleteMessage(item.messageId);
+      // Your own shared file: delete it for everyone. Someone else's: just
+      // stop showing it to you — you were never allowed to delete their copy.
+      await MessagingService.deleteMessage(item.messageId, item.isMine ? 'everyone' : 'me');
       if (activeConversationId) {
         setMediaByConversation((prev) => ({
           ...prev,
@@ -993,6 +1119,153 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
     } finally {
       setDeletingMediaId(null);
     }
+  };
+
+  // -----------------------------------------------------------------------
+  // Per-message actions — react, reply, copy, forward, pin, delete
+  // -----------------------------------------------------------------------
+
+  const updateMessageInPlace = (conversationId: string, updated: Message) => {
+    setMessages((prev) => ({
+      ...prev,
+      [conversationId]: (prev[conversationId] ?? []).map((existing) =>
+        existing.id === updated.id ? updated : existing,
+      ),
+    }));
+  };
+
+  const toggleReactionOn = async (message: Message, emoji: string) => {
+    setReactingToMessageId(null);
+    setOpenMessageMenuId(null);
+    setTogglingReactionId(message.id);
+    setActionError(null);
+    try {
+      const updated = await MessagingService.toggleReaction(message.id, emoji);
+      updateMessageInPlace(message.conversationId, updated);
+    } catch (error) {
+      setActionError(describeError(error));
+    } finally {
+      setTogglingReactionId(null);
+    }
+  };
+
+  const togglePinOn = async (message: Message) => {
+    setOpenMessageMenuId(null);
+    setTogglingPinId(message.id);
+    setActionError(null);
+    try {
+      const updated = message.pinnedAt
+        ? await MessagingService.unpinMessage(message.id)
+        : await MessagingService.pinMessage(message.id);
+      updateMessageInPlace(message.conversationId, updated);
+      setPinnedMessages((prev) =>
+        updated.pinnedAt
+          ? [updated, ...prev.filter((existing) => existing.id !== updated.id)]
+          : prev.filter((existing) => existing.id !== updated.id),
+      );
+    } catch (error) {
+      setActionError(describeError(error));
+    } finally {
+      setTogglingPinId(null);
+    }
+  };
+
+  const copyMessageText = async (message: Message) => {
+    setOpenMessageMenuId(null);
+    const copied = await copyToClipboard(describeMessageForCopy(message));
+    if (copied) {
+      setCopiedMessageId(message.id);
+      window.setTimeout(() => setCopiedMessageId((current) => (current === message.id ? null : current)), 1500);
+    } else {
+      setActionError('Could not copy — clipboard access was denied.');
+    }
+  };
+
+  const startReply = (message: Message) => {
+    setOpenMessageMenuId(null);
+    setReplyingTo(message);
+    draftInputRef.current?.focus();
+  };
+
+  /**
+   * `'me'` removes the message only from this view — the other participant
+   * sees no change, so it is simply dropped from local state. `'everyone'`
+   * (sender only) comes back as a tombstoned message from the server, which
+   * replaces the original in place rather than being removed, so "This
+   * message was deleted" shows here exactly as it will on the other side
+   * once their next poll picks it up.
+   */
+  const deleteChatMessage = async (message: Message, mode: 'me' | 'everyone') => {
+    setOpenMessageMenuId(null);
+    setDeletingMessageId(message.id);
+    setActionError(null);
+    try {
+      const tombstone = await MessagingService.deleteMessage(message.id, mode);
+      setMessages((prev) => ({
+        ...prev,
+        [message.conversationId]: tombstone
+          ? (prev[message.conversationId] ?? []).map((existing) => (existing.id === message.id ? tombstone : existing))
+          : (prev[message.conversationId] ?? []).filter((existing) => existing.id !== message.id),
+      }));
+      setPinnedMessages((prev) => prev.filter((existing) => existing.id !== message.id));
+    } catch (error) {
+      setActionError(describeError(error));
+    } finally {
+      setDeletingMessageId(null);
+    }
+  };
+
+  const openForwardModal = (message: Message) => {
+    setOpenMessageMenuId(null);
+    setForwardingMessage(message);
+    setForwardTargetIds(new Set());
+  };
+
+  const toggleForwardTarget = (conversationId: string) => {
+    setForwardTargetIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(conversationId)) next.delete(conversationId);
+      else next.add(conversationId);
+      return next;
+    });
+  };
+
+  const confirmForward = async () => {
+    if (!forwardingMessage || forwardTargetIds.size === 0) return;
+    setIsForwarding(true);
+    setActionError(null);
+    try {
+      const results = await MessagingService.forwardMessage(forwardingMessage.id, Array.from(forwardTargetIds));
+      for (const result of results) {
+        setMessages((prev) => ({
+          ...prev,
+          [result.conversationId]: [...(prev[result.conversationId] ?? []), result.message],
+        }));
+        setConversations((prev) =>
+          prev.map((c) =>
+            c.id === result.conversationId
+              ? {
+                  ...c,
+                  lastMessagePreview: result.message.body || c.lastMessagePreview,
+                  lastMessageAt: result.message.createdAt,
+                }
+              : c,
+          ),
+        );
+      }
+      setNotice(`Forwarded to ${results.length} ${results.length === 1 ? 'chat' : 'chats'}`);
+      setForwardingMessage(null);
+      setForwardTargetIds(new Set());
+    } catch (error) {
+      setActionError(describeError(error));
+    } finally {
+      setIsForwarding(false);
+    }
+  };
+
+  const scrollToMessage = (messageId: string) => {
+    setShowPinnedList(false);
+    messageNodeRefs.current[messageId]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
 
   // -----------------------------------------------------------------------
@@ -1880,6 +2153,53 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
           </div>
         )}
 
+        {activeConversation && pinnedMessages.length > 0 && (
+          <div className={`relative border-b shrink-0 ${palette.border}`}>
+            <button
+              onClick={() =>
+                pinnedMessages.length > 1 ? setShowPinnedList((value) => !value) : scrollToMessage(pinnedMessages[0].id)
+              }
+              className={`w-full flex items-center gap-2 px-3 py-1.5 cursor-pointer text-left ${palette.hover}`}
+            >
+              <Pin size={12} className="text-blue-500 shrink-0" />
+              <span className="flex-1 min-w-0">
+                <span className={`block text-[9px] font-bold uppercase tracking-wide ${palette.textSubtle}`}>
+                  Pinned message{pinnedMessages.length > 1 ? `s (${pinnedMessages.length})` : ''}
+                </span>
+                <span className={`block text-[11px] truncate ${palette.text}`}>
+                  {describeMessageForCopy(pinnedMessages[0])}
+                </span>
+              </span>
+              {pinnedMessages.length > 1 && (
+                <ChevronDown size={13} className={`shrink-0 ${palette.textMuted}`} />
+              )}
+            </button>
+            {showPinnedList && pinnedMessages.length > 1 && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setShowPinnedList(false)} />
+                <div
+                  className={`absolute top-full left-2 right-2 mt-1 z-50 rounded-2xl border shadow-2xl overflow-hidden max-h-64 overflow-y-auto custom-scrollbar ${palette.panelBg} ${palette.border}`}
+                >
+                  {pinnedMessages.map((pinned) => (
+                    <button
+                      key={pinned.id}
+                      onClick={() => scrollToMessage(pinned.id)}
+                      className={`w-full px-3 py-2 text-left cursor-pointer ${palette.hover}`}
+                    >
+                      <span className={`block text-[10px] font-bold ${palette.textMuted}`}>
+                        {pinned.isMine ? 'You' : pinned.senderName}
+                      </span>
+                      <span className={`block text-[11px] truncate ${palette.text}`}>
+                        {describeMessageForCopy(pinned)}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
         {!activeConversation ? (
           conversations.length === 0 && !isLoading && !loadError ? (
             emptyState(
@@ -1924,13 +2244,17 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                   const isEmojiOnly =
                     !voiceAttachment && !mediaAttachment && !fileAttachment && isEmojiOnlyMessage(message.body);
                   const isActiveMatch = showMessageSearch && message.id === activeSearchMatchId;
+                  const repliedMessage = message.replyToId
+                    ? activeMessages.find((candidate) => candidate.id === message.replyToId) ?? null
+                    : null;
+                  const reactionEntries = Object.entries(message.reactions);
                   return (
                     <div
                       key={message.id}
                       ref={(el) => {
                         messageNodeRefs.current[message.id] = el;
                       }}
-                      className={`flex gap-2.5 items-start max-w-[85%] rounded-2xl transition-shadow ${
+                      className={`group flex gap-2.5 items-start max-w-[85%] rounded-2xl transition-shadow ${
                         message.isMine ? 'ml-auto flex-row-reverse' : ''
                       } ${isActiveMatch ? 'ring-2 ring-amber-400' : ''}`}
                     >
@@ -1953,81 +2277,264 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                           <span className={`text-[9px] ${palette.textSubtle}`}>
                             {formatTime(message.createdAt)}
                           </span>
+                          {message.pinnedAt && <Pin size={9} className="text-blue-500 shrink-0" />}
                           {message.isMine && <MessageTicks status={message.status} textSubtle={palette.textSubtle} />}
-                        </div>
-                        {voiceAttachment ? (
-                          <div
-                            className={`p-2 rounded-2xl ${
-                              message.isMine
-                                ? `${palette.bubbleMine} rounded-tr-none`
-                                : `${palette.bubbleTheirs} rounded-tl-none`
-                            }`}
-                          >
-                            <audio
-                              controls
-                              preload="metadata"
-                              src={voiceAttachment.url}
-                              className="h-8 max-w-[220px]"
-                            />
+                          <div className="relative shrink-0">
+                            <button
+                              onClick={() =>
+                                setOpenMessageMenuId((current) => (current === message.id ? null : message.id))
+                              }
+                              className={`p-0.5 rounded-md cursor-pointer opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity ${palette.hover}`}
+                              title="Message options"
+                              aria-label="Message options"
+                            >
+                              <ChevronDown size={12} className={palette.textSubtle} />
+                            </button>
+
+                            {openMessageMenuId === message.id && (
+                              <>
+                                <div className="fixed inset-0 z-40" onClick={() => setOpenMessageMenuId(null)} />
+                                <div
+                                  className={`absolute top-full mt-1 z-50 w-44 rounded-xl border shadow-2xl overflow-hidden ${palette.panelBg} ${palette.border} ${
+                                    message.isMine ? 'right-0' : 'left-0'
+                                  }`}
+                                >
+                                  {!message.isDeleted && (
+                                    <>
+                                      <button
+                                        onClick={() => {
+                                          setOpenMessageMenuId(null);
+                                          setReactingToMessageId(message.id);
+                                        }}
+                                        className={`w-full px-3 py-2 flex items-center gap-2 text-left cursor-pointer ${palette.hover}`}
+                                      >
+                                        <SmilePlus size={13} className={palette.textSubtle} />
+                                        <span className={`text-[11px] font-bold ${palette.text}`}>React</span>
+                                      </button>
+                                      <button
+                                        onClick={() => startReply(message)}
+                                        className={`w-full px-3 py-2 flex items-center gap-2 text-left cursor-pointer ${palette.hover}`}
+                                      >
+                                        <CornerUpLeft size={13} className={palette.textSubtle} />
+                                        <span className={`text-[11px] font-bold ${palette.text}`}>Reply</span>
+                                      </button>
+                                      <button
+                                        onClick={() => void copyMessageText(message)}
+                                        className={`w-full px-3 py-2 flex items-center gap-2 text-left cursor-pointer ${palette.hover}`}
+                                      >
+                                        <Copy size={13} className={palette.textSubtle} />
+                                        <span className={`text-[11px] font-bold ${palette.text}`}>
+                                          {copiedMessageId === message.id ? 'Copied' : 'Copy'}
+                                        </span>
+                                      </button>
+                                      <button
+                                        onClick={() => openForwardModal(message)}
+                                        className={`w-full px-3 py-2 flex items-center gap-2 text-left cursor-pointer ${palette.hover}`}
+                                      >
+                                        <Forward size={13} className={palette.textSubtle} />
+                                        <span className={`text-[11px] font-bold ${palette.text}`}>Forward</span>
+                                      </button>
+                                      <button
+                                        onClick={() => void togglePinOn(message)}
+                                        disabled={togglingPinId === message.id}
+                                        className={`w-full px-3 py-2 flex items-center gap-2 text-left cursor-pointer disabled:opacity-50 ${palette.hover}`}
+                                      >
+                                        {togglingPinId === message.id ? (
+                                          <Loader2 size={13} className={`animate-spin ${palette.textSubtle}`} />
+                                        ) : (
+                                          <Pin size={13} className={palette.textSubtle} />
+                                        )}
+                                        <span className={`text-[11px] font-bold ${palette.text}`}>
+                                          {message.pinnedAt ? 'Unpin' : 'Pin'}
+                                        </span>
+                                      </button>
+                                    </>
+                                  )}
+                                  <button
+                                    onClick={() => void deleteChatMessage(message, 'me')}
+                                    disabled={deletingMessageId === message.id}
+                                    className={`w-full px-3 py-2 flex items-center gap-2 text-left cursor-pointer disabled:opacity-50 ${palette.hover}`}
+                                  >
+                                    {deletingMessageId === message.id ? (
+                                      <Loader2 size={13} className={`animate-spin ${palette.textSubtle}`} />
+                                    ) : (
+                                      <Trash2 size={13} className={palette.textSubtle} />
+                                    )}
+                                    <span className={`text-[11px] font-bold ${palette.text}`}>Delete for me</span>
+                                  </button>
+                                  {message.isMine && !message.isDeleted && (
+                                    <button
+                                      onClick={() => void deleteChatMessage(message, 'everyone')}
+                                      disabled={deletingMessageId === message.id}
+                                      className={`w-full px-3 py-2 flex items-center gap-2 text-left cursor-pointer disabled:opacity-50 ${palette.hover}`}
+                                    >
+                                      {deletingMessageId === message.id ? (
+                                        <Loader2 size={13} className="animate-spin text-rose-500" />
+                                      ) : (
+                                        <Trash2 size={13} className="text-rose-500" />
+                                      )}
+                                      <span className="text-[11px] font-bold text-rose-500">Delete for everyone</span>
+                                    </button>
+                                  )}
+                                </div>
+                              </>
+                            )}
+
+                            {reactingToMessageId === message.id && (
+                              <>
+                                <div className="fixed inset-0 z-40" onClick={() => setReactingToMessageId(null)} />
+                                <div
+                                  className={`absolute top-full mt-1 z-50 flex items-center gap-0.5 p-1.5 rounded-2xl border shadow-2xl ${palette.panelBg} ${palette.border} ${
+                                    message.isMine ? 'right-0' : 'left-0'
+                                  }`}
+                                >
+                                  {QUICK_REACTIONS.map((emoji) => (
+                                    <button
+                                      key={emoji}
+                                      onClick={() => void toggleReactionOn(message, emoji)}
+                                      disabled={togglingReactionId === message.id}
+                                      className="w-7 h-7 rounded-lg text-base flex items-center justify-center cursor-pointer hover:scale-125 transition-transform disabled:opacity-50"
+                                    >
+                                      {emoji}
+                                    </button>
+                                  ))}
+                                </div>
+                              </>
+                            )}
                           </div>
-                        ) : mediaAttachment ? (
+                        </div>
+                        {message.isDeleted ? (
                           <div
-                            className={`overflow-hidden rounded-2xl border ${palette.border} ${
+                            className={`flex items-center gap-1.5 px-3 py-2 rounded-2xl text-xs italic ${palette.textSubtle} border ${palette.border} ${
                               message.isMine ? 'rounded-tr-none' : 'rounded-tl-none'
                             }`}
                           >
-                            {mediaAttachment.kind === 'image' ? (
-                              <a href={mediaAttachment.url} target="_blank" rel="noreferrer">
-                                <img
-                                  src={mediaAttachment.url}
-                                  alt={mediaAttachment.name}
-                                  className="max-w-[240px] max-h-[240px] object-cover block"
-                                />
-                              </a>
-                            ) : (
-                              <video controls src={mediaAttachment.url} className="max-w-[240px] max-h-[240px] block" />
-                            )}
-                          </div>
-                        ) : fileAttachment ? (
-                          <a
-                            href={fileAttachment.url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className={`flex items-center gap-2.5 p-2.5 rounded-2xl min-w-0 ${
-                              message.isMine
-                                ? `${palette.bubbleMine} rounded-tr-none`
-                                : `${palette.bubbleTheirs} rounded-tl-none`
-                            }`}
-                          >
-                            <span className="p-2 rounded-xl bg-black/10 shrink-0">
-                              <FileText size={16} />
-                            </span>
-                            <span className="min-w-0">
-                              <span className="block text-xs font-bold truncate max-w-[160px]">
-                                {fileAttachment.name}
-                              </span>
-                              <span className="block text-[10px] opacity-80">{formatFileSize(fileAttachment.size)}</span>
-                            </span>
-                            <Download size={13} className="shrink-0 opacity-70" />
-                          </a>
-                        ) : isEmojiOnly ? (
-                          <div className="text-4xl leading-tight">
-                            {showMessageSearch && messageSearchQuery.trim()
-                              ? highlightMatches(message.body, messageSearchQuery)
-                              : message.body}
+                            <Ban size={12} className="shrink-0" />
+                            This message was deleted
                           </div>
                         ) : (
-                          <div
-                            className={`px-3 py-2 rounded-2xl text-xs leading-relaxed whitespace-pre-line break-words ${
-                              message.isMine
-                                ? `${palette.bubbleMine} rounded-tr-none`
-                                : `${palette.bubbleTheirs} rounded-tl-none`
-                            }`}
-                          >
-                            {showMessageSearch && messageSearchQuery.trim()
-                              ? highlightMatches(message.body, messageSearchQuery)
-                              : message.body}
-                          </div>
+                          <>
+                            {message.isForwarded && (
+                              <div className={`flex items-center gap-1 mb-0.5 text-[10px] italic ${palette.textSubtle} ${message.isMine ? 'justify-end' : ''}`}>
+                                <Forward size={10} />
+                                Forwarded
+                              </div>
+                            )}
+                            {message.replyToId && (
+                              <button
+                                onClick={() => scrollToMessage(message.replyToId!)}
+                                className={`block mb-1 px-2.5 py-1.5 rounded-xl border-l-2 border-blue-500 text-left cursor-pointer max-w-[240px] truncate ${
+                                  palette.isDark ? 'bg-white/5' : 'bg-black/5'
+                                } ${message.isMine ? 'ml-auto' : ''}`}
+                              >
+                                <span className="block text-[10px] font-bold text-blue-500 truncate">
+                                  {repliedMessage ? (repliedMessage.isMine ? 'You' : repliedMessage.senderName) : 'Original message'}
+                                </span>
+                                <span className={`block text-[10px] truncate ${palette.textMuted}`}>
+                                  {repliedMessage
+                                    ? repliedMessage.isDeleted
+                                      ? 'This message was deleted'
+                                      : describeMessageForCopy(repliedMessage)
+                                    : 'Message unavailable'}
+                                </span>
+                              </button>
+                            )}
+                            {voiceAttachment ? (
+                              <div
+                                className={`p-2 rounded-2xl ${
+                                  message.isMine
+                                    ? `${palette.bubbleMine} rounded-tr-none`
+                                    : `${palette.bubbleTheirs} rounded-tl-none`
+                                }`}
+                              >
+                                <audio
+                                  controls
+                                  preload="metadata"
+                                  src={voiceAttachment.url}
+                                  className="h-8 max-w-[220px]"
+                                />
+                              </div>
+                            ) : mediaAttachment ? (
+                              <div
+                                className={`overflow-hidden rounded-2xl border ${palette.border} ${
+                                  message.isMine ? 'rounded-tr-none' : 'rounded-tl-none'
+                                }`}
+                              >
+                                {mediaAttachment.kind === 'image' ? (
+                                  <a href={mediaAttachment.url} target="_blank" rel="noreferrer">
+                                    <img
+                                      src={mediaAttachment.url}
+                                      alt={mediaAttachment.name}
+                                      className="max-w-[240px] max-h-[240px] object-cover block"
+                                    />
+                                  </a>
+                                ) : (
+                                  <video controls src={mediaAttachment.url} className="max-w-[240px] max-h-[240px] block" />
+                                )}
+                              </div>
+                            ) : fileAttachment ? (
+                              <a
+                                href={fileAttachment.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className={`flex items-center gap-2.5 p-2.5 rounded-2xl min-w-0 ${
+                                  message.isMine
+                                    ? `${palette.bubbleMine} rounded-tr-none`
+                                    : `${palette.bubbleTheirs} rounded-tl-none`
+                                }`}
+                              >
+                                <span className="p-2 rounded-xl bg-black/10 shrink-0">
+                                  <FileText size={16} />
+                                </span>
+                                <span className="min-w-0">
+                                  <span className="block text-xs font-bold truncate max-w-[160px]">
+                                    {fileAttachment.name}
+                                  </span>
+                                  <span className="block text-[10px] opacity-80">{formatFileSize(fileAttachment.size)}</span>
+                                </span>
+                                <Download size={13} className="shrink-0 opacity-70" />
+                              </a>
+                            ) : isEmojiOnly ? (
+                              <div className="text-4xl leading-tight">
+                                {showMessageSearch && messageSearchQuery.trim()
+                                  ? highlightMatches(message.body, messageSearchQuery)
+                                  : message.body}
+                              </div>
+                            ) : (
+                              <div
+                                className={`px-3 py-2 rounded-2xl text-xs leading-relaxed whitespace-pre-line break-words ${
+                                  message.isMine
+                                    ? `${palette.bubbleMine} rounded-tr-none`
+                                    : `${palette.bubbleTheirs} rounded-tl-none`
+                                }`}
+                              >
+                                {showMessageSearch && messageSearchQuery.trim()
+                                  ? highlightMatches(message.body, messageSearchQuery)
+                                  : message.body}
+                              </div>
+                            )}
+                            {reactionEntries.length > 0 && (
+                              <div className={`flex flex-wrap gap-1 mt-1 ${message.isMine ? 'justify-end' : ''}`}>
+                                {reactionEntries.map(([emoji, userIds]) => {
+                                  const isMine = currentUserId ? userIds.includes(currentUserId) : false;
+                                  return (
+                                    <button
+                                      key={emoji}
+                                      onClick={() => void toggleReactionOn(message, emoji)}
+                                      disabled={togglingReactionId === message.id}
+                                      title={isMine ? 'Remove your reaction' : `React with ${emoji}`}
+                                      className={`animate-reaction-pop px-1.5 py-0.5 rounded-full text-[11px] border cursor-pointer disabled:opacity-60 ${
+                                        isMine ? 'bg-blue-600/15 border-blue-500 text-blue-500' : `${palette.border} ${palette.textMuted}`
+                                      }`}
+                                    >
+                                      {emoji}
+                                      {userIds.length > 1 ? ` ${userIds.length}` : ''}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </>
                         )}
                       </div>
                     </div>
@@ -2087,6 +2594,28 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                 </button>
               </div>
             ) : (
+              <>
+                {replyingTo && (
+                  <div className={`px-3 py-2 ${palette.panelBg} border-t ${palette.border} shrink-0 flex items-center gap-2.5`}>
+                    <CornerUpLeft size={14} className="text-blue-500 shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className={`text-[10px] font-bold text-blue-500 truncate`}>
+                        Replying to {replyingTo.isMine ? 'yourself' : replyingTo.senderName}
+                      </div>
+                      <div className={`text-[11px] truncate ${palette.textMuted}`}>
+                        {describeMessageForCopy(replyingTo)}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => setReplyingTo(null)}
+                      className={`shrink-0 p-1 rounded-lg cursor-pointer ${palette.hover}`}
+                      title="Cancel reply"
+                      aria-label="Cancel reply"
+                    >
+                      <X size={13} className={palette.textMuted} />
+                    </button>
+                  </div>
+                )}
               <div className={`p-2.5 ${palette.panelBg} border-t ${palette.border} shrink-0 flex items-center gap-2 relative`}>
                 <button
                   onClick={() => {
@@ -2255,6 +2784,7 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                   </button>
                 )}
               </div>
+              </>
             )}
           </>
         )}
@@ -2288,6 +2818,9 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
               mediaError={mediaError}
               onDeleteMedia={deleteMediaItem}
               deletingMediaId={deletingMediaId}
+              links={linksByConversation[activeConversationId] ?? []}
+              isLoadingLinks={isLoadingLinks}
+              linksError={linksError}
               error={panelError}
               onDismissError={() => setPanelError(null)}
             />
@@ -2331,6 +2864,9 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
               mediaError={mediaError}
               onDeleteMedia={deleteMediaItem}
               deletingMediaId={deletingMediaId}
+              links={linksByConversation[activeConversationId] ?? []}
+              isLoadingLinks={isLoadingLinks}
+              linksError={linksError}
               error={panelError}
               onDismissError={() => setPanelError(null)}
             />
@@ -2615,6 +3151,75 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
               >
                 {isCreatingGroup ? <Loader2 size={13} className="animate-spin" /> : <Users size={13} />}
                 Create group
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================= FORWARD ================= */}
+      {forwardingMessage && (
+        <div className="absolute inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div
+            className={`w-full max-w-md rounded-2xl border shadow-2xl flex flex-col overflow-hidden ${palette.panelBg} ${palette.border}`}
+            style={{ maxHeight: '85%' }}
+          >
+            <div className={`px-4 py-3 border-b ${palette.border} flex items-center justify-between shrink-0`}>
+              <div>
+                <h3 className={`text-sm font-bold ${palette.text}`}>Forward message</h3>
+                <p className={`text-[11px] ${palette.textMuted}`}>Choose one or more chats.</p>
+              </div>
+              <button
+                onClick={() => {
+                  setForwardingMessage(null);
+                  setForwardTargetIds(new Set());
+                }}
+                className={`p-1.5 rounded-lg ${palette.hover} cursor-pointer`}
+              >
+                <X size={15} className={palette.textMuted} />
+              </button>
+            </div>
+
+            <div className={`mx-4 mt-3 px-2.5 py-2 rounded-xl border-l-2 border-blue-500 shrink-0 ${palette.isDark ? 'bg-white/5' : 'bg-black/5'}`}>
+              <div className={`text-[10px] font-bold ${palette.textMuted}`}>
+                {forwardingMessage.isMine ? 'You' : forwardingMessage.senderName}
+              </div>
+              <div className={`text-[11px] truncate ${palette.text}`}>{describeMessageForCopy(forwardingMessage)}</div>
+            </div>
+
+            <div className="p-4 space-y-1 overflow-y-auto custom-scrollbar min-h-0">
+              {conversations.length === 0 ? (
+                <p className={`text-[11px] text-center py-6 ${palette.textMuted}`}>No other chats to forward to yet.</p>
+              ) : (
+                conversations.map((conversation) => {
+                  const selected = forwardTargetIds.has(conversation.id);
+                  return (
+                    <button
+                      key={conversation.id}
+                      onClick={() => toggleForwardTarget(conversation.id)}
+                      className={`w-full p-2 rounded-xl flex items-center gap-2.5 text-left cursor-pointer border ${
+                        selected ? palette.activeItem : `border-transparent ${palette.hover}`
+                      }`}
+                    >
+                      <Avatar name={conversation.title} size={28} avatarUrl={conversation.avatarUrl} />
+                      <span className={`flex-1 min-w-0 text-xs font-bold truncate ${palette.text}`}>
+                        {conversation.title}
+                      </span>
+                      {selected && <Check size={14} className="text-blue-600 shrink-0" />}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+
+            <div className={`p-4 pt-0 shrink-0`}>
+              <button
+                onClick={() => void confirmForward()}
+                disabled={forwardTargetIds.size === 0 || isForwarding}
+                className="w-full py-2 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-xs font-bold cursor-pointer flex items-center justify-center gap-1.5"
+              >
+                {isForwarding ? <Loader2 size={13} className="animate-spin" /> : <Forward size={13} />}
+                Forward{forwardTargetIds.size > 0 ? ` (${forwardTargetIds.size})` : ''}
               </button>
             </div>
           </div>

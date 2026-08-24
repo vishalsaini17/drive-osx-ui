@@ -84,7 +84,31 @@ export interface Message {
   isEdited: boolean;
   isMine: boolean;
   status?: MessageDeliveryStatus;
+  /** Set once this message is pinned in its conversation. */
+  pinnedAt: string | null;
+  /** True for a message created by `forwardMessage` — render the "Forwarded" label. */
+  isForwarded: boolean;
+  /** True once the sender has deleted this "for everyone" — `body`/`attachments` are already empty; render a placeholder. */
+  isDeleted: boolean;
   createdAt: string;
+}
+
+/** One link shared in a conversation, extracted from a text message — the contact panel's Links tab. */
+export interface LinkItem {
+  id: string;
+  messageId: string;
+  conversationId: string;
+  isMine: boolean;
+  createdAt: string;
+  url: string;
+  domain: string;
+  snippet: string;
+}
+
+/** One target conversation a forward landed in, and the message it created there. */
+export interface ForwardResult {
+  conversationId: string;
+  message: Message;
 }
 
 /** One attachment shared in a conversation — the contact panel's media tab. */
@@ -220,8 +244,18 @@ export const MessagingService = {
     await http.post(`${BASE}/conversations/${conversationId}/read`);
   },
 
-  async deleteMessage(messageId: string): Promise<void> {
-    await http.delete(`${BASE}/messages/${messageId}`);
+  /**
+   * `'me'` hides the message from the caller only, on any message including
+   * ones they didn't send. `'everyone'` (sender only) tombstones it for
+   * every participant — the response carries the updated message so the
+   * caller's own view can be swapped to the "This message was deleted"
+   * placeholder immediately.
+   */
+  async deleteMessage(messageId: string, mode: 'me' | 'everyone' = 'everyone'): Promise<Message | null> {
+    const response = await http.delete<{ data: Message | null }>(`${BASE}/messages/${messageId}`, {
+      query: { mode },
+    });
+    return response.data;
   },
 
   /** Deletes the conversation for the caller only; the other side keeps theirs. */
@@ -242,6 +276,47 @@ export const MessagingService = {
       `${BASE}/conversations/${conversationId}/media`,
     );
     return response.media ?? [];
+  },
+
+  /** Links extracted from this conversation's text messages — the panel's Links tab. */
+  async listLinks(conversationId: string): Promise<LinkItem[]> {
+    const response = await http.get<{ links: LinkItem[] }>(
+      `${BASE}/conversations/${conversationId}/links`,
+    );
+    return response.links ?? [];
+  },
+
+  /**
+   * Sets the caller's reaction on a message to one emoji — reacting with the
+   * same emoji again clears it, reacting with a different one replaces it.
+   */
+  async toggleReaction(messageId: string, emoji: string): Promise<Message> {
+    const response = await http.post<{ data: Message }>(`${BASE}/messages/${messageId}/react`, { emoji });
+    return response.data;
+  },
+
+  async pinMessage(messageId: string): Promise<Message> {
+    const response = await http.post<{ data: Message }>(`${BASE}/messages/${messageId}/pin`);
+    return response.data;
+  },
+
+  async unpinMessage(messageId: string): Promise<Message> {
+    const response = await http.post<{ data: Message }>(`${BASE}/messages/${messageId}/unpin`);
+    return response.data;
+  },
+
+  /** Pinned messages in this conversation, most recently pinned first. */
+  async listPinnedMessages(conversationId: string): Promise<Message[]> {
+    const response = await http.get<{ messages: Message[] }>(`${BASE}/conversations/${conversationId}/pinned`);
+    return response.messages ?? [];
+  },
+
+  /** Forwards a message's text and/or attachments into other conversations as new messages. */
+  async forwardMessage(messageId: string, conversationIds: string[]): Promise<ForwardResult[]> {
+    const response = await http.post<{ results: ForwardResult[] }>(`${BASE}/messages/${messageId}/forward`, {
+      conversationIds,
+    });
+    return response.results ?? [];
   },
 
   /** Favouriting is per-conversation, so it works for groups too — see `Conversation.isFavourite`. */

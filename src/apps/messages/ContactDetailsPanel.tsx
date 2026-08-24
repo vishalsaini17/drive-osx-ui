@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
 import {
-  X, Phone, Video, Star, Ban, ShieldOff, Trash2, Loader2, ImageOff, FileText, Eraser,
+  X, Phone, Video, Star, Ban, ShieldOff, Trash2, Loader2, Eraser,
 } from 'lucide-react';
-import type { DirectoryUser, MediaItem } from '../../platform/messaging/MessagingService';
+import type { DirectoryUser, MediaItem, LinkItem } from '../../platform/messaging/MessagingService';
 import type { Contact } from '../../platform/contacts/ContactsService';
 import type { MessengerPalette } from './useMessengerTheme';
+import SharedMediaSection from './SharedMediaSection';
 
 /**
  * The right-hand contact panel — WhatsApp Web's "click the name" view.
@@ -18,13 +19,6 @@ import type { MessengerPalette } from './useMessengerTheme';
 
 function initials(name: string): string {
   return name.trim().slice(0, 2).toUpperCase() || '??';
-}
-
-function formatSize(bytes: number | null): string {
-  if (!bytes) return '';
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 export interface ContactDetailsPanelProps {
@@ -57,6 +51,10 @@ export interface ContactDetailsPanelProps {
   onDeleteMedia: (item: MediaItem) => void;
   deletingMediaId: string | null;
 
+  links: LinkItem[];
+  isLoadingLinks: boolean;
+  linksError: string | null;
+
   error: string | null;
   onDismissError: () => void;
 }
@@ -82,6 +80,9 @@ export default function ContactDetailsPanel({
   mediaError,
   onDeleteMedia,
   deletingMediaId,
+  links,
+  isLoadingLinks,
+  linksError,
   error,
   onDismissError,
 }: ContactDetailsPanelProps) {
@@ -277,58 +278,17 @@ export default function ContactDetailsPanel({
           )}
         </div>
 
-        <div className="p-3">
-          <div className={`text-[10px] font-bold uppercase tracking-wide mb-2 ${palette.textSubtle}`}>
-            Shared media
-          </div>
-          {isLoadingMedia ? (
-            <div className={`flex items-center justify-center gap-2 py-6 text-xs ${palette.textMuted}`}>
-              <Loader2 size={13} className="animate-spin" /> Loading media…
-            </div>
-          ) : mediaError ? (
-            <p className={`text-[11px] ${palette.textMuted}`}>{mediaError}</p>
-          ) : media.length === 0 ? (
-            <div className="flex flex-col items-center gap-2 py-6 text-center">
-              <ImageOff size={20} className={palette.textSubtle} />
-              <p className={`text-[11px] ${palette.textMuted}`}>No media shared yet.</p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-3 gap-1.5">
-              {media.map((item) => {
-                const isImage = item.mimeType?.startsWith('image/') ?? false;
-                return (
-                  <div key={item.id} className="relative group aspect-square">
-                    {isImage && item.url ? (
-                      <img src={item.url} alt={item.name} className="w-full h-full object-cover rounded-lg" />
-                    ) : (
-                      <div
-                        className={`w-full h-full rounded-lg flex flex-col items-center justify-center gap-1 border p-1 ${palette.border}`}
-                        title={item.size ? `${item.name} · ${formatSize(item.size)}` : item.name}
-                      >
-                        <FileText size={16} className={palette.textSubtle} />
-                        <span className={`text-[8px] truncate w-full text-center ${palette.textMuted}`}>
-                          {item.name}
-                        </span>
-                      </div>
-                    )}
-                    <button
-                      onClick={() => onDeleteMedia(item)}
-                      disabled={deletingMediaId === item.id}
-                      title="Delete"
-                      className="absolute top-1 right-1 p-1 rounded-lg bg-black/60 text-white opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity cursor-pointer disabled:opacity-100"
-                    >
-                      {deletingMediaId === item.id ? (
-                        <Loader2 size={10} className="animate-spin" />
-                      ) : (
-                        <Trash2 size={10} />
-                      )}
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
+        <SharedMediaSection
+          palette={palette}
+          media={media}
+          isLoadingMedia={isLoadingMedia}
+          mediaError={mediaError}
+          onDeleteMedia={onDeleteMedia}
+          deletingMediaId={deletingMediaId}
+          links={links}
+          isLoadingLinks={isLoadingLinks}
+          linksError={linksError}
+        />
       </div>
     </div>
   );
