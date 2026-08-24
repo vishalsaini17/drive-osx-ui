@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import {
-  X, Phone, Video, Star, Ban, ShieldOff, Trash2, Loader2, ImageOff, FileText,
+  X, Phone, Video, Star, Ban, ShieldOff, Trash2, Loader2, ImageOff, FileText, Eraser,
 } from 'lucide-react';
 import type { DirectoryUser, MediaItem } from '../../platform/messaging/MessagingService';
 import type { Contact } from '../../platform/contacts/ContactsService';
@@ -42,6 +42,9 @@ export interface ContactDetailsPanelProps {
   onToggleBlock: () => void;
   isTogglingBlock: boolean;
 
+  onClearChat: () => void;
+  isClearingChat: boolean;
+
   onDeleteChat: () => void;
   isDeletingChat: boolean;
 
@@ -68,6 +71,8 @@ export default function ContactDetailsPanel({
   isTogglingFavourite,
   onToggleBlock,
   isTogglingBlock,
+  onClearChat,
+  isClearingChat,
   onDeleteChat,
   isDeletingChat,
   onStartCall,
@@ -81,6 +86,7 @@ export default function ContactDetailsPanel({
   onDismissError,
 }: ContactDetailsPanelProps) {
   const [confirmBlock, setConfirmBlock] = useState(false);
+  const [confirmClear, setConfirmClear] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const isFavourite = contact?.isFavourite ?? false;
@@ -198,6 +204,42 @@ export default function ContactDetailsPanel({
               <span className={`text-xs font-bold ${isBlocked ? 'text-emerald-500' : palette.text}`}>
                 {isBlocked ? `Unblock ${peer.fullName}` : `Block ${peer.fullName}`}
               </span>
+            </button>
+          )}
+
+          {confirmClear ? (
+            <div className={`m-1 p-2.5 rounded-xl border ${palette.border}`}>
+              <p className={`text-[11px] leading-relaxed mb-2 ${palette.textMuted}`}>
+                Clear this chat? Your message history disappears, but {peer.fullName} stays in your conversation
+                list — this only clears messages, it does not remove the chat.
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setConfirmClear(false)}
+                  className={`flex-1 py-1.5 rounded-lg text-[11px] font-bold cursor-pointer border ${palette.border} ${palette.hover} ${palette.text}`}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    onClearChat();
+                    setConfirmClear(false);
+                  }}
+                  disabled={isClearingChat}
+                  className="flex-1 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white text-[11px] font-bold cursor-pointer flex items-center justify-center gap-1.5"
+                >
+                  {isClearingChat && <Loader2 size={12} className="animate-spin" />}
+                  Clear
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={() => setConfirmClear(true)}
+              className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-xl cursor-pointer ${palette.hover}`}
+            >
+              <Eraser size={15} className={palette.textMuted} />
+              <span className={`text-xs font-bold ${palette.text}`}>Clear chat</span>
             </button>
           )}
 

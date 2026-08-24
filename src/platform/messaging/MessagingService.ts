@@ -46,6 +46,20 @@ export interface Conversation {
   participants: DirectoryUser[];
 }
 
+/** An attachment on a message — currently only voice notes produce these. */
+export interface MessageAttachment {
+  id: string;
+  kind: 'voice' | 'file' | 'image';
+  name: string;
+  mimeType: string;
+  size: number;
+  url: string;
+  durationSeconds?: number;
+}
+
+/** Only present when `isMine` — nobody sees ticks on a message they received. */
+export type MessageDeliveryStatus = 'sent' | 'delivered' | 'read';
+
 export interface Message {
   id: string;
   conversationId: string;
@@ -54,11 +68,12 @@ export interface Message {
   body: string;
   threadParentId: string | null;
   replyToId: string | null;
-  attachments: unknown[];
+  attachments: MessageAttachment[];
   reactions: Record<string, string[]>;
   mentions: string[];
   isEdited: boolean;
   isMine: boolean;
+  status?: MessageDeliveryStatus;
   createdAt: string;
 }
 
@@ -155,6 +170,22 @@ export const MessagingService = {
     return response.data;
   },
 
+  /** Uploads a recorded voice note as a message with one audio attachment. */
+  async sendVoiceMessage(
+    conversationId: string,
+    audio: Blob,
+    options: { durationSeconds?: number; fileName?: string } = {},
+  ): Promise<Message> {
+    const form = new FormData();
+    form.append('audio', audio, options.fileName ?? 'voice-message.webm');
+    if (options.durationSeconds) form.append('durationSeconds', String(Math.round(options.durationSeconds)));
+    const response = await http.post<{ data: Message }>(
+      `${BASE}/conversations/${conversationId}/voice-message`,
+      form,
+    );
+    return response.data;
+  },
+
   async markRead(conversationId: string): Promise<void> {
     await http.post(`${BASE}/conversations/${conversationId}/read`);
   },
@@ -166,6 +197,14 @@ export const MessagingService = {
   /** Deletes the conversation for the caller only; the other side keeps theirs. */
   async deleteConversation(conversationId: string): Promise<void> {
     await http.delete(`${BASE}/conversations/${conversationId}`);
+  },
+
+  /**
+   * Clears the caller's message history without removing the conversation
+   * from their list — unlike `deleteConversation`, which does both.
+   */
+  async clearConversation(conversationId: string): Promise<void> {
+    await http.post(`${BASE}/conversations/${conversationId}/clear`);
   },
 
   async listMedia(conversationId: string): Promise<MediaItem[]> {

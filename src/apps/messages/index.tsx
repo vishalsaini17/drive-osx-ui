@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Send, Search, X, Plus, MessageSquare, UserPlus, Check, Ban, Clock,
+  Send, Search, X, Plus, MessageSquare, UserPlus, Check, CheckCheck, Ban, Clock,
   AtSign, Loader2, WifiOff, RefreshCw, Inbox, UserCheck, Trash2, BookUser,
-  Phone, Video,
+  Phone, Video, ChevronUp, ChevronDown, Mic, Smile,
 } from 'lucide-react';
 import { useSystemStore } from '../../shell/state/systemStore';
 import { useAppMenu } from '../../platform/menus/AppMenuContext';
@@ -11,7 +11,7 @@ import WindowStatus from '../../shell/window-manager/WindowStatusContext';
 import { ApiError } from '../../platform/api/http';
 import {
   MessagingService, type ChatRequest, type Conversation, type DirectoryUser, type MediaItem,
-  type Message, type PresenceStatus,
+  type Message, type MessageDeliveryStatus, type PresenceStatus,
 } from '../../platform/messaging/MessagingService';
 import { ContactsService, type Contact } from '../../platform/contacts/ContactsService';
 import { MeetingService } from '../../platform/meetings/MeetingService';
@@ -22,6 +22,7 @@ import {
 import { useMessengerTheme } from './useMessengerTheme';
 import { APP_THEME_CHOICES } from '../../platform/theme/appTheme';
 import ContactDetailsPanel from './ContactDetailsPanel';
+import EmojiStickerPicker from './EmojiStickerPicker';
 
 const PRESENCE_DOT: Record<PresenceStatus, string> = {
   online: 'bg-emerald-500',
@@ -65,6 +66,88 @@ function describeError(error: unknown): string {
   return 'Something went wrong. Please try again.';
 }
 
+/**
+ * `getUserMedia` rejects with a `DOMException` whose `name` says what
+ * actually went wrong — permission denied, no device, or the device already
+ * in use elsewhere are three different problems with three different fixes,
+ * and collapsing them into one "denied" message left people trying to grant
+ * a permission that was never the issue.
+ */
+function describeMicrophoneError(error: unknown): string {
+  const name = error instanceof DOMException ? error.name : '';
+  switch (name) {
+    case 'NotAllowedError':
+    case 'PermissionDeniedError':
+      return 'Microphone access was denied. Allow it in the browser’s site settings, then try again.';
+    case 'NotFoundError':
+    case 'DevicesNotFoundError':
+      return 'No microphone was found on this device.';
+    case 'NotReadableError':
+    case 'TrackStartError':
+      return 'The microphone is already in use by another application.';
+    default:
+      return 'Could not access the microphone. Please try again.';
+  }
+}
+
+/** Wraps every case-insensitive occurrence of `query` in `text` with a highlight. */
+function highlightMatches(text: string, query: string): React.ReactNode {
+  const trimmed = query.trim();
+  if (!trimmed) return text;
+
+  const lower = text.toLowerCase();
+  const target = trimmed.toLowerCase();
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+  let index = lower.indexOf(target, cursor);
+  if (index === -1) return text;
+
+  let key = 0;
+  while (index !== -1) {
+    if (index > cursor) parts.push(text.slice(cursor, index));
+    parts.push(
+      <mark key={key++} className="bg-amber-300 text-slate-900 rounded-sm px-0.5">
+        {text.slice(index, index + trimmed.length)}
+      </mark>,
+    );
+    cursor = index + trimmed.length;
+    index = lower.indexOf(target, cursor);
+  }
+  if (cursor < text.length) parts.push(text.slice(cursor));
+  return parts;
+}
+
+function formatDuration(totalSeconds: number): string {
+  const seconds = Math.max(0, Math.round(totalSeconds));
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
+/** Single tick (sent), double tick (delivered), blue double tick (read) — shown only on your own messages. */
+function MessageTicks({ status, textSubtle }: { status?: MessageDeliveryStatus; textSubtle: string }) {
+  if (!status) return null;
+  if (status === 'sent') return <Check size={12} className={textSubtle} />;
+  return (
+    <CheckCheck size={12} className={status === 'read' ? 'text-sky-400' : textSubtle} />
+  );
+}
+
+/** One emoji token: a pictographic base, an optional skin tone or presentation mark, and ZWJ-joined sequences (👨‍👩‍👧). */
+const EMOJI_TOKEN_SOURCE =
+  '(?:\\p{Extended_Pictographic}(?:\\uFE0F|\\p{Emoji_Modifier})?(?:\\u200D\\p{Extended_Pictographic}(?:\\uFE0F|\\p{Emoji_Modifier})?)*|\\p{Emoji_Presentation})';
+const EMOJI_ONLY_REGEX = new RegExp(`^${EMOJI_TOKEN_SOURCE}{1,6}$`, 'u');
+
+/**
+ * A message that is *only* a small handful of emoji (a sticker tap, or
+ * someone typing "🎉🎉🎉") reads better big and bare, WhatsApp-style, than
+ * squeezed into the same bubble as a sentence. Text mixed with emoji, or
+ * more than a few, still gets the normal bubble.
+ */
+function isEmojiOnlyMessage(text: string): boolean {
+  const compact = text.trim().replace(/\s+/g, '');
+  return compact.length > 0 && EMOJI_ONLY_REGEX.test(compact);
+}
+
 export default function Messenger({ windowId = 'messenger' }: { windowId?: string }) {
   const currentUser = useSystemStore((state) => state.currentUser);
   const pendingConversationId = useSystemStore((state) => state.pendingConversationId);
@@ -95,6 +178,8 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
   const [isSending, setIsSending] = useState(false);
   const [showNewChat, setShowNewChat] = useState(false);
   const [showRequests, setShowRequests] = useState(false);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const draftInputRef = useRef<HTMLInputElement>(null);
 
   const [directoryTerm, setDirectoryTerm] = useState('');
   const [directoryResults, setDirectoryResults] = useState<DirectoryUser[]>([]);
@@ -112,6 +197,7 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
   const [isLoadingContact, setIsLoadingContact] = useState(false);
   const [isTogglingFavourite, setIsTogglingFavourite] = useState(false);
   const [isTogglingBlock, setIsTogglingBlock] = useState(false);
+  const [isClearingChat, setIsClearingChat] = useState(false);
   const [isDeletingChat, setIsDeletingChat] = useState(false);
   const [callInProgress, setCallInProgress] = useState<'voice' | 'video' | null>(null);
   const [mediaByConversation, setMediaByConversation] = useState<Record<string, MediaItem[]>>({});
@@ -119,6 +205,25 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
   const [mediaError, setMediaError] = useState<string | null>(null);
   const [deletingMediaId, setDeletingMediaId] = useState<string | null>(null);
   const [panelError, setPanelError] = useState<string | null>(null);
+
+  // -----------------------------------------------------------------------
+  // In-conversation message search
+  // -----------------------------------------------------------------------
+  const [showMessageSearch, setShowMessageSearch] = useState(false);
+  const [messageSearchQuery, setMessageSearchQuery] = useState('');
+  const [messageSearchIndex, setMessageSearchIndex] = useState(0);
+  const messageNodeRefs = useRef<Record<string, HTMLDivElement | null>>({});
+
+  // -----------------------------------------------------------------------
+  // Voice messages
+  // -----------------------------------------------------------------------
+  const [recordingState, setRecordingState] = useState<'idle' | 'recording' | 'uploading'>('idle');
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<BlobPart[]>([]);
+  const recordingStreamRef = useRef<MediaStream | null>(null);
+  const recordingTimerRef = useRef<number | null>(null);
+  const recordingStartRef = useRef<number>(0);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -137,6 +242,18 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
   const isCompact = containerWidth < 720;
   const [showSidebar, setShowSidebar] = useState(true);
   useEffect(() => setShowSidebar(!isCompact), [isCompact]);
+
+  // A microphone stream left open after the window closes keeps the
+  // browser's recording indicator lit for no reason.
+  useEffect(() => {
+    return () => {
+      recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.onstop = null;
+        mediaRecorderRef.current.stop();
+      }
+    };
+  }, []);
 
   // ---------------------------------------------------------------------
   // Loading
@@ -429,8 +546,8 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
     }
   };
 
-  const sendMessage = async () => {
-    const body = draft.trim();
+  /** Shared by the composer's Send and by sticker taps, which send immediately rather than filling the box. */
+  const deliverMessage = async (body: string) => {
     if (!body || !activeConversationId || isSending) return;
     setIsSending(true);
     setActionError(null);
@@ -440,7 +557,6 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
         ...prev,
         [activeConversationId]: [...(prev[activeConversationId] ?? []), message],
       }));
-      setDraft('');
       setConversations((prev) =>
         prev.map((c) =>
           c.id === activeConversationId
@@ -455,6 +571,23 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
     }
   };
 
+  const sendMessage = async () => {
+    const body = draft.trim();
+    if (!body) return;
+    await deliverMessage(body);
+    setDraft('');
+  };
+
+  const sendSticker = async (sticker: string) => {
+    setShowEmojiPicker(false);
+    await deliverMessage(sticker);
+  };
+
+  const insertEmoji = (emoji: string) => {
+    setDraft((prev) => prev + emoji);
+    draftInputRef.current?.focus();
+  };
+
   const incomingRequests = requests.filter((request) => request.direction === 'incoming');
   const outgoingRequests = requests.filter((request) => request.direction === 'outgoing');
 
@@ -464,22 +597,84 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
     return conversations.filter((conversation) => conversation.title.toLowerCase().includes(term));
   }, [conversations, filter]);
 
-  const peer = useMemo(
-    () =>
+  const peer = useMemo(() => {
+    // Without a known viewer, "not the viewer" matches everyone, and `.find`
+    // would silently return whichever participant happens to be first —
+    // which is the viewer's own record exactly when they are that
+    // participant. Requiring `currentUser` first turns that into "no peer
+    // yet" instead of "peer is myself".
+    if (!currentUser?.username) return null;
+    return (
       activeConversation?.participants.find(
-        (participant) => participant.username !== currentUser?.username,
-      ) ?? null,
-    [activeConversation, currentUser?.username],
-  );
+        (participant) => participant.username !== currentUser.username,
+      ) ?? null
+    );
+  }, [activeConversation, currentUser?.username]);
 
   const activeMessages = activeConversationId ? messages[activeConversationId] ?? [] : [];
   const activePeerContact = peer ? peerContacts[peer.id] ?? null : null;
   const isPeerBlocked = activePeerContact?.isBlocked ?? false;
 
+  // Searches the currently loaded thread — the same messages already on
+  // screen, not a separate server-side index.
+  const messageSearchMatches = useMemo(() => {
+    const term = messageSearchQuery.trim().toLowerCase();
+    if (!term) return [];
+    return activeMessages.filter((message) => message.body.toLowerCase().includes(term));
+  }, [activeMessages, messageSearchQuery]);
+
+  useEffect(() => {
+    setMessageSearchIndex(0);
+  }, [messageSearchQuery]);
+
+  useEffect(() => {
+    if (messageSearchMatches.length === 0) return;
+    const target = messageSearchMatches[messageSearchIndex] ?? messageSearchMatches[0];
+    const node = target ? messageNodeRefs.current[target.id] : null;
+    node?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [messageSearchIndex, messageSearchMatches]);
+
+  const goToPreviousMatch = () => {
+    setMessageSearchIndex((index) =>
+      messageSearchMatches.length === 0 ? 0 : (index - 1 + messageSearchMatches.length) % messageSearchMatches.length,
+    );
+  };
+
+  const goToNextMatch = () => {
+    setMessageSearchIndex((index) =>
+      messageSearchMatches.length === 0 ? 0 : (index + 1) % messageSearchMatches.length,
+    );
+  };
+
+  const activeSearchMatchId = messageSearchMatches[messageSearchIndex]?.id ?? null;
+
   // Closing the panel on conversation switch avoids showing stale contact
-  // details for a moment while the new peer's contact loads.
+  // details for a moment while the new peer's contact loads. Search state
+  // resets for the same reason — a highlighted match belongs to one thread.
+  // A recording in progress is discarded rather than carried over: sending
+  // it after switching would attach the clip to the wrong conversation.
   useEffect(() => {
     setShowContactPanel(false);
+    setShowMessageSearch(false);
+    setMessageSearchQuery('');
+    setMessageSearchIndex(0);
+    setShowEmojiPicker(false);
+
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state !== 'inactive') {
+      recorder.onstop = null;
+      recorder.stop();
+    }
+    recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+    recordingStreamRef.current = null;
+    if (recordingTimerRef.current !== null) {
+      window.clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    recordedChunksRef.current = [];
+    mediaRecorderRef.current = null;
+    setRecordingState('idle');
+    setRecordingSeconds(0);
   }, [activeConversationId]);
 
   /**
@@ -490,7 +685,10 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
    * case this is a lookup, not a write.
    */
   useEffect(() => {
-    if (!peer) return;
+    // The `peer` memo already excludes the viewer; this is a second,
+    // independent check so a future regression there fails safe instead of
+    // spamming the server with "add yourself as a contact" requests.
+    if (!peer || peer.username === currentUser?.username) return;
     let cancelled = false;
     setIsLoadingContact(true);
     ContactsService.saveUser(peer.id, peer.fullName)
@@ -506,7 +704,7 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
     return () => {
       cancelled = true;
     };
-  }, [peer]);
+  }, [peer, currentUser?.username]);
 
   // Media is fetched lazily — only while the panel is actually open — rather
   // than on every conversation switch, since it is not needed until then.
@@ -559,6 +757,25 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
       setPanelError(describeError(error));
     } finally {
       setIsTogglingBlock(false);
+    }
+  };
+
+  /** "Clear chat": history only. The conversation stays put in the sidebar. */
+  const clearChat = async () => {
+    if (!activeConversationId) return;
+    setIsClearingChat(true);
+    setPanelError(null);
+    try {
+      await MessagingService.clearConversation(activeConversationId);
+      setMessages((prev) => ({ ...prev, [activeConversationId]: [] }));
+      setConversations((prev) =>
+        prev.map((c) => (c.id === activeConversationId ? { ...c, lastMessagePreview: '' } : c)),
+      );
+      setNotice('Chat cleared');
+    } catch (error) {
+      setPanelError(describeError(error));
+    } finally {
+      setIsClearingChat(false);
     }
   };
 
@@ -647,6 +864,114 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
     } finally {
       setDeletingMediaId(null);
     }
+  };
+
+  // -----------------------------------------------------------------------
+  // Voice messages
+  // -----------------------------------------------------------------------
+
+  function stopMicStream() {
+    recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+    recordingStreamRef.current = null;
+    if (recordingTimerRef.current !== null) {
+      window.clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+  }
+
+  const startRecording = async () => {
+    if (!activeConversationId || isPeerBlocked || recordingState !== 'idle') return;
+    setActionError(null);
+
+    // getUserMedia only exists in a secure context — https:, or http: on
+    // localhost/127.0.0.1. Anywhere else the API itself is undefined, which
+    // used to fall into the same catch block as an actual permission denial
+    // and claim the mic was "denied" when the real problem is that the page
+    // needs to be loaded over HTTPS (or from localhost) for recording to be
+    // possible at all.
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setActionError(
+        window.isSecureContext
+          ? 'This browser does not support voice recording.'
+          : 'Voice messages need a secure connection (HTTPS, or localhost). Open Messenger over HTTPS to record.',
+      );
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recordingStreamRef.current = stream;
+
+      const mimeType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find(
+        (candidate) => typeof MediaRecorder.isTypeSupported === 'function' && MediaRecorder.isTypeSupported(candidate),
+      );
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      recordedChunksRef.current = [];
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) recordedChunksRef.current.push(event.data);
+      };
+      mediaRecorderRef.current = recorder;
+      recorder.start();
+
+      recordingStartRef.current = Date.now();
+      setRecordingSeconds(0);
+      setRecordingState('recording');
+      recordingTimerRef.current = window.setInterval(() => {
+        setRecordingSeconds(Math.round((Date.now() - recordingStartRef.current) / 1000));
+      }, 250);
+    } catch (error) {
+      setActionError(describeMicrophoneError(error));
+      stopMicStream();
+    }
+  };
+
+  const cancelRecording = () => {
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state !== 'inactive') {
+      recorder.onstop = null;
+      recorder.stop();
+    }
+    stopMicStream();
+    recordedChunksRef.current = [];
+    mediaRecorderRef.current = null;
+    setRecordingState('idle');
+    setRecordingSeconds(0);
+  };
+
+  const sendRecording = () => {
+    const recorder = mediaRecorderRef.current;
+    const conversationId = activeConversationId;
+    if (!recorder || recorder.state === 'inactive' || !conversationId) return;
+
+    recorder.onstop = async () => {
+      const duration = Math.max(1, Math.round((Date.now() - recordingStartRef.current) / 1000));
+      const blob = new Blob(recordedChunksRef.current, { type: recorder.mimeType || 'audio/webm' });
+      recordedChunksRef.current = [];
+      mediaRecorderRef.current = null;
+      stopMicStream();
+      setRecordingState('uploading');
+
+      try {
+        const message = await MessagingService.sendVoiceMessage(conversationId, blob, { durationSeconds: duration });
+        setMessages((prev) => ({
+          ...prev,
+          [conversationId]: [...(prev[conversationId] ?? []), message],
+        }));
+        setConversations((prev) =>
+          prev.map((c) =>
+            c.id === conversationId
+              ? { ...c, lastMessagePreview: '🎤 Voice message', lastMessageAt: message.createdAt }
+              : c,
+          ),
+        );
+      } catch (error) {
+        setActionError(describeError(error));
+      } finally {
+        setRecordingState('idle');
+        setRecordingSeconds(0);
+      }
+    };
+    recorder.stop();
   };
 
   // ---------------------------------------------------------------------
@@ -995,6 +1320,16 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                   <Video size={15} className={palette.textMuted} />
                 </button>
                 <button
+                  onClick={() => setShowMessageSearch((value) => !value)}
+                  className={`p-2 rounded-xl cursor-pointer ${
+                    showMessageSearch ? 'bg-blue-600/15 text-blue-600' : palette.hover
+                  }`}
+                  title="Search in this conversation"
+                  aria-label="Search in this conversation"
+                >
+                  <Search size={15} className={showMessageSearch ? '' : palette.textMuted} />
+                </button>
+                <button
                   onClick={() => void savePeerToContacts(peer)}
                   disabled={savingContact}
                   className={`p-2 rounded-xl ${palette.hover} cursor-pointer disabled:opacity-50 disabled:cursor-wait`}
@@ -1007,6 +1342,63 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
             )}
           </div>
         </div>
+
+        {showMessageSearch && activeConversation && (
+          <div className={`px-3 py-2 ${palette.panelBg} border-b ${palette.border} flex items-center gap-2 shrink-0`}>
+            <Search size={13} className={palette.textSubtle} />
+            <input
+              autoFocus
+              value={messageSearchQuery}
+              onChange={(event) => setMessageSearchQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  if (event.shiftKey) goToPreviousMatch();
+                  else goToNextMatch();
+                } else if (event.key === 'Escape') {
+                  setShowMessageSearch(false);
+                  setMessageSearchQuery('');
+                }
+              }}
+              placeholder="Search in this conversation"
+              className={`flex-1 min-w-0 px-2.5 py-1.5 rounded-xl border text-xs focus:outline-none focus:border-blue-500 ${palette.inputBg} ${palette.text}`}
+            />
+            {messageSearchQuery.trim() && (
+              <span className={`text-[10px] shrink-0 tabular-nums ${palette.textSubtle}`}>
+                {messageSearchMatches.length === 0 ? 'No results' : `${messageSearchIndex + 1}/${messageSearchMatches.length}`}
+              </span>
+            )}
+            <button
+              onClick={goToPreviousMatch}
+              disabled={messageSearchMatches.length === 0}
+              className={`p-1.5 rounded-lg ${palette.hover} cursor-pointer disabled:opacity-30 disabled:cursor-default`}
+              title="Previous match"
+              aria-label="Previous match"
+            >
+              <ChevronUp size={14} className={palette.textMuted} />
+            </button>
+            <button
+              onClick={goToNextMatch}
+              disabled={messageSearchMatches.length === 0}
+              className={`p-1.5 rounded-lg ${palette.hover} cursor-pointer disabled:opacity-30 disabled:cursor-default`}
+              title="Next match"
+              aria-label="Next match"
+            >
+              <ChevronDown size={14} className={palette.textMuted} />
+            </button>
+            <button
+              onClick={() => {
+                setShowMessageSearch(false);
+                setMessageSearchQuery('');
+              }}
+              className={`p-1.5 rounded-lg ${palette.hover} cursor-pointer`}
+              title="Close search"
+              aria-label="Close search"
+            >
+              <X size={14} className={palette.textMuted} />
+            </button>
+          </div>
+        )}
 
         {!activeConversation ? (
           conversations.length === 0 && !isLoading && !loadError ? (
@@ -1045,45 +1437,79 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                   </p>
                 </div>
               ) : (
-                activeMessages.map((message) => (
-                  <div
-                    key={message.id}
-                    className={`flex gap-2.5 items-start max-w-[85%] ${
-                      message.isMine ? 'ml-auto flex-row-reverse' : ''
-                    }`}
-                  >
+                activeMessages.map((message) => {
+                  const voiceAttachment = message.attachments.find((a) => a.kind === 'voice');
+                  const isEmojiOnly = !voiceAttachment && isEmojiOnlyMessage(message.body);
+                  const isActiveMatch = showMessageSearch && message.id === activeSearchMatchId;
+                  return (
                     <div
-                      className={`w-7 h-7 rounded-lg shrink-0 flex items-center justify-center text-[10px] font-bold ${
-                        message.isMine
-                          ? 'bg-blue-600 text-white'
-                          : palette.isDark
-                          ? 'bg-slate-700 text-slate-200'
-                          : 'bg-slate-200 text-slate-700'
-                      }`}
+                      key={message.id}
+                      ref={(el) => {
+                        messageNodeRefs.current[message.id] = el;
+                      }}
+                      className={`flex gap-2.5 items-start max-w-[85%] rounded-2xl transition-shadow ${
+                        message.isMine ? 'ml-auto flex-row-reverse' : ''
+                      } ${isActiveMatch ? 'ring-2 ring-amber-400' : ''}`}
                     >
-                      {initials(message.isMine ? currentUser?.fullName || 'You' : message.senderName)}
-                    </div>
-                    <div className="min-w-0">
-                      <div className={`flex items-center gap-2 mb-0.5 ${message.isMine ? 'justify-end' : ''}`}>
-                        <span className={`text-[11px] font-bold ${palette.textMuted}`}>
-                          {message.isMine ? 'You' : message.senderName}
-                        </span>
-                        <span className={`text-[9px] ${palette.textSubtle}`}>
-                          {formatTime(message.createdAt)}
-                        </span>
-                      </div>
                       <div
-                        className={`px-3 py-2 rounded-2xl text-xs leading-relaxed whitespace-pre-line break-words ${
+                        className={`w-7 h-7 rounded-lg shrink-0 flex items-center justify-center text-[10px] font-bold ${
                           message.isMine
-                            ? `${palette.bubbleMine} rounded-tr-none`
-                            : `${palette.bubbleTheirs} rounded-tl-none`
+                            ? 'bg-blue-600 text-white'
+                            : palette.isDark
+                            ? 'bg-slate-700 text-slate-200'
+                            : 'bg-slate-200 text-slate-700'
                         }`}
                       >
-                        {message.body}
+                        {initials(message.isMine ? currentUser?.fullName || 'You' : message.senderName)}
+                      </div>
+                      <div className="min-w-0">
+                        <div className={`flex items-center gap-2 mb-0.5 ${message.isMine ? 'justify-end' : ''}`}>
+                          <span className={`text-[11px] font-bold ${palette.textMuted}`}>
+                            {message.isMine ? 'You' : message.senderName}
+                          </span>
+                          <span className={`text-[9px] ${palette.textSubtle}`}>
+                            {formatTime(message.createdAt)}
+                          </span>
+                          {message.isMine && <MessageTicks status={message.status} textSubtle={palette.textSubtle} />}
+                        </div>
+                        {voiceAttachment ? (
+                          <div
+                            className={`p-2 rounded-2xl ${
+                              message.isMine
+                                ? `${palette.bubbleMine} rounded-tr-none`
+                                : `${palette.bubbleTheirs} rounded-tl-none`
+                            }`}
+                          >
+                            <audio
+                              controls
+                              preload="metadata"
+                              src={voiceAttachment.url}
+                              className="h-8 max-w-[220px]"
+                            />
+                          </div>
+                        ) : isEmojiOnly ? (
+                          <div className="text-4xl leading-tight">
+                            {showMessageSearch && messageSearchQuery.trim()
+                              ? highlightMatches(message.body, messageSearchQuery)
+                              : message.body}
+                          </div>
+                        ) : (
+                          <div
+                            className={`px-3 py-2 rounded-2xl text-xs leading-relaxed whitespace-pre-line break-words ${
+                              message.isMine
+                                ? `${palette.bubbleMine} rounded-tr-none`
+                                : `${palette.bubbleTheirs} rounded-tl-none`
+                            }`}
+                          >
+                            {showMessageSearch && messageSearchQuery.trim()
+                              ? highlightMatches(message.body, messageSearchQuery)
+                              : message.body}
+                          </div>
+                        )}
                       </div>
                     </div>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
 
@@ -1101,9 +1527,71 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                   Unblock
                 </button>
               </div>
+            ) : recordingState !== 'idle' ? (
+              <div className={`p-2.5 ${palette.panelBg} border-t ${palette.border} shrink-0 flex items-center gap-3`}>
+                <button
+                  onClick={cancelRecording}
+                  disabled={recordingState === 'uploading'}
+                  className={`p-2.5 shrink-0 rounded-xl cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${palette.hover}`}
+                  title="Cancel recording"
+                  aria-label="Cancel recording"
+                >
+                  <Trash2 size={16} className="text-rose-500" />
+                </button>
+                <div className="flex-1 min-w-0 flex items-center gap-2">
+                  {recordingState === 'recording' ? (
+                    <>
+                      <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse shrink-0" />
+                      <span className={`text-xs font-bold tabular-nums ${palette.text}`}>
+                        {formatDuration(recordingSeconds)}
+                      </span>
+                      <span className={`text-[11px] ${palette.textMuted}`}>Recording…</span>
+                    </>
+                  ) : (
+                    <span className={`text-xs flex items-center gap-2 ${palette.textMuted}`}>
+                      <Loader2 size={13} className="animate-spin" /> Sending voice message…
+                    </span>
+                  )}
+                </div>
+                <button
+                  onClick={sendRecording}
+                  disabled={recordingState !== 'recording'}
+                  className="p-2.5 shrink-0 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded-xl cursor-pointer transition-colors"
+                  title="Send voice message"
+                  aria-label="Send voice message"
+                >
+                  <Send size={15} />
+                </button>
+              </div>
             ) : (
-              <div className={`p-2.5 ${palette.panelBg} border-t ${palette.border} shrink-0 flex items-center gap-2`}>
+              <div className={`p-2.5 ${palette.panelBg} border-t ${palette.border} shrink-0 flex items-center gap-2 relative`}>
+                <button
+                  onClick={() => setShowEmojiPicker((value) => !value)}
+                  className={`p-2.5 shrink-0 rounded-xl cursor-pointer ${
+                    showEmojiPicker ? 'bg-blue-600/15 text-blue-600' : palette.hover
+                  }`}
+                  title="Emoji and stickers"
+                  aria-label="Emoji and stickers"
+                >
+                  <Smile size={17} className={showEmojiPicker ? '' : palette.textMuted} />
+                </button>
+
+                {showEmojiPicker && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setShowEmojiPicker(false)} />
+                    <div className="absolute bottom-full left-2 mb-2 z-50">
+                      <EmojiStickerPicker
+                        palette={palette}
+                        onSelectEmoji={insertEmoji}
+                        onSelectSticker={(sticker) => void sendSticker(sticker)}
+                        onClose={() => setShowEmojiPicker(false)}
+                      />
+                    </div>
+                  </>
+                )}
+
                 <input
+                  ref={draftInputRef}
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
                   onKeyDown={(event) => {
@@ -1115,13 +1603,24 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                   placeholder={`Message ${activeConversation.title}`}
                   className={`flex-1 min-w-0 px-3.5 py-2 rounded-2xl border text-xs focus:outline-none focus:border-blue-500 ${palette.inputBg} ${palette.text}`}
                 />
-                <button
-                  onClick={sendMessage}
-                  disabled={!draft.trim() || isSending}
-                  className="p-2.5 shrink-0 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded-xl cursor-pointer transition-colors"
-                >
-                  {isSending ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
-                </button>
+                {draft.trim() ? (
+                  <button
+                    onClick={sendMessage}
+                    disabled={isSending}
+                    className="p-2.5 shrink-0 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded-xl cursor-pointer transition-colors"
+                  >
+                    {isSending ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => void startRecording()}
+                    className="p-2.5 shrink-0 bg-blue-600 hover:bg-blue-500 text-white rounded-xl cursor-pointer transition-colors"
+                    title="Record a voice message"
+                    aria-label="Record a voice message"
+                  >
+                    <Mic size={15} />
+                  </button>
+                )}
               </div>
             )}
           </>
@@ -1145,6 +1644,8 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
               isTogglingFavourite={isTogglingFavourite}
               onToggleBlock={toggleBlock}
               isTogglingBlock={isTogglingBlock}
+              onClearChat={clearChat}
+              isClearingChat={isClearingChat}
               onDeleteChat={deleteChat}
               isDeletingChat={isDeletingChat}
               onStartCall={startCall}
