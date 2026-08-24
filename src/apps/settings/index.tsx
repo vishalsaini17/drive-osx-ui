@@ -69,7 +69,7 @@ export default function Settings() {
   const categories = [
     { id: 'Account', label: 'Account', icon: UserIcon, subPoints: ['Profile', 'Password', 'Security', 'Sessions', 'Two-factor authentication'] },
     { id: 'Appearance', label: 'Appearance', icon: Palette, subPoints: ['Theme', 'Accent color', 'Wallpapers', 'Fonts', 'Icon size'] },
-    { id: 'Desktop', label: 'Desktop', icon: Layout, subPoints: ['Desktop icons', 'Dock settings', 'Taskbar settings'] },
+    { id: 'Desktop', label: 'Desktop', icon: Layout, subPoints: ['Desktop icons', 'Dock settings', 'Taskbar settings', 'Window management'] },
     { id: 'Notifications', label: 'Notifications', icon: Bell, subPoints: ['Enable/disable notifications', 'Sound', 'Priority'] },
     { id: 'Storage', label: 'Storage', icon: HardDrive, subPoints: ['Used storage', 'Storage limit', 'Cleanup'] },
     { id: 'Applications', label: 'Applications', icon: AppWindow, subPoints: ['Installed apps', 'Default applications', 'App permissions'] },
@@ -1250,6 +1250,171 @@ export default function Settings() {
                         }`}
                     >
                       <div className={`w-4 h-4 rounded-full bg-white transition-transform ${settings.showWifiInTaskbar !== false ? 'translate-x-5' : 'translate-x-0'
+                        }`} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Window management */}
+            {activeSubTab === 'Window management' && (
+              <div className={`border ${ts.card} space-y-5`}>
+                <h3 className={ts.sectionHeader}>New Window Defaults</h3>
+
+                <div>
+                  <label className={`text-xs font-semibold block mb-2 ${ts.subText}`}>Open Windows</label>
+                  <div className="flex gap-2">
+                    {([
+                      { id: 'maximized', label: 'Maximised' },
+                      { id: 'custom', label: 'Custom size' },
+                    ] as const).map(({ id, label }) => (
+                      <button
+                        key={id}
+                        onClick={() => setSettings(prev => ({ ...prev, defaultWindowMode: id }))}
+                        className={`flex-1 py-2 rounded-xl border text-xs font-semibold transition-all cursor-pointer ${(settings.defaultWindowMode || 'custom') === id ? ts.interactiveBtnActive : ts.interactiveBtn
+                          }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {(settings.defaultWindowMode ?? 'custom') === 'custom' && (
+                  <div>
+                    <label className={`text-xs font-semibold block mb-2 ${ts.subText}`}>Default Window Size</label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        placeholder="Auto"
+                        value={settings.defaultWindowWidth ?? ''}
+                        onChange={(e) => setSettings(prev => ({ ...prev, defaultWindowWidth: e.target.value ? Number(e.target.value) : undefined }))}
+                        className={`w-24 text-xs rounded-lg px-2 py-1.5 outline-none border ${ts.input}`}
+                      />
+                      <span className={`text-xs ${ts.subText}`}>×</span>
+                      <input
+                        type="number"
+                        placeholder="Auto"
+                        value={settings.defaultWindowHeight ?? ''}
+                        onChange={(e) => setSettings(prev => ({ ...prev, defaultWindowHeight: e.target.value ? Number(e.target.value) : undefined }))}
+                        className={`w-24 text-xs rounded-lg px-2 py-1.5 outline-none border ${ts.input}`}
+                      />
+                      <span className={`text-[11px] ${ts.subText}`}>Leave blank to use each app's own size.</span>
+                    </div>
+                  </div>
+                )}
+
+                {(settings.defaultWindowMode ?? 'custom') === 'custom' && (
+                  <div>
+                    <label className={`text-xs font-semibold block mb-2 ${ts.subText}`}>Window Position</label>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {([
+                        { id: 'app-default', label: 'App Default' },
+                        { id: 'center', label: 'Centre' },
+                        { id: 'cascade', label: 'Cascade' },
+                        { id: 'custom', label: 'Fixed' },
+                      ] as const).map(({ id, label }) => (
+                        <button
+                          key={id}
+                          onClick={() => setSettings(prev => ({ ...prev, defaultWindowPlacement: id }))}
+                          className={`py-2 rounded-xl border text-xs font-semibold transition-all cursor-pointer ${(settings.defaultWindowPlacement || 'app-default') === id ? ts.interactiveBtnActive : ts.interactiveBtn
+                            }`}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {(settings.defaultWindowMode ?? 'custom') === 'custom' && settings.defaultWindowPlacement === 'custom' && (
+                  <div>
+                    <label className={`text-xs font-semibold block mb-2 ${ts.subText}`}>Fixed Position</label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        value={settings.defaultWindowX ?? 120}
+                        onChange={(e) => setSettings(prev => ({ ...prev, defaultWindowX: Number(e.target.value) }))}
+                        className={`w-20 text-xs rounded-lg px-2 py-1.5 outline-none border ${ts.input}`}
+                      />
+                      <span className={`text-xs ${ts.subText}`}>,</span>
+                      <input
+                        type="number"
+                        value={settings.defaultWindowY ?? 80}
+                        onChange={(e) => setSettings(prev => ({ ...prev, defaultWindowY: Number(e.target.value) }))}
+                        className={`w-20 text-xs rounded-lg px-2 py-1.5 outline-none border ${ts.input}`}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <div className={`pt-3 border-t ${ts.border} space-y-3 text-xs`}>
+                  {[
+                    { key: 'rememberWindowGeometry' as const, label: 'Remember Window Layout', desc: 'Reopen each application where it was last left.', defaultOn: false },
+                    { key: 'showWindowMenuBar' as const, label: 'Show Menu Button', desc: 'Display the application menu icon in window title bars.', defaultOn: true },
+                    { key: 'focusFollowsMouse' as const, label: 'Focus Follows Mouse', desc: 'Activate a window when the pointer moves over it.', defaultOn: false },
+                    { key: 'confirmOnClose' as const, label: 'Confirm Before Closing', desc: 'Ask when a window still has unsaved work.', defaultOn: true },
+                  ].map(({ key, label, desc, defaultOn }) => {
+                    const isOn = settings[key] ?? defaultOn;
+                    return (
+                      <div key={key} className="flex items-center justify-between">
+                        <div>
+                          <span className="font-semibold block">{label}</span>
+                          <span className={`text-[11px] ${ts.subText}`}>{desc}</span>
+                        </div>
+                        <button
+                          onClick={() => {
+                            const nextVal = !isOn;
+                            setSettings(prev => ({ ...prev, [key]: nextVal }));
+                            showToast(`${label} ${nextVal ? 'Enabled' : 'Disabled'}`);
+                          }}
+                          className={`w-10 h-5 rounded-full p-0.5 transition-colors cursor-pointer shrink-0 ${isOn ? 'bg-purple-600' : 'bg-black/20 border border-white/10'
+                            }`}
+                        >
+                          <div className={`w-4 h-4 rounded-full bg-white transition-transform ${isOn ? 'translate-x-5' : 'translate-x-0'
+                            }`} />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className={`pt-3 border-t ${ts.border} space-y-3 text-xs`}>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="font-semibold block">Reduce Motion</span>
+                      <span className={`text-[11px] ${ts.subText}`}>Turn off window and menu animations.</span>
+                    </div>
+                    <button
+                      onClick={() => {
+                        const nextVal = !(settings.reduceMotion ?? false);
+                        setSettings(prev => ({ ...prev, reduceMotion: nextVal }));
+                        showToast(`Reduce Motion ${nextVal ? 'Enabled' : 'Disabled'}`);
+                      }}
+                      className={`w-10 h-5 rounded-full p-0.5 transition-colors cursor-pointer shrink-0 ${settings.reduceMotion ? 'bg-purple-600' : 'bg-black/20 border border-white/10'
+                        }`}
+                    >
+                      <div className={`w-4 h-4 rounded-full bg-white transition-transform ${settings.reduceMotion ? 'translate-x-5' : 'translate-x-0'
+                        }`} />
+                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="font-semibold block">Interface Sounds</span>
+                      <span className={`text-[11px] ${ts.subText}`}>Play a click when interacting with the shell.</span>
+                    </div>
+                    <button
+                      onClick={() => {
+                        const nextVal = !settings.soundsEnabled;
+                        setSettings(prev => ({ ...prev, soundsEnabled: nextVal }));
+                        showToast(`Interface Sounds ${nextVal ? 'Enabled' : 'Disabled'}`);
+                      }}
+                      className={`w-10 h-5 rounded-full p-0.5 transition-colors cursor-pointer shrink-0 ${settings.soundsEnabled ? 'bg-purple-600' : 'bg-black/20 border border-white/10'
+                        }`}
+                    >
+                      <div className={`w-4 h-4 rounded-full bg-white transition-transform ${settings.soundsEnabled ? 'translate-x-5' : 'translate-x-0'
                         }`} />
                     </button>
                   </div>

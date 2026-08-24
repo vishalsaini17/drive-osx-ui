@@ -8,14 +8,13 @@ import WindowMenu from './WindowMenu';
 import { buildStandardMenus } from './standardMenus';
 import { MenuItem, separator } from '../../platform/menus/types';
 import { useWindowMenus } from '../../platform/menus/AppMenuContext';
-import PreferencesDialog from '../preferences/PreferencesDialog';
 import AppSettingsModal from '../preferences/AppSettingsModal';
 import Modal from '../../design-system/components/Modal';
 import { coversDockZone, useDockZoneStore } from '../taskbar/dockZone';
 import { useAppTheme } from '../../platform/theme/useAppTheme';
 import { themeChrome } from '../../platform/theme/themes';
 import { AppRegistry } from '../../platform/registry/AppRegistry';
-import { Settings, SlidersHorizontal, X } from 'lucide-react';
+import { Settings, X } from 'lucide-react';
 
 /** Screen space the dock occupies, which a window may not be dropped behind. */
 function dockDeduction(dockSize: string | undefined): number {
@@ -63,15 +62,19 @@ export default function AppWindow({
   const [gesture, setGesture] = useState<Gesture>('idle');
   const [isAboutOpen, setIsAboutOpen] = useState(false);
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
-  const [isPreferencesOpen, setIsPreferencesOpen] = useState(false);
   const [isAppSettingsOpen, setIsAppSettingsOpen] = useState(false);
 
   // Every app declares its own settings schema in the registry — this is
-  // what gives it a dedicated, app-scoped settings screen (AppSettingsModal)
-  // instead of only the shared, genuinely-global "Preferences…" dialog.
-  // Editor is the one exception: it already has its own much richer,
-  // hand-built Settings page (gear icon in its Activity Bar), so a second,
-  // shallower "Editor Settings…" here would just be a confusing duplicate.
+  // what gives it a dedicated, app-scoped "Preferences…" (AppSettingsModal),
+  // reading and writing only that app's own `appPreferences` slice. There is
+  // deliberately no separate, shared, genuinely-global preferences dialog
+  // anymore — that content either belongs to one specific app (its Theme
+  // choice, now folded into this same modal) or to the platform as a whole
+  // (wallpaper, dock, sounds, window defaults — all in the System Settings
+  // app instead of repeated on every window). Editor is the one exception:
+  // it already has its own much richer, hand-built Settings page (gear icon
+  // in its Activity Bar, plus its own File > Preferences), so a second,
+  // shallower "Preferences…" here would just be a confusing duplicate.
   const appSettingsSchema = AppRegistry.getAppManifest(app.appId)?.settingsSchema;
   const hasAppSettings = app.appId !== 'editor' && !!appSettingsSchema && appSettingsSchema.length > 0;
 
@@ -144,19 +147,13 @@ export default function AppWindow({
         ? [
             {
               id: 'app-settings',
-              label: `${app.title} Settings…`,
-              icon: SlidersHorizontal,
+              label: 'Preferences…',
+              shortcut: 'Ctrl+,',
+              icon: Settings,
               onSelect: () => setIsAppSettingsOpen(true),
             } as MenuItem,
           ]
         : []),
-      {
-        id: 'preferences',
-        label: 'Preferences…',
-        shortcut: 'Ctrl+,',
-        icon: Settings,
-        onSelect: () => setIsPreferencesOpen(true),
-      },
       separator('before-help'),
       { kind: 'submenu' as const, id: helpMenu.id, label: helpMenu.label, items: helpMenu.items },
     ];
@@ -578,13 +575,6 @@ export default function AppWindow({
           </svg>
         </div>
       )}
-
-      <PreferencesDialog
-        isOpen={isPreferencesOpen}
-        onClose={() => setIsPreferencesOpen(false)}
-        appId={app.appId}
-        appTitle={app.title}
-      />
 
       {hasAppSettings && (
         <AppSettingsModal

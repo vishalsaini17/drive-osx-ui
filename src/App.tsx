@@ -47,10 +47,19 @@ export default function App() {
   // Messenger is closed, and a closed window is an unmounted component.
   useRealtimeNotifications(isAuthenticated);
 
-  // Initialize the store from localStorage on mount
-  useEffect(() => {
-    initializeStore();
+  // Loads settings/files/etc. from localStorage into the store, synchronously,
+  // during this component's very first render — deliberately not a
+  // `useEffect`. `DesktopLayout` (rendered as a child a few lines below) has
+  // its own mount effect that opens a window for the current URL, e.g.
+  // `/folder` reopens File Explorer — and on mount, React fires a child's
+  // effects before its parent's. An effect here would then run *after* that
+  // child already acted on the still-default, not-yet-loaded settings
+  // (`windows` seeded from each app's raw manifest size), silently discarding
+  // any per-app or global default window size for the one window every app
+  // starts already holding open.
+  useState(initializeStore);
 
+  useEffect(() => {
     const handleOffline = () => {
       setOfflineMode(true);
       addNotification({
@@ -87,7 +96,7 @@ export default function App() {
       window.removeEventListener('online', handleOnline);
       unsubscribeSession();
     };
-  }, [initializeStore, addNotification, setOfflineMode, navigate]);
+  }, [addNotification, setOfflineMode, navigate]);
 
   // Handle global auth-based redirects
   useEffect(() => {

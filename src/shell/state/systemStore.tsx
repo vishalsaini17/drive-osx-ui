@@ -213,6 +213,13 @@ function computeNewWindowGeometry(
     if (prefs.defaultWindowWidth) w = Math.max(manifest.defaultWindow.minW, prefs.defaultWindowWidth);
     if (prefs.defaultWindowHeight) h = Math.max(manifest.defaultWindow.minH, prefs.defaultWindowHeight);
   }
+  // A per-app default (set from that app's own Preferences) is more specific
+  // than the platform-wide custom size above, so it wins over it — same way
+  // an app-scoped preference always wins over a global one elsewhere in the
+  // platform.
+  const appWindowPrefs = prefs.appPreferences?.[manifest.id];
+  if (typeof appWindowPrefs?.windowWidth === 'number') w = Math.max(manifest.defaultWindow.minW, appWindowPrefs.windowWidth);
+  if (typeof appWindowPrefs?.windowHeight === 'number') h = Math.max(manifest.defaultWindow.minH, appWindowPrefs.windowHeight);
 
   let x = manifest.defaultWindow.x;
   let y = manifest.defaultWindow.y;
@@ -632,8 +639,29 @@ export const useSystemStore = create<SystemState>((set, get) => ({
         }
       ];
 
+      // `windows` is built once, at module load, from each manifest's raw
+      // default geometry — before this function has had a chance to load the
+      // user's actual settings (per-app/global default size, remembered
+      // layout). Every entry is still closed at this point (nothing has
+      // rendered yet), so it's safe to recompute all of them now against the
+      // settings that just loaded — otherwise a custom default size or a
+      // remembered layout would only ever take effect on a brand-new window
+      // instance (e.g. "New Window"), never on the one every app starts with.
+      const nextWindows = state.windows.map((win) => {
+        if (win.isOpen) return win;
+        const manifest = AppRegistry.getAppManifest(win.appId);
+        if (!manifest) return win;
+        const geometry = computeNewWindowGeometry(
+          { settings: nextSettings, windows: state.windows, rememberedGeometry: state.rememberedGeometry },
+          manifest,
+          win.id
+        );
+        return { ...win, ...geometry, minW: manifest.defaultWindow.minW, minH: manifest.defaultWindow.minH };
+      });
+
       return {
         settings: nextSettings,
+        windows: nextWindows,
         files: nextFiles,
         deletedFiles: nextTrash,
         currentUser: currentUser,
@@ -975,13 +1003,17 @@ export const useSystemStore = create<SystemState>((set, get) => ({
         if (w.id === id) {
           const reqMinW = manifest?.defaultWindow.minW ?? w.minW;
           const reqMinH = manifest?.defaultWindow.minH ?? w.minH;
-          const reqW = manifest?.defaultWindow.w ?? w.w;
-          const reqH = manifest?.defaultWindow.h ?? w.h;
 
           const finalMinW = Math.max(w.minW, reqMinW);
           const finalMinH = Math.max(w.minH, reqMinH);
-          const finalW = Math.max(w.w, reqW, finalMinW);
-          const finalH = Math.max(w.h, reqH, finalMinH);
+          // Only ever floors the window at its (possibly just-grown) minimum
+          // size — never at the manifest's raw preferred default. That default
+          // is for a window's very first geometry (see `computeNewWindowGeometry`)
+          // and a per-app/global custom size can legitimately ask for smaller
+          // than it; flooring every reopen at the un-customized default here
+          // would silently overrule that preference on every single open.
+          const finalW = Math.max(w.w, finalMinW);
+          const finalH = Math.max(w.h, finalMinH);
 
           return {
             ...w,
