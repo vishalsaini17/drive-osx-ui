@@ -29,6 +29,7 @@ export interface Contact {
   team: string | null;
   labels: string[];
   isFavourite: boolean;
+  isBlocked: boolean;
   source: 'manual' | 'chat_request' | 'import';
   /** Null when the contact is not a platform user, so has no presence. */
   presence: PresenceStatus | null;
@@ -109,6 +110,16 @@ export const ContactsService = {
 
   async remove(contactId: string): Promise<void> {
     await http.delete(`${BASE}/${contactId}`);
+  },
+
+  async block(contactId: string): Promise<Contact> {
+    const response = await http.post<{ contact: Contact }>(`${BASE}/${contactId}/block`);
+    return response.contact;
+  },
+
+  async unblock(contactId: string): Promise<Contact> {
+    const response = await http.post<{ contact: Contact }>(`${BASE}/${contactId}/unblock`);
+    return response.contact;
   },
 
   // --- presence ------------------------------------------------------------

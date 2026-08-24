@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Send, Search, X, Plus, MessageSquare, UserPlus, Check, Ban, Clock,
   AtSign, Loader2, WifiOff, RefreshCw, Inbox, UserCheck, Trash2, BookUser,
+  Phone, Video,
 } from 'lucide-react';
 import { useSystemStore } from '../../shell/state/systemStore';
 import { useAppMenu } from '../../platform/menus/AppMenuContext';
@@ -9,16 +10,18 @@ import { separator } from '../../platform/menus/types';
 import WindowStatus from '../../shell/window-manager/WindowStatusContext';
 import { ApiError } from '../../platform/api/http';
 import {
-  MessagingService, type ChatRequest, type Conversation, type DirectoryUser, type Message,
-  type PresenceStatus,
+  MessagingService, type ChatRequest, type Conversation, type DirectoryUser, type MediaItem,
+  type Message, type PresenceStatus,
 } from '../../platform/messaging/MessagingService';
-import { ContactsService } from '../../platform/contacts/ContactsService';
+import { ContactsService, type Contact } from '../../platform/contacts/ContactsService';
+import { MeetingService } from '../../platform/meetings/MeetingService';
 import { EventBus } from '../../platform/events/EventBus';
 import {
   CHAT_MESSAGE_EVENT, setActiveConversation, type ChatMessageEvent,
 } from '../../shell/notifications/useRealtimeNotifications';
 import { useMessengerTheme } from './useMessengerTheme';
 import { APP_THEME_CHOICES } from '../../platform/theme/appTheme';
+import ContactDetailsPanel from './ContactDetailsPanel';
 
 const PRESENCE_DOT: Record<PresenceStatus, string> = {
   online: 'bg-emerald-500',
@@ -66,6 +69,7 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
   const currentUser = useSystemStore((state) => state.currentUser);
   const pendingConversationId = useSystemStore((state) => state.pendingConversationId);
   const consumePendingConversation = useSystemStore((state) => state.consumePendingConversation);
+  const openAppWindow = useSystemStore((state) => state.openAppWindow);
   const { palette, choice: themeChoice } = useMessengerTheme();
 
   // ---------------------------------------------------------------------
@@ -98,6 +102,23 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
   const [requestTarget, setRequestTarget] = useState<DirectoryUser | null>(null);
   const [requestNote, setRequestNote] = useState('');
   const [isSubmittingRequest, setIsSubmittingRequest] = useState(false);
+  const [resolvingUserId, setResolvingUserId] = useState<string | null>(null);
+
+  // -----------------------------------------------------------------------
+  // Contact details panel (WhatsApp Web's "click the name" view)
+  // -----------------------------------------------------------------------
+  const [showContactPanel, setShowContactPanel] = useState(false);
+  const [peerContacts, setPeerContacts] = useState<Record<string, Contact>>({});
+  const [isLoadingContact, setIsLoadingContact] = useState(false);
+  const [isTogglingFavourite, setIsTogglingFavourite] = useState(false);
+  const [isTogglingBlock, setIsTogglingBlock] = useState(false);
+  const [isDeletingChat, setIsDeletingChat] = useState(false);
+  const [callInProgress, setCallInProgress] = useState<'voice' | 'video' | null>(null);
+  const [mediaByConversation, setMediaByConversation] = useState<Record<string, MediaItem[]>>({});
+  const [isLoadingMedia, setIsLoadingMedia] = useState(false);
+  const [mediaError, setMediaError] = useState<string | null>(null);
+  const [deletingMediaId, setDeletingMediaId] = useState<string | null>(null);
+  const [panelError, setPanelError] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -310,6 +331,36 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
   // ---------------------------------------------------------------------
   // Actions
   // ---------------------------------------------------------------------
+
+  /**
+   * Picking someone from the directory search. If a conversation already
+   * exists — including one the caller previously deleted, just hidden — this
+   * reopens it directly instead of walking into `sendRequest`'s "you can
+   * already message this person" conflict, which a deleted chat gives no way
+   * back out of otherwise.
+   */
+  const selectDirectoryUser = async (user: DirectoryUser) => {
+    setResolvingUserId(user.id);
+    setActionError(null);
+    try {
+      const existingId = await MessagingService.findExistingConversation(user.id);
+      if (existingId) {
+        setShowNewChat(false);
+        setDirectoryTerm('');
+        setDirectoryResults([]);
+        await refresh();
+        setActiveConversationId(existingId);
+        setNotice(`Reopened your conversation with ${user.fullName}`);
+        return;
+      }
+      setRequestTarget(user);
+    } catch (error) {
+      setActionError(describeError(error));
+    } finally {
+      setResolvingUserId(null);
+    }
+  };
+
   const sendRequest = async () => {
     if (!requestTarget || !requestNote.trim()) return;
     setIsSubmittingRequest(true);
@@ -422,6 +473,181 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
   );
 
   const activeMessages = activeConversationId ? messages[activeConversationId] ?? [] : [];
+  const activePeerContact = peer ? peerContacts[peer.id] ?? null : null;
+  const isPeerBlocked = activePeerContact?.isBlocked ?? false;
+
+  // Closing the panel on conversation switch avoids showing stale contact
+  // details for a moment while the new peer's contact loads.
+  useEffect(() => {
+    setShowContactPanel(false);
+  }, [activeConversationId]);
+
+  /**
+   * Loads (or, on first contact, creates) the address-book entry for whoever
+   * the open conversation is with — needed for the block/favourite state the
+   * composer and the panel both read. Accepting a chat request already
+   * creates this row on both sides (see messaging.service), so in the normal
+   * case this is a lookup, not a write.
+   */
+  useEffect(() => {
+    if (!peer) return;
+    let cancelled = false;
+    setIsLoadingContact(true);
+    ContactsService.saveUser(peer.id, peer.fullName)
+      .then((saved) => {
+        if (!cancelled) setPeerContacts((prev) => ({ ...prev, [peer.id]: saved }));
+      })
+      .catch((error) => {
+        if (!cancelled) setPanelError(describeError(error));
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingContact(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [peer]);
+
+  // Media is fetched lazily — only while the panel is actually open — rather
+  // than on every conversation switch, since it is not needed until then.
+  useEffect(() => {
+    if (!showContactPanel || !activeConversationId) return;
+    let cancelled = false;
+    setIsLoadingMedia(true);
+    setMediaError(null);
+    MessagingService.listMedia(activeConversationId)
+      .then((items) => {
+        if (!cancelled) setMediaByConversation((prev) => ({ ...prev, [activeConversationId]: items }));
+      })
+      .catch((error) => {
+        if (!cancelled) setMediaError(describeError(error));
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingMedia(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [showContactPanel, activeConversationId]);
+
+  const toggleFavourite = async () => {
+    if (!peer || !activePeerContact) return;
+    setIsTogglingFavourite(true);
+    setPanelError(null);
+    try {
+      const updated = await ContactsService.update(activePeerContact.id, {
+        isFavourite: !activePeerContact.isFavourite,
+      });
+      setPeerContacts((prev) => ({ ...prev, [peer.id]: updated }));
+    } catch (error) {
+      setPanelError(describeError(error));
+    } finally {
+      setIsTogglingFavourite(false);
+    }
+  };
+
+  const toggleBlock = async () => {
+    if (!peer || !activePeerContact) return;
+    setIsTogglingBlock(true);
+    setPanelError(null);
+    try {
+      const updated = activePeerContact.isBlocked
+        ? await ContactsService.unblock(activePeerContact.id)
+        : await ContactsService.block(activePeerContact.id);
+      setPeerContacts((prev) => ({ ...prev, [peer.id]: updated }));
+    } catch (error) {
+      setPanelError(describeError(error));
+    } finally {
+      setIsTogglingBlock(false);
+    }
+  };
+
+  const deleteChat = async () => {
+    if (!activeConversationId) return;
+    setIsDeletingChat(true);
+    setPanelError(null);
+    try {
+      await MessagingService.deleteConversation(activeConversationId);
+      setConversations((prev) => prev.filter((c) => c.id !== activeConversationId));
+      setShowContactPanel(false);
+      setActiveConversationId(null);
+      setNotice('Chat deleted');
+    } catch (error) {
+      setPanelError(describeError(error));
+    } finally {
+      setIsDeletingChat(false);
+    }
+  };
+
+  /**
+   * Starts a call by reusing the existing Meetings capability rather than
+   * building a second signalling path: an instant meeting is created and
+   * started, its code is dropped into the chat as a normal message so the
+   * other person has something to join from (and sees it even if Messenger
+   * is closed on their side), and Meet opens for the caller.
+   */
+  const startCall = async (kind: 'voice' | 'video') => {
+    if (!activeConversationId || !peer || isPeerBlocked) return;
+    setCallInProgress(kind);
+    setPanelError(null);
+    try {
+      const meeting = await MeetingService.createMeeting({
+        title: `${kind === 'video' ? 'Video' : 'Voice'} call with ${peer.fullName}`,
+        allowChat: true,
+      });
+      await MeetingService.startMeeting(meeting.id);
+      const body = `📞 Started a ${kind === 'video' ? 'video' : 'voice'} call — join in Meet with code ${meeting.meetingCode}`;
+      const message = await MessagingService.sendMessage(activeConversationId, body);
+      setMessages((prev) => ({
+        ...prev,
+        [activeConversationId]: [...(prev[activeConversationId] ?? []), message],
+      }));
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === activeConversationId
+            ? { ...c, lastMessagePreview: body.slice(0, 160), lastMessageAt: message.createdAt }
+            : c,
+        ),
+      );
+      let copied = false;
+      try {
+        await navigator.clipboard.writeText(meeting.meetingCode);
+        copied = true;
+      } catch {
+        // Clipboard access can be denied; the code is still visible in the chat message above.
+      }
+      setNotice(
+        copied
+          ? `Call started — meeting code ${meeting.meetingCode} copied to clipboard`
+          : `Call started — meeting code ${meeting.meetingCode}`,
+      );
+      openAppWindow('meeting');
+    } catch (error) {
+      setPanelError(describeError(error));
+    } finally {
+      setCallInProgress(null);
+    }
+  };
+
+  const deleteMediaItem = async (item: MediaItem) => {
+    setDeletingMediaId(item.id);
+    setPanelError(null);
+    try {
+      await MessagingService.deleteMessage(item.messageId);
+      if (activeConversationId) {
+        setMediaByConversation((prev) => ({
+          ...prev,
+          [activeConversationId]: (prev[activeConversationId] ?? []).filter(
+            (existing) => existing.messageId !== item.messageId,
+          ),
+        }));
+      }
+    } catch (error) {
+      setPanelError(describeError(error));
+    } finally {
+      setDeletingMediaId(null);
+    }
+  };
 
   // ---------------------------------------------------------------------
   // Menus
@@ -450,6 +676,13 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
           label: 'Conversation List',
           checked: showSidebar,
           onSelect: () => setShowSidebar((value) => !value),
+        },
+        {
+          id: 'contact-panel',
+          label: 'Contact Details',
+          checked: showContactPanel,
+          disabled: !peer,
+          onSelect: () => setShowContactPanel((value) => !value),
         },
         // Theme is not repeated here: the window menu offers it for every
         // application, and two entries for one setting invite disagreement.
@@ -701,7 +934,14 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
               </button>
             )}
             {activeConversation ? (
-              <>
+              <button
+                onClick={() => peer && setShowContactPanel((value) => !value)}
+                disabled={!peer}
+                title={peer ? `View ${peer.fullName}'s details` : undefined}
+                className={`flex items-center gap-2 min-w-0 rounded-xl -m-1 p-1 text-left cursor-pointer disabled:cursor-default ${
+                  peer ? palette.hover : ''
+                }`}
+              >
                 <Avatar
                   name={peer?.fullName ?? activeConversation.title}
                   status={peer?.status}
@@ -715,7 +955,9 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                     {peer ? (
                       <>
                         <span className={`w-1.5 h-1.5 rounded-full ${PRESENCE_DOT[peer.status]}`} />
-                        {peer.statusText
+                        {isPeerBlocked
+                          ? 'Blocked'
+                          : peer.statusText
                           ? `${peer.statusEmoji} ${peer.statusText}`.trim()
                           : PRESENCE_LABEL[peer.status]}
                       </>
@@ -724,7 +966,7 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                     )}
                   </div>
                 </div>
-              </>
+              </button>
             ) : (
               <span className={`text-xs font-bold ${palette.textMuted}`}>Messenger</span>
             )}
@@ -733,15 +975,35 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
           {/* Theme lives in the window menu (View → Theme), not here. */}
           <div className="flex items-center gap-1 shrink-0">
             {peer && (
-              <button
-                onClick={() => void savePeerToContacts(peer)}
-                disabled={savingContact}
-                className={`p-2 rounded-xl ${palette.hover} cursor-pointer disabled:opacity-50 disabled:cursor-wait`}
-                title={`Save ${peer.fullName} to Contacts`}
-                aria-label={`Save ${peer.fullName} to Contacts`}
-              >
-                <BookUser size={15} className={palette.textMuted} />
-              </button>
+              <>
+                <button
+                  onClick={() => void startCall('voice')}
+                  disabled={isPeerBlocked || callInProgress !== null}
+                  className={`p-2 rounded-xl ${palette.hover} cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed`}
+                  title={isPeerBlocked ? `Unblock ${peer.fullName} to call` : 'Voice call'}
+                  aria-label="Voice call"
+                >
+                  <Phone size={15} className={palette.textMuted} />
+                </button>
+                <button
+                  onClick={() => void startCall('video')}
+                  disabled={isPeerBlocked || callInProgress !== null}
+                  className={`p-2 rounded-xl ${palette.hover} cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed`}
+                  title={isPeerBlocked ? `Unblock ${peer.fullName} to call` : 'Video call'}
+                  aria-label="Video call"
+                >
+                  <Video size={15} className={palette.textMuted} />
+                </button>
+                <button
+                  onClick={() => void savePeerToContacts(peer)}
+                  disabled={savingContact}
+                  className={`p-2 rounded-xl ${palette.hover} cursor-pointer disabled:opacity-50 disabled:cursor-wait`}
+                  title={`Save ${peer.fullName} to Contacts`}
+                  aria-label={`Save ${peer.fullName} to Contacts`}
+                >
+                  <BookUser size={15} className={palette.textMuted} />
+                </button>
+              </>
             )}
           </div>
         </div>
@@ -825,30 +1087,79 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
               )}
             </div>
 
-            <div className={`p-2.5 ${palette.panelBg} border-t ${palette.border} shrink-0 flex items-center gap-2`}>
-              <input
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' && !event.shiftKey) {
-                    event.preventDefault();
-                    sendMessage();
-                  }
-                }}
-                placeholder={`Message ${activeConversation.title}`}
-                className={`flex-1 min-w-0 px-3.5 py-2 rounded-2xl border text-xs focus:outline-none focus:border-blue-500 ${palette.inputBg} ${palette.text}`}
-              />
-              <button
-                onClick={sendMessage}
-                disabled={!draft.trim() || isSending}
-                className="p-2.5 shrink-0 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded-xl cursor-pointer transition-colors"
-              >
-                {isSending ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
-              </button>
-            </div>
+            {isPeerBlocked ? (
+              <div className={`p-3 ${palette.panelBg} border-t ${palette.border} shrink-0 flex items-center justify-between gap-2`}>
+                <span className={`text-[11px] ${palette.textMuted}`}>
+                  You blocked {peer?.fullName}. Unblock them to send messages.
+                </span>
+                <button
+                  onClick={() => void toggleBlock()}
+                  disabled={isTogglingBlock}
+                  className="shrink-0 px-2.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-[11px] font-bold cursor-pointer flex items-center gap-1.5"
+                >
+                  {isTogglingBlock && <Loader2 size={11} className="animate-spin" />}
+                  Unblock
+                </button>
+              </div>
+            ) : (
+              <div className={`p-2.5 ${palette.panelBg} border-t ${palette.border} shrink-0 flex items-center gap-2`}>
+                <input
+                  value={draft}
+                  onChange={(event) => setDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' && !event.shiftKey) {
+                      event.preventDefault();
+                      sendMessage();
+                    }
+                  }}
+                  placeholder={`Message ${activeConversation.title}`}
+                  className={`flex-1 min-w-0 px-3.5 py-2 rounded-2xl border text-xs focus:outline-none focus:border-blue-500 ${palette.inputBg} ${palette.text}`}
+                />
+                <button
+                  onClick={sendMessage}
+                  disabled={!draft.trim() || isSending}
+                  className="p-2.5 shrink-0 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded-xl cursor-pointer transition-colors"
+                >
+                  {isSending ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
+                </button>
+              </div>
+            )}
           </>
         )}
       </div>
+
+      {/* ================= CONTACT DETAILS ================= */}
+      {showContactPanel && peer && activeConversationId && (
+        <>
+          {isCompact && (
+            <div className="absolute inset-0 bg-black/40 z-30" onClick={() => setShowContactPanel(false)} />
+          )}
+          <div className={isCompact ? 'absolute inset-y-0 right-0 z-40 shadow-2xl' : 'contents'}>
+            <ContactDetailsPanel
+              peer={peer}
+              palette={palette}
+              contact={activePeerContact}
+              isLoadingContact={isLoadingContact}
+              onClose={() => setShowContactPanel(false)}
+              onToggleFavourite={toggleFavourite}
+              isTogglingFavourite={isTogglingFavourite}
+              onToggleBlock={toggleBlock}
+              isTogglingBlock={isTogglingBlock}
+              onDeleteChat={deleteChat}
+              isDeletingChat={isDeletingChat}
+              onStartCall={startCall}
+              callInProgress={callInProgress}
+              media={mediaByConversation[activeConversationId] ?? []}
+              isLoadingMedia={isLoadingMedia}
+              mediaError={mediaError}
+              onDeleteMedia={deleteMediaItem}
+              deletingMediaId={deletingMediaId}
+              error={panelError}
+              onDismissError={() => setPanelError(null)}
+            />
+          </div>
+        </>
+      )}
 
       {/* ================= NEW CHAT REQUEST ================= */}
       {showNewChat && (
@@ -961,8 +1272,9 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                     directoryResults.map((user) => (
                       <button
                         key={user.id}
-                        onClick={() => setRequestTarget(user)}
-                        className={`w-full p-2.5 rounded-xl flex items-center gap-2.5 text-left cursor-pointer ${palette.hover}`}
+                        onClick={() => void selectDirectoryUser(user)}
+                        disabled={resolvingUserId === user.id}
+                        className={`w-full p-2.5 rounded-xl flex items-center gap-2.5 text-left cursor-pointer disabled:opacity-60 disabled:cursor-wait ${palette.hover}`}
                       >
                         <Avatar name={user.fullName} status={user.status} size={32} />
                         <div className="flex-1 min-w-0">
@@ -973,7 +1285,11 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                             @{user.username}
                           </div>
                         </div>
-                        <UserPlus size={14} className={palette.textSubtle} />
+                        {resolvingUserId === user.id ? (
+                          <Loader2 size={14} className={`animate-spin ${palette.textSubtle}`} />
+                        ) : (
+                          <UserPlus size={14} className={palette.textSubtle} />
+                        )}
                       </button>
                     ))
                   )}

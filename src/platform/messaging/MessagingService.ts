@@ -62,6 +62,19 @@ export interface Message {
   createdAt: string;
 }
 
+/** One attachment shared in a conversation — the contact panel's media tab. */
+export interface MediaItem {
+  id: string;
+  messageId: string;
+  conversationId: string;
+  isMine: boolean;
+  createdAt: string;
+  name: string;
+  url: string | null;
+  mimeType: string | null;
+  size: number | null;
+}
+
 const BASE = '/messaging';
 
 export const MessagingService = {
@@ -106,6 +119,19 @@ export const MessagingService = {
     return response.conversations ?? [];
   },
 
+  /**
+   * Finds an existing direct conversation with a user, reviving it if the
+   * caller had deleted their copy. "Start a conversation" calls this first
+   * so picking someone you already have history with reopens it instead of
+   * hitting `sendRequest`'s "you can already message this person" conflict.
+   */
+  async findExistingConversation(userId: string): Promise<string | null> {
+    const response = await http.get<{ conversationId: string | null }>(
+      `${BASE}/conversations/with/${userId}`,
+    );
+    return response.conversationId;
+  },
+
   async listMessages(conversationId: string, options: { limit?: number; before?: string } = {}): Promise<Message[]> {
     const params = new URLSearchParams();
     if (options.limit) params.set('limit', String(options.limit));
@@ -135,6 +161,18 @@ export const MessagingService = {
 
   async deleteMessage(messageId: string): Promise<void> {
     await http.delete(`${BASE}/messages/${messageId}`);
+  },
+
+  /** Deletes the conversation for the caller only; the other side keeps theirs. */
+  async deleteConversation(conversationId: string): Promise<void> {
+    await http.delete(`${BASE}/conversations/${conversationId}`);
+  },
+
+  async listMedia(conversationId: string): Promise<MediaItem[]> {
+    const response = await http.get<{ media: MediaItem[] }>(
+      `${BASE}/conversations/${conversationId}/media`,
+    );
+    return response.media ?? [];
   },
 };
 
