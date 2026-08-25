@@ -7,6 +7,7 @@ import AppWindow from './shell/window-manager/AppWindow';
 import { AppMenuProvider } from './platform/menus/AppMenuContext';
 import GlobalContextMenu from './shell/context-menu/GlobalContextMenu';
 import { useContextMenuStore, ContextMenuItem } from './shell/context-menu/contextMenuStore';
+import { useLongPressContextMenu } from './shell/context-menu/useLongPressContextMenu';
 import { StorageService } from './platform/storage/StorageService';
 import { FolderPlus, FileText, Terminal as TerminalIcon, Image, RefreshCw, Settings as SettingsIcon, LogOut, ExternalLink, Info, Pin, Monitor } from 'lucide-react';
 
@@ -264,6 +265,10 @@ function DesktopLayout() {
     openContextMenu(e, desktopItems, 'Desktop');
   };
 
+  // The desktop background's right-click menu has no touch equivalent
+  // otherwise — a long touch-hold triggers the same handler.
+  const desktopLongPress = useLongPressContextMenu<HTMLDivElement>(handleDesktopContextMenu);
+
   const handleShortcutContextMenu = (e: React.MouseEvent, appId: string, title: string) => {
     e.preventDefault();
     e.stopPropagation();
@@ -434,10 +439,15 @@ function DesktopLayout() {
   ]);
 
   return (
-    <div 
+    <div
       className="relative w-full h-full overflow-hidden select-none"
       onClick={() => focusWindow('')}
       onContextMenu={handleDesktopContextMenu}
+      onPointerDown={desktopLongPress.onPointerDown}
+      onPointerUp={desktopLongPress.onPointerUp}
+      onPointerLeave={desktopLongPress.onPointerLeave}
+      onPointerCancel={desktopLongPress.onPointerCancel}
+      onClickCapture={desktopLongPress.onClickCapture}
     >
       {/* 1. LAYERED VECTOR WAVES DESKTOP WALLPAPER */}
       <Wallpaper settings={settings} />
@@ -460,9 +470,20 @@ function DesktopLayout() {
         </AppMenuProvider>
       </div>
 
-      {/* 4. DESKTOP SHORTCUTS */}
-      <div 
-        className="absolute top-6 left-6 flex flex-col gap-5 z-20 pointer-events-auto select-none"
+      {/* 4. DESKTOP SHORTCUTS
+          A user can pin any number of apps here (up to 11 via Settings, or
+          more via "Pin to Desktop" in the app menu), and a single fixed
+          vertical column with no wrap ran straight off the bottom of the
+          screen with nothing to catch it — invisible on a tall desktop
+          monitor, but a real cutoff on a short viewport (a phone in
+          landscape is ~390px tall). `flex-wrap` on a `flex-col` wraps into an
+          additional column instead, the same way desktop icons behave on a
+          real OS; `maxHeight` gives it a boundary to wrap against, reserving
+          room for the dock at the bottom (tallest at 'lg', ~92px) so wrapped
+          icons never sit under it. */}
+      <div
+        className="absolute top-6 left-6 flex flex-col flex-wrap content-start gap-5 z-20 pointer-events-auto select-none"
+        style={{ maxHeight: 'calc(100vh - 140px)' }}
         onClick={(e) => e.stopPropagation()}
       >
         {desktopShortcutIds.map((appId) => {

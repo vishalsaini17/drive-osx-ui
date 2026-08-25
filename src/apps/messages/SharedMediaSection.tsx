@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Loader2, ImageOff, FileText, Trash2, Link as LinkIcon, ExternalLink } from 'lucide-react';
 import type { MediaItem, LinkItem } from '../../platform/messaging/MessagingService';
 import type { MessengerPalette } from './useMessengerTheme';
+import { useSupportsHover } from '../../platform/layout/useSupportsHover';
 
 /**
  * Media / Docs / Links tabs — shared by ContactDetailsPanel and
@@ -50,6 +51,7 @@ export default function SharedMediaSection({
   linksError,
 }: SharedMediaSectionProps) {
   const [tab, setTab] = useState<Tab>('media');
+  const supportsHover = useSupportsHover();
 
   const isVisual = (item: MediaItem) =>
     (item.mimeType?.startsWith('image/') || item.mimeType?.startsWith('video/')) ?? false;
@@ -112,7 +114,7 @@ export default function SharedMediaSection({
                   onClick={() => onDeleteMedia(item)}
                   disabled={deletingMediaId === item.id}
                   title="Delete"
-                  className="absolute top-1 right-1 p-1 rounded-lg bg-black/60 text-white opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity cursor-pointer disabled:opacity-100"
+                  className={`absolute top-1 right-1 p-1 rounded-lg bg-black/60 text-white transition-opacity cursor-pointer disabled:opacity-100 ${supportsHover ? 'opacity-0 group-hover:opacity-100 focus:opacity-100' : 'opacity-100'}`}
                 >
                   {deletingMediaId === item.id ? <Loader2 size={10} className="animate-spin" /> : <Trash2 size={10} />}
                 </button>
@@ -156,7 +158,7 @@ export default function SharedMediaSection({
                   onClick={() => onDeleteMedia(item)}
                   disabled={deletingMediaId === item.id}
                   title="Delete"
-                  className="shrink-0 p-1.5 rounded-lg opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity cursor-pointer disabled:opacity-100"
+                  className={`shrink-0 p-1.5 rounded-lg transition-opacity cursor-pointer disabled:opacity-100 ${supportsHover ? 'opacity-0 group-hover:opacity-100 focus:opacity-100' : 'opacity-100'}`}
                 >
                   {deletingMediaId === item.id ? (
                     <Loader2 size={12} className={`animate-spin ${palette.textMuted}`} />

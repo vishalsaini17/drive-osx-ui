@@ -171,6 +171,15 @@ export default function Dock() {
   };
 
   const dockSize = settings.dockSize || 'md';
+  // Below the mobile window breakpoint (systemStore's MOBILE_WINDOW_BREAKPOINT)
+  // there isn't room for the user's chosen dock size — 'md'/'lg' icons plus
+  // the full system pill don't fit a phone-width screen at all — so the dock
+  // renders at 'sm' regardless of the stored preference, the same way window
+  // chrome is overridden below this breakpoint elsewhere in the shell. The
+  // preference itself is untouched and reapplies the moment the viewport
+  // widens again.
+  const isNarrowViewport = windowWidth < 640;
+  const effectiveDockSize = isNarrowViewport ? 'sm' : dockSize;
 
   /**
    * One entry per *app*, not per open window — an app can now have several
@@ -395,17 +404,23 @@ export default function Dock() {
     }
   };
 
-  const activeSizes = sizeClasses[dockSize] || sizeClasses.md;
+  const activeSizes = sizeClasses[effectiveDockSize] || sizeClasses.md;
 
   // Responsive dock sizing calculations to prevent overflowing on resize
   const systemPillWidths = { sm: 130, md: 220, lg: 295 };
   const iconWidthsWithGap = { sm: 38, md: 54, lg: 70 };
   const paddingWidths = { sm: 16, md: 32, lg: 40 };
+  // The narrow system pill drops the date and the workspace/desktop status
+  // (see the system pill's JSX below), so its real rendered width is well
+  // under even the 'sm' preset, which still assumes both are showing.
+  const narrowSystemPillWidth = 96;
 
-  const systemPillWidth = systemPillWidths[dockSize] || systemPillWidths.md;
-  const iconWidthWithGap = iconWidthsWithGap[dockSize] || iconWidthsWithGap.md;
-  const paddingWidth = paddingWidths[dockSize] || paddingWidths.md;
-  const outerGapWidth = dockSize === 'sm' ? 6 : (dockSize === 'md' ? 10 : 12);
+  const systemPillWidth = isNarrowViewport
+    ? narrowSystemPillWidth
+    : (systemPillWidths[effectiveDockSize] || systemPillWidths.md);
+  const iconWidthWithGap = iconWidthsWithGap[effectiveDockSize] || iconWidthsWithGap.md;
+  const paddingWidth = paddingWidths[effectiveDockSize] || paddingWidths.md;
+  const outerGapWidth = effectiveDockSize === 'sm' ? 6 : (effectiveDockSize === 'md' ? 10 : 12);
 
   const otherAppsSorted = [...appWindows.filter(w => w.id !== 'launcher')].sort((a, b) => {
     const indexA = dockAppOrder.indexOf(a.id);
@@ -425,7 +440,11 @@ export default function Dock() {
 
   if (windowWidth < 1200) {
     const estimatedMax = Math.floor(availableWidthForDockApps / iconWidthWithGap);
-    maxVisibleTotal = Math.max(3, estimatedMax);
+    // Always at least the launcher — never floored at 3: that forced 3 full
+    // icons to render even when the real math (a phone-width screen) said
+    // only 1 fit, which is exactly what pushed the system pill off both
+    // edges of the viewport instead of collapsing into the overflow button.
+    maxVisibleTotal = Math.max(1, estimatedMax);
   }
 
   const needsOverflow = totalApps > maxVisibleTotal;
@@ -466,7 +485,16 @@ export default function Dock() {
     return coversDockZone(w.y + w.h, dockSize, windowHeight);
   });
 
+  // Below the mobile window breakpoint every app window opens maximized (see
+  // systemStore's MOBILE_WINDOW_BREAKPOINT), so `isDockOverlapped` is true
+  // almost continuously. Auto-hide-then-reveal-on-hover has no touch
+  // equivalent — there is no `mousemove`/hover on a touchscreen — so a dock
+  // that could still auto-hide here would become permanently unreachable.
+  // Below the breakpoint it simply never hides, the same way a phone OS's
+  // home/gesture bar is a persistent overlay rather than a hover reveal.
+  // (`isNarrowViewport` itself is declared earlier, alongside `effectiveDockSize`.)
   const shouldHideDock =
+    !isNarrowViewport &&
     isDockOverlapped &&
     !isCursorAtBottom &&
     !showAppDirectoryPopup &&
@@ -676,7 +704,11 @@ export default function Dock() {
             title="Calendar & Settings"
           >
             <span className={`font-bold tracking-tight tabular-nums leading-none ${shell.text} ${activeSizes.timeText}`}>{formatTime(time)}</span>
-            <span className={`font-medium tracking-tight leading-none ${shell.textMuted} ${activeSizes.dateText}`}>{formatDate(time)}</span>
+            {/* The date drops out below the mobile breakpoint — see
+                narrowSystemPillWidth above, which assumes it's gone. */}
+            {!isNarrowViewport && (
+              <span className={`font-medium tracking-tight leading-none ${shell.textMuted} ${activeSizes.dateText}`}>{formatDate(time)}</span>
+            )}
           </button>
 
           {/* Separator */}
@@ -706,11 +738,15 @@ export default function Dock() {
               </div>
             )}
 
-            {/* Workspace status */}
-            <div className={`flex items-center gap-1.5 shrink-0 ${shell.text}`}>
-              <Monitor size={activeSizes.monitorSize} strokeWidth={2.4} className="transition-all" />
-              <span className={`font-extrabold tracking-tight transition-all ${activeSizes.statusText}`}>{currentDesktop}</span>
-            </div>
+            {/* Workspace status — a multi-desktop concept that doesn't apply
+                below the mobile breakpoint, where a window is always the one
+                maximized app rather than one of several desktops' windows. */}
+            {!isNarrowViewport && (
+              <div className={`flex items-center gap-1.5 shrink-0 ${shell.text}`}>
+                <Monitor size={activeSizes.monitorSize} strokeWidth={2.4} className="transition-all" />
+                <span className={`font-extrabold tracking-tight transition-all ${activeSizes.statusText}`}>{currentDesktop}</span>
+              </div>
+            )}
           </button>
         </div>
       </div>

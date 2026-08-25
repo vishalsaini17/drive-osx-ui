@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
 import {
   Folder,
   ArrowLeft,
@@ -209,6 +209,41 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
   // State Management
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
   const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
+  // Ctrl/Cmd-click is how a mouse user builds a multi-selection; there is no
+  // modifier key on touch. Once a long-press starts one, further plain taps
+  // toggle membership the same way a Ctrl-click would, until the selection
+  // empties again.
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const toggleFileSelected = useCallback((id: string) => {
+    setSelectedFileIds((prev) => {
+      const next = prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id];
+      if (next.length === 0) setIsSelectionMode(false);
+      return next;
+    });
+  }, []);
+  const clearFileSelection = useCallback(() => {
+    setSelectedFileIds([]);
+    setIsSelectionMode(false);
+  }, []);
+  const longPressTimerRef = useRef<number | null>(null);
+  const suppressNextClickRef = useRef(false);
+  const cancelLongPress = useCallback(() => {
+    if (longPressTimerRef.current !== null) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  }, []);
+  const startLongPressSelect = useCallback((e: React.PointerEvent, itemId: string) => {
+    if (e.pointerType !== 'touch') return;
+    cancelLongPress();
+    longPressTimerRef.current = window.setTimeout(() => {
+      longPressTimerRef.current = null;
+      suppressNextClickRef.current = true;
+      setIsSelectionMode(true);
+      toggleFileSelected(itemId);
+      navigator.vibrate?.(10);
+    }, 500);
+  }, [cancelLongPress, toggleFileSelected]);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [typeFilter, setTypeFilter] = useState<'all' | 'documents' | 'images' | 'audio' | 'video' | 'code' | 'archives'>('all');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>(prefView);
@@ -3137,7 +3172,7 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
           onDragOver={handleCanvasDragOver}
           onDragLeave={handleCanvasDragLeave}
           onDrop={handleCanvasDrop}
-          onClick={() => setSelectedFileIds([])}
+          onClick={() => clearFileSelection()}
           className={`flex-1 flex flex-col overflow-hidden relative transition-all ${
             isDragOverCanvas ? 'ring-4 ring-purple-500/50 bg-purple-500/5' : ''
           }`}
@@ -3256,18 +3291,28 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
                     onDragLeave={() => item.type === 'folder' && handleFolderDragLeave(item.id)}
                     onDragOver={(e) => e.preventDefault()}
                     onDrop={(e) => item.type === 'folder' && handleFolderDrop(e, item.id)}
+                    onPointerDown={(e) => startLongPressSelect(e, item.id)}
+                    onPointerUp={cancelLongPress}
+                    onPointerLeave={cancelLongPress}
+                    onPointerCancel={cancelLongPress}
                     onClick={(e) => {
                       e.stopPropagation();
-                      if (e.ctrlKey || e.metaKey) {
-                        setSelectedFileIds((prev) =>
-                          prev.includes(item.id) ? prev.filter((i) => i !== item.id) : [...prev, item.id]
-                        );
+                      if (suppressNextClickRef.current) {
+                        suppressNextClickRef.current = false;
+                        return;
+                      }
+                      if (e.ctrlKey || e.metaKey || isSelectionMode) {
+                        toggleFileSelected(item.id);
                       } else {
                         setSelectedFileIds([item.id]);
                       }
                     }}
                     onDoubleClick={(e) => {
                       e.stopPropagation();
+                      if (isSelectionMode) {
+                        toggleFileSelected(item.id);
+                        return;
+                      }
                       handleItemDoubleClick(item);
                     }}
                     onContextMenu={(e) => handleContextMenu(e, item)}
@@ -3405,20 +3450,28 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
                         onDragLeave={() => item.type === 'folder' && handleFolderDragLeave(item.id)}
                         onDragOver={(e) => e.preventDefault()}
                         onDrop={(e) => item.type === 'folder' && handleFolderDrop(e, item.id)}
+                        onPointerDown={(e) => startLongPressSelect(e, item.id)}
+                        onPointerUp={cancelLongPress}
+                        onPointerLeave={cancelLongPress}
+                        onPointerCancel={cancelLongPress}
                         onClick={(e) => {
                           e.stopPropagation();
-                          if (e.ctrlKey || e.metaKey) {
-                            setSelectedFileIds((prev) =>
-                              prev.includes(item.id)
-                                ? prev.filter((i) => i !== item.id)
-                                : [...prev, item.id]
-                            );
+                          if (suppressNextClickRef.current) {
+                            suppressNextClickRef.current = false;
+                            return;
+                          }
+                          if (e.ctrlKey || e.metaKey || isSelectionMode) {
+                            toggleFileSelected(item.id);
                           } else {
                             setSelectedFileIds([item.id]);
                           }
                         }}
                         onDoubleClick={(e) => {
                           e.stopPropagation();
+                          if (isSelectionMode) {
+                            toggleFileSelected(item.id);
+                            return;
+                          }
                           handleItemDoubleClick(item);
                         }}
                         onContextMenu={(e) => handleContextMenu(e, item)}
@@ -3587,11 +3640,25 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
           </div>
         }
         center={
-          <div data-name="status-bar-selection-info" className="truncate text-center">
+          <div data-name="status-bar-selection-info" className="truncate text-center flex items-center justify-center gap-2">
             {selectedFileIds.length > 0 ? (
-              <span className="text-purple-600 font-bold">
-                {selectedFileIds.length} item{selectedFileIds.length === 1 ? '' : 's'} selected
-              </span>
+              <>
+                <span className="text-purple-600 font-bold">
+                  {selectedFileIds.length} item{selectedFileIds.length === 1 ? '' : 's'} selected
+                </span>
+                {isSelectionMode && (
+                  // Selection mode is entered by long-press, which has no
+                  // modifier-key equivalent to exit it either — this button is
+                  // the touch-reachable way out, alongside tapping empty space.
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); clearFileSelection(); }}
+                    className="shrink-0 px-2 py-0.5 rounded-full text-[10px] font-bold cursor-pointer bg-black/10 hover:bg-black/20 dark:bg-white/10 dark:hover:bg-white/20"
+                  >
+                    Clear
+                  </button>
+                )}
+              </>
             ) : (
               <span className="opacity-50">Select an item to view properties</span>
             )}

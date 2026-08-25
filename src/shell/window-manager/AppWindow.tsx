@@ -190,6 +190,12 @@ export default function AppWindow({
 
     openContextMenu(e, items, app.title);
   };
+  // Deliberately no long-press-to-context-menu here, unlike the desktop
+  // background: the title bar's `onPointerDown` already drives the window
+  // drag gesture, and combining a long-press timer with that risks firing
+  // mid-drag. The hamburger `WindowMenu` next to the title (tap-to-open,
+  // already touch-accessible) covers the same minimize/maximize/close/focus
+  // actions instead.
 
   const isFocused = activeWindowId === app.id;
   // The window's chrome follows this window's own preference. With the default
@@ -518,10 +524,13 @@ export default function AppWindow({
             <span className="w-2.5 h-[1.5px] bg-current" />
           </button>
           
-          {/* Maximize */}
+          {/* Maximize — hidden below the mobile window breakpoint (systemStore's
+              MOBILE_WINDOW_BREAKPOINT = 640 = Tailwind's `sm`): there is no
+              windowed mode to restore into on a phone, so the control would
+              only be a dead tap target. */}
           <button
             onClick={() => onMaximize(app.id)}
-            className={`win-control-btn w-6 h-6 rounded-full flex items-center justify-center transition-colors cursor-pointer ${themeStyle.controlBtn}`}
+            className={`win-control-btn w-6 h-6 rounded-full hidden sm:flex items-center justify-center transition-colors cursor-pointer ${themeStyle.controlBtn}`}
             title="Maximize"
           >
             <div className="w-2.5 h-2.5 border-[1.5px] border-current rounded-[2px]" />

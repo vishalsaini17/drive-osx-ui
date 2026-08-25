@@ -193,6 +193,22 @@ interface SystemState {
 }
 
 /**
+ * Below this viewport width there is no windowed mode: every app opens, and
+ * stays, maximized. Every app's `defaultWindow.minW` is at least 420px
+ * (several are 550-740), so a resizable "windowed" state below this
+ * breakpoint has no valid width to sit at — the window would always be wider
+ * than the screen. CLAUDE.md §44 asks for a mobile-native model rather than
+ * the desktop chrome shrunk down; this is the narrow slice of that this
+ * change makes true: a phone gets one full-screen app at a time instead of a
+ * window clipped by its own minimum width.
+ */
+const MOBILE_WINDOW_BREAKPOINT = 640;
+
+function isNarrowViewport(): boolean {
+  return typeof window !== 'undefined' && window.innerWidth < MOBILE_WINDOW_BREAKPOINT;
+}
+
+/**
  * Where a newly created window for `manifest` should land — shared by the
  * "app has no window yet" branch of `openAppWindow` and by its
  * `forceNewWindow` branch, which used to duplicate this placement logic.
@@ -782,7 +798,10 @@ export const useSystemStore = create<SystemState>((set, get) => ({
 
           if (!wasOpen) {
             activeId = id;
-            return { ...w, isOpen: true, isMinimized: false, zIndex: state.maxZIndex + 1 };
+            // Same rule as openAppWindow: below the mobile breakpoint there
+            // is no windowed size to open at, so this (pre-seeded, not
+            // freshly computed) window opens maximized too.
+            return { ...w, isOpen: true, isMinimized: false, zIndex: state.maxZIndex + 1, isMaximized: w.isMaximized || isNarrowViewport() };
           } else if (wasMinimized) {
             activeId = id;
             return { ...w, isMinimized: false, zIndex: state.maxZIndex + 1 };
@@ -810,6 +829,7 @@ export const useSystemStore = create<SystemState>((set, get) => ({
         maxZIndex: maxZ
       };
     });
+    get().clampWindowsToViewport();
   },
 
   handleCloseWindow: (id) => {
@@ -904,10 +924,15 @@ export const useSystemStore = create<SystemState>((set, get) => ({
 
   handleMaximizeWindow: (id) => {
     get().playClickSound();
+    // No windowed mode below the mobile breakpoint (see clampWindowsToViewport)
+    // — restoring here would just be re-forced maximized on the next resize,
+    // so the toggle is a no-op rather than a flash of an unusable window.
+    if (isNarrowViewport()) return;
     set((state) => {
       const updated = state.windows.map(w => w.id === id ? { ...w, isMaximized: !w.isMaximized } : w);
       return { windows: updated };
     });
+    get().clampWindowsToViewport();
   },
 
   handleMoveWindow: (id, x, y) => {
@@ -949,7 +974,7 @@ export const useSystemStore = create<SystemState>((set, get) => ({
       const instanceId = `${id}::${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
       set((state) => {
         const prefs = state.settings;
-        const maximized = prefs.defaultWindowMode === 'maximized';
+        const maximized = prefs.defaultWindowMode === 'maximized' || isNarrowViewport();
         const { x, y, w, h } = computeNewWindowGeometry(state, manifest, instanceId);
         const newWindow: WindowState = {
           id: instanceId,
@@ -977,7 +1002,7 @@ export const useSystemStore = create<SystemState>((set, get) => ({
 
       if (!existing && manifest) {
         const prefs = state.settings;
-        const maximized = prefs.defaultWindowMode === 'maximized';
+        const maximized = prefs.defaultWindowMode === 'maximized' || isNarrowViewport();
         const { x, y, w, h } = computeNewWindowGeometry(state, manifest, manifest.id);
 
         const newWindow: WindowState = {
@@ -1038,13 +1063,23 @@ export const useSystemStore = create<SystemState>((set, get) => ({
     if (typeof window === 'undefined') return;
     const vw = window.innerWidth;
     const vh = window.innerHeight;
+    const narrow = isNarrowViewport();
 
     set((state) => {
       const dockD = state.settings.dockSize === 'sm' ? 52 : (state.settings.dockSize === 'lg' ? 92 : 78);
       let changed = false;
 
       const updated = state.windows.map((w) => {
-        if (!w.isOpen || w.isMaximized) return w;
+        if (!w.isOpen) return w;
+
+        // Below the mobile breakpoint there's no width a "windowed" state
+        // could sit at (every minW exceeds it), so every open window is
+        // forced maximized instead of floored at a too-wide minimum.
+        if (narrow) {
+          if (!w.isMaximized) { changed = true; return { ...w, isMaximized: true }; }
+          return w;
+        }
+        if (w.isMaximized) return w;
 
         const manifest = AppRegistry.getAppManifest(w.appId);
         const reqMinW = manifest?.defaultWindow.minW ?? w.minW;

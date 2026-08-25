@@ -259,8 +259,16 @@ export default function ApplicationMenuPopup({
         </div>
       </div>
 
-      {/* Center Section: App Icons Grid */}
-      <div className="flex-1 flex items-center justify-center my-6 max-w-6xl mx-auto w-full px-4 overflow-y-auto custom-scrollbar">
+      {/* Center Section: App Icons Grid.
+          Plain `items-center` vertically centers this flex item regardless of
+          whether it fits — with 18+ apps (three-column grid, six-plus rows)
+          on a phone-height viewport, that puts equal overflow above and
+          below, so the grid opens scrolled to the middle with the top row
+          clipped and no visible hint to scroll up. `safe center` is the CSS
+          alignment spec's fix for exactly this: center when there's room,
+          fall back to start-alignment (so it opens at the top, scrollable
+          down) when the content is taller than the container. */}
+      <div className="flex-1 flex [align-items:safe_center] justify-center my-6 max-w-6xl mx-auto w-full px-4 overflow-y-auto custom-scrollbar">
         {displayedApps.length > 0 ? (
           <motion.div
             key={`${category}-${currentPage}-${searchQuery}`}

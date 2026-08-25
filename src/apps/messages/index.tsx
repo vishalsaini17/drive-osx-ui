@@ -4,7 +4,7 @@ import {
   AtSign, Loader2, WifiOff, RefreshCw, Inbox, UserCheck, Trash2, BookUser,
   Phone, Video, ChevronUp, ChevronDown, Mic, Smile, Users, FileText,
   Image as ImageIcon, Camera, Music, Download, HardDrive,
-  Pin, CornerUpLeft, Forward, Copy, SmilePlus,
+  Pin, CornerUpLeft, Forward, Copy, SmilePlus, Pencil,
 } from 'lucide-react';
 import { useSystemStore } from '../../shell/state/systemStore';
 import { useAppMenu } from '../../platform/menus/AppMenuContext';
@@ -23,6 +23,7 @@ import {
   CHAT_MESSAGE_EVENT, setActiveConversation, type ChatMessageEvent,
 } from '../../shell/notifications/useRealtimeNotifications';
 import { useMessengerTheme } from './useMessengerTheme';
+import { useSupportsHover } from '../../platform/layout/useSupportsHover';
 import { APP_THEME_CHOICES } from '../../platform/theme/appTheme';
 import ContactDetailsPanel from './ContactDetailsPanel';
 import GroupDetailsPanel from './GroupDetailsPanel';
@@ -330,6 +331,9 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
   const [togglingReactionId, setTogglingReactionId] = useState<string | null>(null);
   const [togglingPinId, setTogglingPinId] = useState<string | null>(null);
   const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState('');
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
   const [forwardTargetIds, setForwardTargetIds] = useState<Set<string>>(new Set());
@@ -366,6 +370,7 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
   const isCompact = containerWidth < 720;
   const [showSidebar, setShowSidebar] = useState(true);
   useEffect(() => setShowSidebar(!isCompact), [isCompact]);
+  const supportsHover = useSupportsHover();
 
   // A microphone or camera stream left open after the window closes keeps
   // the browser's recording indicator lit for no reason.
@@ -868,6 +873,8 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
     setReplyingTo(null);
     setForwardingMessage(null);
     setShowPinnedList(false);
+    setEditingMessageId(null);
+    setEditDraft('');
 
     const recorder = mediaRecorderRef.current;
     if (recorder && recorder.state !== 'inactive') {
@@ -1212,6 +1219,37 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
       setActionError(describeError(error));
     } finally {
       setDeletingMessageId(null);
+    }
+  };
+
+  const startEdit = (message: Message) => {
+    setOpenMessageMenuId(null);
+    setEditingMessageId(message.id);
+    setEditDraft(message.body);
+  };
+
+  const cancelEdit = () => {
+    setEditingMessageId(null);
+    setEditDraft('');
+  };
+
+  const saveEdit = async (message: Message) => {
+    const body = editDraft.trim();
+    if (!body || isSavingEdit) return;
+    if (body === message.body) {
+      cancelEdit();
+      return;
+    }
+    setIsSavingEdit(true);
+    setActionError(null);
+    try {
+      const updated = await MessagingService.editMessage(message.id, body);
+      updateMessageInPlace(message.conversationId, updated);
+      cancelEdit();
+    } catch (error) {
+      setActionError(describeError(error));
+    } finally {
+      setIsSavingEdit(false);
     }
   };
 
@@ -2277,6 +2315,9 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                           <span className={`text-[9px] ${palette.textSubtle}`}>
                             {formatTime(message.createdAt)}
                           </span>
+                          {message.isEdited && !message.isDeleted && (
+                            <span className={`text-[9px] italic ${palette.textSubtle}`}>edited</span>
+                          )}
                           {message.pinnedAt && <Pin size={9} className="text-blue-500 shrink-0" />}
                           {message.isMine && <MessageTicks status={message.status} textSubtle={palette.textSubtle} />}
                           <div className="relative shrink-0">
@@ -2284,7 +2325,7 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                               onClick={() =>
                                 setOpenMessageMenuId((current) => (current === message.id ? null : message.id))
                               }
-                              className={`p-0.5 rounded-md cursor-pointer opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity ${palette.hover}`}
+                              className={`p-0.5 rounded-md cursor-pointer transition-opacity ${supportsHover ? 'opacity-0 group-hover:opacity-100 focus:opacity-100' : 'opacity-100'} ${palette.hover}`}
                               title="Message options"
                               aria-label="Message options"
                             >
@@ -2318,6 +2359,15 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                                         <CornerUpLeft size={13} className={palette.textSubtle} />
                                         <span className={`text-[11px] font-bold ${palette.text}`}>Reply</span>
                                       </button>
+                                      {message.isMine && message.attachments.length === 0 && (
+                                        <button
+                                          onClick={() => startEdit(message)}
+                                          className={`w-full px-3 py-2 flex items-center gap-2 text-left cursor-pointer ${palette.hover}`}
+                                        >
+                                          <Pencil size={13} className={palette.textSubtle} />
+                                          <span className={`text-[11px] font-bold ${palette.text}`}>Edit</span>
+                                        </button>
+                                      )}
                                       <button
                                         onClick={() => void copyMessageText(message)}
                                         className={`w-full px-3 py-2 flex items-center gap-2 text-left cursor-pointer ${palette.hover}`}
@@ -2439,7 +2489,41 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                                 </span>
                               </button>
                             )}
-                            {voiceAttachment ? (
+                            {editingMessageId === message.id ? (
+                              <div className={`min-w-[200px] max-w-[280px] p-2 rounded-2xl border ${palette.border} ${palette.inputBg}`}>
+                                <textarea
+                                  autoFocus
+                                  value={editDraft}
+                                  onChange={(event) => setEditDraft(event.target.value.slice(0, 8000))}
+                                  onKeyDown={(event) => {
+                                    if (event.key === 'Enter' && !event.shiftKey) {
+                                      event.preventDefault();
+                                      void saveEdit(message);
+                                    } else if (event.key === 'Escape') {
+                                      cancelEdit();
+                                    }
+                                  }}
+                                  rows={2}
+                                  className={`w-full resize-none bg-transparent text-xs leading-relaxed focus:outline-none ${palette.text}`}
+                                />
+                                <div className="flex items-center justify-end gap-1.5 mt-1">
+                                  <button
+                                    onClick={cancelEdit}
+                                    className={`px-2 py-1 rounded-lg text-[10px] font-bold cursor-pointer ${palette.hover} ${palette.textMuted}`}
+                                  >
+                                    Cancel
+                                  </button>
+                                  <button
+                                    onClick={() => void saveEdit(message)}
+                                    disabled={!editDraft.trim() || isSavingEdit}
+                                    className="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-[10px] font-bold cursor-pointer flex items-center gap-1"
+                                  >
+                                    {isSavingEdit && <Loader2 size={10} className="animate-spin" />}
+                                    Save
+                                  </button>
+                                </div>
+                              </div>
+                            ) : voiceAttachment ? (
                               <div
                                 className={`p-2 rounded-2xl ${
                                   message.isMine

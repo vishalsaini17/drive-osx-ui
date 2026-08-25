@@ -258,6 +258,12 @@ export const MessagingService = {
     return response.data;
   },
 
+  /** Edits the text of a message you sent — text messages only, see the service's doc comment. */
+  async editMessage(messageId: string, body: string): Promise<Message> {
+    const response = await http.patch<{ data: Message }>(`${BASE}/messages/${messageId}`, { body });
+    return response.data;
+  },
+
   /** Deletes the conversation for the caller only; the other side keeps theirs. */
   async deleteConversation(conversationId: string): Promise<void> {
     await http.delete(`${BASE}/conversations/${conversationId}`);
