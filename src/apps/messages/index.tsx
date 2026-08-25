@@ -207,6 +207,15 @@ async function copyToClipboard(text: string): Promise<boolean> {
 /** The reaction popover's one-tap shortcuts — "more" opens the full emoji picker for anything else. */
 const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
 
+/** A sent message can only be edited within this window afterward. */
+const EDIT_WINDOW_MS = 60_000;
+
+function canStillEdit(message: Message, now: number): boolean {
+  if (!message.isMine || message.attachments.length > 0 || message.isDeleted) return false;
+  const sentAt = new Date(message.createdAt).getTime();
+  return now - sentAt < EDIT_WINDOW_MS;
+}
+
 export default function Messenger({ windowId = 'messenger' }: { windowId?: string }) {
   const currentUser = useSystemStore((state) => state.currentUser);
   const pendingConversationId = useSystemStore((state) => state.pendingConversationId);
@@ -246,7 +255,7 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
   const [showNewChat, setShowNewChat] = useState(false);
   const [showRequests, setShowRequests] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
-  const draftInputRef = useRef<HTMLInputElement>(null);
+  const draftInputRef = useRef<HTMLTextAreaElement>(null);
 
   // -----------------------------------------------------------------------
   // New group
@@ -341,6 +350,13 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
   const [pinnedMessages, setPinnedMessages] = useState<Message[]>([]);
   const [showPinnedList, setShowPinnedList] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+
+  /** Drives the Edit option's disappearance once EDIT_WINDOW_MS has passed, without a full data refresh. */
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 5_000);
+    return () => clearInterval(timer);
+  }, []);
 
   // -----------------------------------------------------------------------
   // Voice messages
@@ -744,6 +760,7 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
     if (!body) return;
     await deliverMessage(body);
     setDraft('');
+    resetDraftInputHeight();
   };
 
   const sendSticker = async (sticker: string) => {
@@ -754,6 +771,18 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
   const insertEmoji = (emoji: string) => {
     setDraft((prev) => prev + emoji);
     draftInputRef.current?.focus();
+  };
+
+  /** Grows the composer with content up to MAX_COMPOSER_HEIGHT, then scrolls internally. */
+  const MAX_COMPOSER_HEIGHT = 128;
+  const resizeDraftInput = () => {
+    const el = draftInputRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, MAX_COMPOSER_HEIGHT)}px`;
+  };
+  const resetDraftInputHeight = () => {
+    if (draftInputRef.current) draftInputRef.current.style.height = 'auto';
   };
 
   const incomingRequests = requests.filter((request) => request.direction === 'incoming');
@@ -2359,7 +2388,7 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                                         <CornerUpLeft size={13} className={palette.textSubtle} />
                                         <span className={`text-[11px] font-bold ${palette.text}`}>Reply</span>
                                       </button>
-                                      {message.isMine && message.attachments.length === 0 && (
+                                      {canStillEdit(message, now) && (
                                         <button
                                           onClick={() => startEdit(message)}
                                           className={`w-full px-3 py-2 flex items-center gap-2 text-left cursor-pointer ${palette.hover}`}
@@ -2700,14 +2729,17 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                     </button>
                   </div>
                 )}
-              <div className={`p-2.5 ${palette.panelBg} border-t ${palette.border} shrink-0 flex items-center gap-2 relative`}>
+              <div className={`p-2.5 ${palette.panelBg} border-t ${palette.border} shrink-0 relative`}>
+                <div
+                  className={`flex items-end gap-0.5 rounded-3xl border px-1.5 py-1.5 shadow-sm transition-colors focus-within:border-blue-500 focus-within:shadow-md ${palette.inputBg}`}
+                >
                 <button
                   onClick={() => {
                     setShowEmojiPicker(false);
                     setShowAttachMenu((value) => !value);
                   }}
                   disabled={isUploadingAttachment}
-                  className={`p-2.5 shrink-0 rounded-xl cursor-pointer disabled:opacity-50 disabled:cursor-wait ${
+                  className={`p-2 shrink-0 rounded-full cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-wait ${
                     showAttachMenu ? 'bg-blue-600/15 text-blue-600' : palette.hover
                   }`}
                   title="Attach"
@@ -2813,7 +2845,7 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                     setShowAttachMenu(false);
                     setShowEmojiPicker((value) => !value);
                   }}
-                  className={`p-2.5 shrink-0 rounded-xl cursor-pointer ${
+                  className={`p-2 shrink-0 rounded-full cursor-pointer transition-colors ${
                     showEmojiPicker ? 'bg-blue-600/15 text-blue-600' : palette.hover
                   }`}
                   title="Emoji and stickers"
@@ -2836,37 +2868,42 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                   </>
                 )}
 
-                <input
+                <textarea
                   ref={draftInputRef}
                   value={draft}
-                  onChange={(event) => setDraft(event.target.value)}
+                  onChange={(event) => {
+                    setDraft(event.target.value);
+                    resizeDraftInput();
+                  }}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' && !event.shiftKey) {
                       event.preventDefault();
                       sendMessage();
                     }
                   }}
+                  rows={1}
                   placeholder={`Message ${activeConversation.title}`}
-                  className={`flex-1 min-w-0 px-3.5 py-2 rounded-2xl border text-xs focus:outline-none focus:border-blue-500 ${palette.inputBg} ${palette.text}`}
+                  className={`flex-1 min-w-0 resize-none bg-transparent border-0 px-2 py-2 text-xs leading-relaxed focus:outline-none max-h-32 overflow-y-auto ${palette.text} ${palette.textSubtle.replace('text-', 'placeholder:text-')}`}
                 />
                 {draft.trim() ? (
                   <button
                     onClick={sendMessage}
                     disabled={isSending}
-                    className="p-2.5 shrink-0 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded-xl cursor-pointer transition-colors"
+                    className="p-2 shrink-0 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded-full cursor-pointer transition-all active:scale-95"
                   >
                     {isSending ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
                   </button>
                 ) : (
                   <button
                     onClick={() => void startRecording()}
-                    className="p-2.5 shrink-0 bg-blue-600 hover:bg-blue-500 text-white rounded-xl cursor-pointer transition-colors"
+                    className="p-2 shrink-0 bg-blue-600 hover:bg-blue-500 text-white rounded-full cursor-pointer transition-all active:scale-95"
                     title="Record a voice message"
                     aria-label="Record a voice message"
                   >
                     <Mic size={15} />
                   </button>
                 )}
+                </div>
               </div>
               </>
             )}
