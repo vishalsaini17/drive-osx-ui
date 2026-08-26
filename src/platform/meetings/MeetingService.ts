@@ -43,6 +43,8 @@ export interface Meeting {
   isLocked: boolean;
   participants: MeetingParticipant[];
   chatMessages: MeetingMessage[];
+  /** Set once this meeting's chat is bridged to a Messaging conversation — see `CreateMeetingPayload.conversationId`. */
+  conversationId: string | null;
 }
 
 export interface CreateMeetingPayload {
@@ -56,6 +58,8 @@ export interface CreateMeetingPayload {
   allowChat?: boolean;
   allowUnmute?: boolean;
   allowRecording?: boolean;
+  /** The conversation this call was started from, if any (e.g. Messenger's "Start a call"). */
+  conversationId?: string;
 }
 
 export class MeetingServiceClass {

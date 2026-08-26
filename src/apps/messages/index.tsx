@@ -159,6 +159,15 @@ function isEmojiOnlyMessage(text: string): boolean {
   return compact.length > 0 && EMOJI_ONLY_REGEX.test(compact);
 }
 
+const CALL_INVITE_REGEX = /^📞 Started a (video|voice) call — join in Meet with code (\S+)$/;
+
+/** Recognizes the call-invite text `startCall` posts, so it can render as a joinable card instead of a plain bubble. */
+function parseCallInvite(text: string): { kind: 'video' | 'voice'; meetingCode: string } | null {
+  const match = CALL_INVITE_REGEX.exec(text.trim());
+  if (!match) return null;
+  return { kind: match[1] as 'video' | 'voice', meetingCode: match[2] };
+}
+
 /** What "Copy" puts on the clipboard for a message with no text of its own. */
 function describeMessageForCopy(message: Message): string {
   if (message.body) return message.body;
@@ -220,7 +229,7 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
   const currentUser = useSystemStore((state) => state.currentUser);
   const pendingConversationId = useSystemStore((state) => state.pendingConversationId);
   const consumePendingConversation = useSystemStore((state) => state.consumePendingConversation);
-  const openAppWindow = useSystemStore((state) => state.openAppWindow);
+  const openMeeting = useSystemStore((state) => state.openMeeting);
   const requestFilePick = useSystemStore((state) => state.requestFilePick);
   const filePickerResult = useSystemStore((state) => state.filePickerResults[windowId]);
   const consumeFilePickerResult = useSystemStore((state) => state.consumeFilePickerResult);
@@ -1106,6 +1115,7 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
       const meeting = await MeetingService.createMeeting({
         title: `${kind === 'video' ? 'Video' : 'Voice'} call with ${callTarget}`,
         allowChat: true,
+        conversationId: activeConversationId,
       });
       await MeetingService.startMeeting(meeting.id);
       const body = `📞 Started a ${kind === 'video' ? 'video' : 'voice'} call — join in Meet with code ${meeting.meetingCode}`;
@@ -1127,7 +1137,7 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
           ? `Call started — meeting code ${meeting.meetingCode} copied to clipboard`
           : `Call started — meeting code ${meeting.meetingCode}`,
       );
-      openAppWindow('meeting');
+      openMeeting(meeting.id);
     } catch (error) {
       setPanelError(describeError(error));
     } finally {
@@ -2310,6 +2320,8 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                   const fileAttachment = message.attachments.find((a) => a.kind === 'file');
                   const isEmojiOnly =
                     !voiceAttachment && !mediaAttachment && !fileAttachment && isEmojiOnlyMessage(message.body);
+                  const callInvite =
+                    !voiceAttachment && !mediaAttachment && !fileAttachment ? parseCallInvite(message.body) : null;
                   const isActiveMatch = showMessageSearch && message.id === activeSearchMatchId;
                   const repliedMessage = message.replyToId
                     ? activeMessages.find((candidate) => candidate.id === message.replyToId) ?? null
@@ -2607,6 +2619,51 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                                 </span>
                                 <Download size={13} className="shrink-0 opacity-70" />
                               </a>
+                            ) : callInvite ? (
+                              <div
+                                className={`flex items-center gap-2.5 p-2.5 rounded-2xl border min-w-[220px] ${palette.panelBg} ${palette.border} ${
+                                  message.isMine ? 'rounded-tr-none' : 'rounded-tl-none'
+                                }`}
+                              >
+                                <span className={`p-2 rounded-xl shrink-0 ${palette.isDark ? 'bg-blue-500/15' : 'bg-blue-50'}`}>
+                                  {callInvite.kind === 'video' ? (
+                                    <Video size={16} className="text-blue-500" />
+                                  ) : (
+                                    <Phone size={16} className="text-blue-500" />
+                                  )}
+                                </span>
+                                <div className="min-w-0 flex-1">
+                                  <div className={`text-xs font-bold ${palette.text}`}>
+                                    {callInvite.kind === 'video' ? 'Video call' : 'Voice call'}
+                                  </div>
+                                  <div className="flex items-center gap-1 mt-1">
+                                    <span
+                                      className={`px-1.5 py-0.5 rounded-md font-mono text-[11px] tracking-wide ${
+                                        palette.isDark ? 'bg-white/10' : 'bg-slate-100'
+                                      } ${palette.textMuted}`}
+                                    >
+                                      {callInvite.meetingCode}
+                                    </span>
+                                    <button
+                                      onClick={async () => {
+                                        const copied = await copyToClipboard(callInvite.meetingCode);
+                                        setNotice(copied ? 'Meeting code copied' : 'Could not copy — clipboard access was denied.');
+                                      }}
+                                      className={`p-1 rounded-md cursor-pointer ${palette.hover}`}
+                                      title="Copy meeting code"
+                                      aria-label="Copy meeting code"
+                                    >
+                                      <Copy size={11} className={palette.textSubtle} />
+                                    </button>
+                                  </div>
+                                </div>
+                                <button
+                                  onClick={() => openMeeting(callInvite.meetingCode)}
+                                  className="shrink-0 px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-[11px] font-bold cursor-pointer transition-colors"
+                                >
+                                  Join
+                                </button>
+                              </div>
                             ) : isEmojiOnly ? (
                               <div className="text-4xl leading-tight">
                                 {showMessageSearch && messageSearchQuery.trim()

@@ -145,6 +145,21 @@ interface SystemState {
   /** Reads and clears the target, so it is acted on exactly once. */
   consumePendingConversation: () => string | null;
 
+  /**
+   * A meeting OSX Meet should join as soon as it can.
+   *
+   * Set when a call is started from Messages (the video/voice call buttons).
+   * Without this, opening Meet from there landed on its generic lobby, and
+   * the meeting the caller just started had to be found and re-entered by
+   * hand — the same "no component to tell yet" problem `pendingConversationId`
+   * solves for Messenger.
+   */
+  pendingMeetingId: string | null;
+  /** Opens Meet and asks it to join this meeting. */
+  openMeeting: (meetingId: string) => void;
+  /** Reads and clears the target, so it is acted on exactly once. */
+  consumePendingMeeting: () => string | null;
+
   // Actions
   initializeStore: () => void;
   setSettings: (updater: SystemSettings | ((prev: SystemSettings) => SystemSettings)) => void;
@@ -514,6 +529,21 @@ export const useSystemStore = create<SystemState>((set, get) => ({
   consumePendingConversation: () => {
     const pending = get().pendingConversationId;
     if (pending) set({ pendingConversationId: null });
+    return pending;
+  },
+
+  pendingMeetingId: null,
+
+  openMeeting: (meetingId: string) => {
+    // Order matters: the target is set before the window opens, so Meet
+    // already has it on its first render rather than showing the lobby.
+    set({ pendingMeetingId: meetingId });
+    get().openAppWindow('meeting');
+  },
+
+  consumePendingMeeting: () => {
+    const pending = get().pendingMeetingId;
+    if (pending) set({ pendingMeetingId: null });
     return pending;
   },
 

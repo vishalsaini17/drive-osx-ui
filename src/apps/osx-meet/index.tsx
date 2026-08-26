@@ -47,14 +47,60 @@ import {
 } from 'lucide-react';
 import { useSystemStore } from '../../shell/state/systemStore';
 import { useAppTheme } from '../../platform/theme/useAppTheme';
-import { MeetingService } from '../../platform/meetings/MeetingService';
-import { Participant, ChatMessage, Poll, MeetingSecuritySettings, WaitingParticipant } from './types';
+import { MeetingService, MeetingParticipant, Meeting } from '../../platform/meetings/MeetingService';
+import { MessagingService, Message } from '../../platform/messaging/MessagingService';
+import { ApiError } from '../../platform/api/http';
+import { Participant, Poll, MeetingSecuritySettings, WaitingParticipant } from './types';
 import WhiteboardModal from './components/WhiteboardModal';
 import PollsDrawer from './components/PollsDrawer';
 import BreakoutRoomsModal from './components/BreakoutRoomsModal';
 import SecurityModal from './components/SecurityModal';
 import InviteModal from './components/InviteModal';
 import { themeFamily } from '../../platform/theme/themes';
+import { useMeetingConnection, getSelfUserId, MeetingRealtimeEvent } from './webrtc';
+import { useMeetTheme } from './useMeetTheme';
+
+/**
+ * Applies one vote (cast or changed) to a poll, keyed by voter so a remote
+ * vote broadcast can be merged without needing to know about any other
+ * voter's choice. Pure and side-effect free so both the local vote handler
+ * and the remote-event handler can share it.
+ */
+function applyVote(poll: Poll, voterId: string, optionId: string): Poll {
+  const previousOptionId = poll.votesByVoter[voterId];
+  if (previousOptionId === optionId) return poll;
+  const votesByVoter = { ...poll.votesByVoter, [voterId]: optionId };
+  const options = poll.options.map((opt) => {
+    let votes = opt.votes;
+    if (opt.id === optionId) votes += 1;
+    if (opt.id === previousOptionId) votes = Math.max(0, votes - 1);
+    return { ...opt, votes };
+  });
+  const totalVotes = options.reduce((acc, opt) => acc + opt.votes, 0);
+  return { ...poll, options, totalVotes, votesByVoter };
+}
+
+/** A small deterministic palette for real remote participants' fallback tiles. */
+const TILE_GRADIENTS = [
+  'from-cyan-600 to-blue-700',
+  'from-fuchsia-600 to-purple-700',
+  'from-emerald-600 to-teal-700',
+  'from-orange-500 to-red-600',
+  'from-indigo-600 to-violet-700',
+];
+function gradientForId(id: string): string {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) | 0;
+  return TILE_GRADIENTS[Math.abs(hash) % TILE_GRADIENTS.length];
+}
+
+/** Initials fallback for a participant with no avatar image — same idea as Messenger's `Avatar`. */
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '?';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
 
 // Canvas component for Virtual Studio Camera or live webcam feed.
 // The canvas backing store tracks its container so the picture never stretches:
@@ -388,14 +434,44 @@ function ScreenShareCanvas() {
  * name tag and the hand/mute state stay identical whether the tile is a
  * thumbnail in a strip or the full spotlight.
  */
+function RemoteVideoTile({ stream }: { stream: MediaStream }) {
+  return (
+    <video
+      autoPlay
+      playsInline
+      className="w-full h-full object-cover"
+      ref={(el) => {
+        if (el && el.srcObject !== stream) el.srcObject = stream;
+      }}
+    />
+  );
+}
+
+function AvatarBadge({ name, avatar, size }: { name: string; avatar: string; size: 'sm' | 'lg' }) {
+  const dims = size === 'sm' ? 'w-8 h-8' : 'w-14 h-14 sm:w-20 sm:h-20';
+  const fontSize = size === 'sm' ? 'text-[10px]' : 'text-base sm:text-xl';
+  return avatar.startsWith('http') ? (
+    <img src={avatar} alt={name} className={`${dims} rounded-full object-cover`} />
+  ) : (
+    <div
+      className={`${dims} ${fontSize} rounded-full bg-white/15 border-2 border-white/20 flex items-center justify-center font-bold text-white shrink-0`}
+    >
+      {initials(name)}
+    </div>
+  );
+}
+
 function ParticipantTile({
   participant,
   isMe,
   isVideoOn,
   isMicOn,
   webcamStream,
+  remoteStream,
+  peerConnectionState,
   pinnedParticipantId,
   onTogglePin,
+  reactions = [],
   compact = false,
   className = '',
 }: {
@@ -404,42 +480,48 @@ function ParticipantTile({
   isVideoOn: boolean;
   isMicOn: boolean;
   webcamStream: MediaStream | null;
+  remoteStream?: MediaStream | null;
+  peerConnectionState?: RTCPeerConnectionState;
   pinnedParticipantId: string | null;
   onTogglePin: (id: string | null) => void;
+  /** The room's full in-flight reaction list; filtered below to just this
+   *  tile's participant, so the emoji floats over whichever layout renders
+   *  the sender's tile (tiled, spotlight strip, sidebar, ...). */
+  reactions?: { id: string; emoji: string; participantId: string }[];
   compact?: boolean;
   className?: string;
 }) {
   const showVideo = isMe ? isVideoOn : participant.isVideoOn;
   const showMuted = isMe ? !isMicOn : participant.isMuted;
   const isPinned = pinnedParticipantId === participant.id;
+  const isConnecting =
+    !isMe && showVideo && !remoteStream && (peerConnectionState === 'connecting' || peerConnectionState === 'new');
+  const myReactions = reactions.filter((r) => r.participantId === participant.id);
 
   return (
     <div
       className={`relative rounded-2xl overflow-hidden border flex items-center justify-center bg-zinc-900 transition-all group ${
         participant.isSpeaking
-          ? 'border-emerald-500 ring-2 ring-emerald-500/50 shadow-lg shadow-emerald-500/10'
+          ? 'border-blue-500 ring-2 ring-blue-500/60 shadow-lg shadow-blue-500/10'
           : 'border-zinc-800'
       } ${className}`}
     >
       {isMe && showVideo ? (
         <VirtualCameraCanvas stream={webcamStream} mirrored compact={compact} />
+      ) : showVideo && remoteStream ? (
+        <RemoteVideoTile stream={remoteStream} />
+      ) : showVideo && isConnecting ? (
+        <div className="w-full h-full flex flex-col items-center justify-center gap-2 bg-zinc-800/60 text-zinc-300">
+          <RefreshCw size={compact ? 14 : 18} className="animate-spin opacity-70" />
+          {!compact && <span className="text-[11px] font-semibold">Connecting…</span>}
+        </div>
       ) : showVideo ? (
-        <img
-          src={participant.avatar}
-          alt={participant.name}
-          className="w-full h-full object-cover filter brightness-90"
-        />
+        <AvatarBadge name={participant.name} avatar={participant.avatar} size="lg" />
       ) : (
         <div
           className={`w-full h-full bg-gradient-to-tr ${participant.bgGradient} flex flex-col items-center justify-center p-2 gap-1 text-center`}
         >
-          <div
-            className={`rounded-full border-2 border-white/20 overflow-hidden shadow-xl ${
-              compact ? 'w-8 h-8' : 'w-14 h-14 sm:w-20 sm:h-20'
-            }`}
-          >
-            <img src={participant.avatar} alt={participant.name} className="w-full h-full object-cover" />
-          </div>
+          <AvatarBadge name={participant.name} avatar={participant.avatar} size={compact ? 'sm' : 'lg'} />
           {!compact && (
             <>
               <span className="font-bold text-xs sm:text-sm text-white truncate max-w-full">
@@ -457,18 +539,32 @@ function ParticipantTile({
         {showMuted && <MicOff size={11} className="text-red-400 shrink-0" />}
       </div>
 
-      {/* Raised hand */}
-      {participant.isHandRaised && (
+      {/* Presenting / raised hand / speaking — mutually exclusive, same
+          corner, in that priority order. */}
+      {!isMe && participant.isScreenSharing ? (
+        <div className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded-lg bg-emerald-500/90 text-white text-[10px] font-bold flex items-center gap-1 shadow-md z-10" title={`${participant.name} is presenting`}>
+          <Monitor size={11} />
+          {!compact && <span>Presenting</span>}
+        </div>
+      ) : participant.isHandRaised ? (
         <div className="absolute top-1.5 right-1.5 p-1 rounded-lg bg-amber-500 text-white shadow-md z-10" title="Hand raised">
           <Hand size={compact ? 10 : 13} />
         </div>
-      )}
-
-      {/* Speaking */}
-      {participant.isSpeaking && !participant.isHandRaised && (
+      ) : participant.isSpeaking ? (
         <div className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded-lg bg-emerald-500/90 text-white text-[10px] font-bold flex items-center gap-1 shadow-md z-10">
           <Volume2 size={11} />
           {!compact && <span>Speaking</span>}
+        </div>
+      ) : null}
+
+      {/* Floating reactions from this participant */}
+      {myReactions.length > 0 && (
+        <div className="absolute inset-0 pointer-events-none flex items-end justify-center overflow-hidden z-20">
+          {myReactions.map((r) => (
+            <span key={r.id} className="absolute bottom-6 text-2xl sm:text-3xl animate-bounce drop-shadow-lg">
+              {r.emoji}
+            </span>
+          ))}
         </div>
       )}
 
@@ -486,6 +582,165 @@ function ParticipantTile({
   );
 }
 
+// The self picture-in-picture's default/min/max width (px) and the aspect
+// ratio (16:9, matching every other tile) its height is derived from.
+const DEFAULT_PIP_WIDTH = 160;
+const MIN_PIP_WIDTH = 100;
+const MAX_PIP_WIDTH = 320;
+const PIP_ASPECT = 9 / 16;
+
+/**
+ * The self-view floats over whichever layout is spotlighting someone else —
+ * Meet's signature corner PIP. Draggable (pointer-down anywhere but a
+ * button, e.g. the pin button already inside `ParticipantTile`) and
+ * resizable (the corner handle), constrained to `boundsRef`'s box so it can
+ * never be dragged off-screen or behind the control bar below the stage.
+ *
+ * Plain pointer events + `setPointerCapture` — no drag library, matching the
+ * rest of this app.
+ */
+function SelfPictureInPicture({
+  participant,
+  isVideoOn,
+  isMicOn,
+  webcamStream,
+  pinnedParticipantId,
+  onTogglePin,
+  reactions,
+  boundsRef,
+  position,
+  size,
+  onPositionChange,
+  onSizeChange,
+}: {
+  participant: Participant;
+  isVideoOn: boolean;
+  isMicOn: boolean;
+  webcamStream: MediaStream | null;
+  pinnedParticipantId: string | null;
+  onTogglePin: (id: string | null) => void;
+  reactions: { id: string; emoji: string; participantId: string }[];
+  boundsRef: React.RefObject<HTMLDivElement | null>;
+  position: { x: number; y: number } | null;
+  size: number;
+  onPositionChange: (position: { x: number; y: number }) => void;
+  onSizeChange: (size: number) => void;
+}) {
+  const pipRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{ pointerId: number; startX: number; startY: number; startLeft: number; startTop: number } | null>(
+    null,
+  );
+  const resizeRef = useRef<{ pointerId: number; startX: number; startSize: number } | null>(null);
+
+  const width = size;
+  const height = Math.round(size * PIP_ASPECT);
+
+  const style: React.CSSProperties = position
+    ? { position: 'absolute', left: position.x, top: position.y, width, height }
+    : { position: 'absolute', right: 12, bottom: 12, width, height };
+
+  const handleDragPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    // Never hijack a click on a control living inside the tile (the pin
+    // button today; anything else added later too).
+    if ((e.target as HTMLElement).closest('button')) return;
+    const bounds = boundsRef.current?.getBoundingClientRect();
+    const pipRect = pipRef.current?.getBoundingClientRect();
+    if (!bounds || !pipRect) return;
+    dragRef.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      startLeft: pipRect.left - bounds.left,
+      startTop: pipRect.top - bounds.top,
+    };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const handleDragPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    const bounds = boundsRef.current?.getBoundingClientRect();
+    if (!bounds) return;
+    const nextLeft = drag.startLeft + (e.clientX - drag.startX);
+    const nextTop = drag.startTop + (e.clientY - drag.startY);
+    onPositionChange({
+      x: Math.max(0, Math.min(nextLeft, Math.max(0, bounds.width - width))),
+      y: Math.max(0, Math.min(nextTop, Math.max(0, bounds.height - height))),
+    });
+  };
+
+  const endDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (dragRef.current?.pointerId === e.pointerId) dragRef.current = null;
+  };
+
+  const handleResizePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    const bounds = boundsRef.current?.getBoundingClientRect();
+    const pipRect = pipRef.current?.getBoundingClientRect();
+    if (!bounds || !pipRect) return;
+    // Anchor to an explicit left/top before resizing, since the default
+    // corner is expressed as right/bottom and would otherwise shift as the
+    // width changes underneath it.
+    if (!position) onPositionChange({ x: pipRect.left - bounds.left, y: pipRect.top - bounds.top });
+    resizeRef.current = { pointerId: e.pointerId, startX: e.clientX, startSize: size };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const handleResizePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const resize = resizeRef.current;
+    if (!resize || resize.pointerId !== e.pointerId) return;
+    const nextSize = Math.max(MIN_PIP_WIDTH, Math.min(MAX_PIP_WIDTH, resize.startSize + (e.clientX - resize.startX)));
+    onSizeChange(nextSize);
+    const bounds = boundsRef.current?.getBoundingClientRect();
+    if (bounds && position) {
+      const nextHeight = Math.round(nextSize * PIP_ASPECT);
+      const clampedX = Math.max(0, Math.min(position.x, Math.max(0, bounds.width - nextSize)));
+      const clampedY = Math.max(0, Math.min(position.y, Math.max(0, bounds.height - nextHeight)));
+      if (clampedX !== position.x || clampedY !== position.y) onPositionChange({ x: clampedX, y: clampedY });
+    }
+  };
+
+  const endResize = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (resizeRef.current?.pointerId === e.pointerId) resizeRef.current = null;
+  };
+
+  return (
+    <div
+      ref={pipRef}
+      style={style}
+      onPointerDown={handleDragPointerDown}
+      onPointerMove={handleDragPointerMove}
+      onPointerUp={endDrag}
+      onPointerCancel={endDrag}
+      className="rounded-xl overflow-hidden shadow-2xl border-2 border-white/20 z-20 cursor-grab active:cursor-grabbing touch-none select-none"
+    >
+      <ParticipantTile
+        participant={participant}
+        isMe
+        isVideoOn={isVideoOn}
+        isMicOn={isMicOn}
+        webcamStream={webcamStream}
+        pinnedParticipantId={pinnedParticipantId}
+        onTogglePin={onTogglePin}
+        reactions={reactions}
+        compact
+        className="w-full h-full !rounded-none !border-0"
+      />
+      {/* Resize handle: bottom-right corner, the usual convention. */}
+      <div
+        onPointerDown={handleResizePointerDown}
+        onPointerMove={handleResizePointerMove}
+        onPointerUp={endResize}
+        onPointerCancel={endResize}
+        className="absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize touch-none flex items-end justify-end p-0.5 z-30"
+        title="Resize"
+      >
+        <div className="w-2.5 h-2.5 border-b-2 border-r-2 border-white/80 rounded-br-[2px]" />
+      </div>
+    </div>
+  );
+}
+
 // The local user's roster entry, used for the initial state and whenever the
 // roster is reset after leaving a call.
 const selfParticipant: Participant = {
@@ -497,18 +752,32 @@ const selfParticipant: Participant = {
   isVideoOn: false,
   isHandRaised: false,
   isSpeaking: false,
+  isScreenSharing: false,
   bgGradient: 'from-blue-600 to-indigo-700',
 };
 
 export default function MeetingApp() {
   const theme = useAppTheme('meeting').chromeTheme;
   const isLight = themeFamily(theme) === 'light';
+  const { palette } = useMeetTheme();
 
   // System Store integration
   const calendarEvents = useSystemStore((state) => state.calendarEvents);
   const addCalendarEvent = useSystemStore((state) => state.addCalendarEvent);
   const setFiles = useSystemStore((state) => state.setFiles);
   const resolveDefaultFolderId = useSystemStore((state) => state.resolveDefaultFolderId);
+  const pendingMeetingId = useSystemStore((state) => state.pendingMeetingId);
+  const consumePendingMeeting = useSystemStore((state) => state.consumePendingMeeting);
+  const currentUser = useSystemStore((state) => state.currentUser);
+  // Real display name for outgoing broadcasts (captions, "You are
+  // presenting" text elsewhere already says "You" locally) — remote
+  // participants need an actual name, not the local-only placeholder.
+  const localDisplayName = currentUser?.fullName || currentUser?.username || 'Participant';
+
+  // This user's id, as issued in the access token — declared early because
+  // both `handleRemoteEvent` (below) and the WebRTC connection hook need it,
+  // and it never changes for the lifetime of the component.
+  const [selfUserId] = useState<string | null>(() => getSelfUserId());
 
   // Container width state for responsive layout inside windows / mobile
   const containerRef = useRef<HTMLDivElement>(null);
@@ -537,7 +806,25 @@ export default function MeetingApp() {
 
   // Call Settings & Passcode
   const [meetingCode, setMeetingCode] = useState('');
+  // The meeting's real id — every API call and the WebRTC signalling room
+  // key off this. Kept distinct from `meetingShareCode` (the short human
+  // code) because the API's `:meetingId` routes only accept the real id.
   const [currentMeetingId, setCurrentMeetingId] = useState('');
+  const [meetingShareCode, setMeetingShareCode] = useState('');
+  // Set once the backend links this meeting's chat to a Messaging
+  // conversation (once a second person has ever joined — see
+  // `MeetingService.Meeting.conversationId`). Null means "chat not open yet".
+  const [meetingConversationId, setMeetingConversationId] = useState<string | null>(null);
+  // Who actually hosts this meeting (`Meeting.hostId` from the backend) —
+  // the one server-trustworthy fact host-only actions (mute all, delete a
+  // poll, ...) are gated on. Never inferred from the local "You (Host)"
+  // roster label, which is only ever a display placeholder.
+  const [meetingHostId, setMeetingHostId] = useState<string | null>(null);
+  // Server-verified: `selfUserId` comes from this client's own access token,
+  // and `meetingHostId` from the `Meeting` record the backend returned when
+  // this user created/joined it. Neither side of the comparison is
+  // attacker-controlled the way a client-supplied "amIHost" flag would be.
+  const isHost = meetingHostId != null && selfUserId != null && meetingHostId === selfUserId;
   const [meetingTitle, setMeetingTitle] = useState('Sync & Project Review');
   const [inputPasscode, setInputPasscode] = useState('');
   const [joinError, setJoinError] = useState<string | null>(null);
@@ -568,6 +855,19 @@ export default function MeetingApp() {
   const [isHandRaised, setIsHandRaised] = useState(false);
   const [pinnedParticipantId, setPinnedParticipantId] = useState<string | null>(null);
 
+  // Self picture-in-picture: draggable/resizable position within the video
+  // stage. `null` position means "default bottom-right corner" — it only
+  // gets a concrete coordinate once the user actually drags it, and resets
+  // to that default corner on a new call (see `handleEndCall`) rather than
+  // persisting across calls.
+  const [pipPosition, setPipPosition] = useState<{ x: number; y: number } | null>(null);
+  const [pipSize, setPipSize] = useState<number>(DEFAULT_PIP_WIDTH);
+  const pipBoundsRef = useRef<HTMLDivElement | null>(null);
+
+  // A host's "ask to unmute" targeting me — a dismissible request, never an
+  // automatic unmute (see `handleRemoteEvent`'s `unmute-request` case).
+  const [showUnmuteRequest, setShowUnmuteRequest] = useState(false);
+
   // Stage layout, as in Google Meet's "Change layout" panel
   const [layoutMode, setLayoutMode] = useState<'auto' | 'tiled' | 'spotlight' | 'sidebar'>('auto');
   const [showLayoutMenu, setShowLayoutMenu] = useState(false);
@@ -577,6 +877,26 @@ export default function MeetingApp() {
   const [captionLines, setCaptionLines] = useState<{ id: string; speaker: string; text: string }[]>([]);
   const [captionsSupported, setCaptionsSupported] = useState(true);
   const [captionError, setCaptionError] = useState<string | null>(null);
+
+  // Adds or updates one speaker's caption line. Interim results for a given
+  // speaker replace that speaker's own in-progress line (keyed `live-<key>`)
+  // in place; a final result closes it under a fresh id. Keyed per speaker
+  // (not "the last line in the array", as the pre-realtime version assumed)
+  // so multiple people talking at once don't overwrite each other's lines.
+  const upsertCaptionLine = useCallback((speakerKey: string, speaker: string, text: string, final: boolean) => {
+    setCaptionLines((prev) => {
+      const liveId = `live-${speakerKey}`;
+      const idx = prev.findIndex((l) => l.id === liveId);
+      const nextLine = { id: final ? `cap-${Date.now()}-${speakerKey}` : liveId, speaker, text };
+      const next = idx >= 0 ? [...prev.slice(0, idx), nextLine, ...prev.slice(idx + 1)] : [...prev, nextLine];
+      return next.slice(-3);
+    });
+  }, []);
+
+  // Latest `broadcastEvent` from `useMeetingConnection` (defined further
+  // below), read via a ref so the speech-recognition effect above it in the
+  // source doesn't need to be reordered after the hook that produces it.
+  const broadcastEventRef = useRef<(event: MeetingRealtimeEvent) => void>(() => {});
 
   // Meeting elapsed time
   const [meetingSeconds, setMeetingSeconds] = useState(0);
@@ -663,17 +983,18 @@ export default function MeetingApp() {
       }
       const text = (final || interim).trim();
       if (!text) return;
-      setCaptionLines((prev) => {
-        const next = [...prev];
-        const last = next[next.length - 1];
-        // Interim results replace the line in progress; a final result closes it.
-        if (last && last.id === 'live') next[next.length - 1] = { ...last, text };
-        else next.push({ id: 'live', speaker: 'You', text });
-        if (final) {
-          next[next.length - 1] = { id: `cap-${Date.now()}`, speaker: 'You', text };
-        }
-        return next.slice(-3);
-      });
+      upsertCaptionLine('me', 'You', text, Boolean(final));
+      // Only finalized lines go over the wire — interim guesses are noisy
+      // and would otherwise flood the signalling channel on every word.
+      if (final) {
+        broadcastEventRef.current({
+          kind: 'caption',
+          id: `cap-${Date.now()}`,
+          speaker: localDisplayName,
+          text,
+          final: true,
+        });
+      }
     };
 
     recognition.onerror = (event: any) => {
@@ -710,7 +1031,7 @@ export default function MeetingApp() {
         // Never started.
       }
     };
-  }, [captionsOn, activeTab, isMicOn]);
+  }, [captionsOn, activeTab, isMicOn, upsertCaptionLine, localDisplayName]);
 
   useEffect(() => {
     if (!captionsOn) {
@@ -820,6 +1141,23 @@ export default function MeetingApp() {
     setScreenStream(null);
     setIsScreenSharing(false);
   }, [stopLocalMedia]);
+
+  /**
+   * The single place that actually mutes/unmutes this user's own mic — flips
+   * the real `track.enabled` (so peers actually stop/start hearing it, with
+   * no renegotiation needed) and the UI state that the existing
+   * broadcast-on-change effect (below) picks up to tell the room. The
+   * control-bar mic button, a host's `force-mute`, and a user accepting an
+   * `unmute-request` all funnel through here — no one of them may skip the
+   * others' effects (CLAUDE.md §17: authorization/state changes centralized,
+   * not scattered).
+   */
+  const setMicEnabled = useCallback((next: boolean) => {
+    setIsMicOn(next);
+    mediaRef.current.webcam?.getAudioTracks().forEach((track) => {
+      track.enabled = next;
+    });
+  }, []);
 
   // Closing or minimising the window unmounts the app. Release the hardware
   // here so the camera light goes out with it.
@@ -941,18 +1279,34 @@ export default function MeetingApp() {
   };
 
   // Reaction animations
-  const [activeReactions, setActiveReactions] = useState<{ id: string; emoji: string; x: number }[]>([]);
+  const [activeReactions, setActiveReactions] = useState<{ id: string; emoji: string; participantId: string }[]>([]);
   const [showReactionsMenu, setShowReactionsMenu] = useState(false);
 
-  // Chat State & File Upload
+  // Chat & file sharing — unified with Messaging (see `meetingConversationId`
+  // above). There is no bespoke meeting-chat backend of its own: once the
+  // call has a linked conversation, this is a thin view over
+  // `MessagingService`, the same service Messenger's own chat uses.
   const [chatInput, setChatInput] = useState('');
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [conversationMessages, setConversationMessages] = useState<Message[]>([]);
+  const [isLoadingConversationMessages, setIsLoadingConversationMessages] = useState(false);
+  const [isSendingChatMessage, setIsSendingChatMessage] = useState(false);
+  const [isUploadingMeetingFile, setIsUploadingMeetingFile] = useState(false);
+  const [chatError, setChatError] = useState<string | null>(null);
+  const meetingFileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Polls State
   const [polls, setPolls] = useState<Poll[]>([]);
 
   // Participants State
   const [participants, setParticipants] = useState<Participant[]>([selfParticipant]);
+  // Roster fetched from the meeting's REST snapshot — mainly for real
+  // participants' display names/roles, which the signalling frames don't
+  // carry for anyone already in the room before you joined.
+  const [meetingRoster, setMeetingRoster] = useState<MeetingParticipant[]>([]);
+  // Which remote userIds this component itself has added to `participants`,
+  // so the WebRTC roster reconciliation below only ever adds/removes ids it
+  // is responsible for — never the separate waiting-room demo entries.
+  const knownRemoteIdsRef = useRef<Set<string>>(new Set());
 
   // Schedule Modal
   const [showScheduleModal, setShowScheduleModal] = useState(false);
@@ -979,6 +1333,15 @@ export default function MeetingApp() {
 
     try {
       if (!navigator?.mediaDevices?.getUserMedia) {
+        // The most common real cause: browsers only expose getUserMedia in a
+        // "secure context" (https, or the exact host localhost/127.0.0.1) —
+        // plain http on a LAN IP silently has no `mediaDevices` at all, which
+        // otherwise reads as a mysterious "not supported" browser bug.
+        if (typeof window !== 'undefined' && window.isSecureContext === false) {
+          throw new Error(
+            `Camera & microphone need a secure connection. You're on ${window.location.protocol}//${window.location.host}, which browsers treat as insecure. Open this app over https://, or via http://localhost if you're on the same machine as the server.`,
+          );
+        }
         throw new Error('Camera API (getUserMedia) is not supported in this browser environment.');
       }
 
@@ -1036,6 +1399,12 @@ export default function MeetingApp() {
   // Single owner of camera acquisition: previously the lobby and the
   // pre-meeting screen each ran their own effect and raced for the device.
   useEffect(() => {
+    // Once in a call, the in-call control bar flips `track.enabled` on the
+    // existing capture instead (see its onClick handlers below) — tearing
+    // the whole device down and reacquiring it mid-call would drop the
+    // tracks already attached to the meeting's peer connections.
+    if (activeTab === 'in-call') return;
+
     const wantsPhysicalCamera = isVideoOn && !useVirtualCam;
 
     if (wantsPhysicalCamera && permissionStatus !== 'denied') {
@@ -1046,7 +1415,7 @@ export default function MeetingApp() {
     stopStream(mediaRef.current.webcam);
     mediaRef.current.webcam = null;
     setWebcamStream(null);
-  }, [isVideoOn, useVirtualCam, selectedVideoDeviceId, permissionStatus]);
+  }, [isVideoOn, useVirtualCam, selectedVideoDeviceId, permissionStatus, activeTab]);
 
   useEffect(() => {
     if (!isMicOn) {
@@ -1062,37 +1431,392 @@ export default function MeetingApp() {
     return () => clearInterval(interval);
   }, [isMicOn, audioStream]);
 
+  // Handles every transient realtime event from another participant —
+  // reactions, caption lines, and poll create/vote/delete — all carried over
+  // the same `'state'` socket messages as mic/camera/hand (see `webrtc.ts`),
+  // just tagged with a `kind` other than `'presence'` so they're dispatched
+  // here instead of merged into `remoteParticipantState`.
+  const handleRemoteEvent = useCallback((fromUserId: string, event: MeetingRealtimeEvent) => {
+    switch (event.kind) {
+      case 'reaction': {
+        const id = `${event.id}-${fromUserId}`;
+        setActiveReactions((prev) => [...prev, { id, emoji: event.emoji, participantId: fromUserId }]);
+        setTimeout(() => {
+          setActiveReactions((prev) => prev.filter((r) => r.id !== id));
+        }, 2500);
+        break;
+      }
+      case 'caption': {
+        upsertCaptionLine(fromUserId, event.speaker, event.text, event.final);
+        break;
+      }
+      case 'poll-create': {
+        setPolls((prev) => (prev.some((p) => p.id === event.poll.id) ? prev : [event.poll, ...prev]));
+        break;
+      }
+      case 'poll-vote': {
+        setPolls((prev) => prev.map((p) => (p.id === event.pollId ? applyVote(p, event.voterId, event.optionId) : p)));
+        break;
+      }
+      case 'poll-delete': {
+        // `fromUserId` is set server-side from the sender's own authenticated
+        // socket (see `signaling.ts`), so this is a real check, not merely
+        // cosmetic UI gating — a non-host's forged delete is simply ignored.
+        if (fromUserId !== meetingHostId) break;
+        setPolls((prev) => prev.filter((p) => p.id !== event.pollId));
+        break;
+      }
+      case 'force-mute': {
+        // A host can only ask this client to mute itself, never flip
+        // someone else's hardware directly — this funnels through the same
+        // `setMicEnabled` the mic button uses, so the real track and the
+        // broadcast-to-the-room both happen.
+        if (fromUserId === meetingHostId && (event.targetUserId === selfUserId || event.targetUserId === 'all')) {
+          setMicEnabled(false);
+        }
+        break;
+      }
+      case 'unmute-request': {
+        // Never auto-unmutes — only ever surfaces a dismissible prompt the
+        // recipient has to act on themselves (see the banner in the in-call
+        // view below).
+        if (fromUserId === meetingHostId && (event.targetUserId === selfUserId || event.targetUserId === 'all')) {
+          setShowUnmuteRequest(true);
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  }, [upsertCaptionLine, meetingHostId, selfUserId, setMicEnabled]);
+
+  // Real WebRTC: this is what actually carries video/audio to and from every
+  // other participant in the room (see `webrtc.ts`). A no-op until both the
+  // meeting and a local capture exist.
+  const { remoteStreams, remoteParticipantState, connectionState, broadcastState, broadcastEvent, setScreenShareTrack } =
+    useMeetingConnection({
+      meetingId: activeTab === 'in-call' ? currentMeetingId || null : null,
+      selfUserId,
+      localStream: webcamStream,
+      onRemoteEvent: handleRemoteEvent,
+    });
+
+  // Keeps `broadcastEventRef` current for the speech-recognition effect
+  // above, which is defined before this hook exists yet.
+  useEffect(() => {
+    broadcastEventRef.current = broadcastEvent;
+  }, [broadcastEvent]);
+
+  // Loads and polls the linked conversation's history while the chat drawer
+  // is open. There's no realtime push wired into Meet for this, so a short
+  // interval — the same pattern Messenger's own background refresh uses —
+  // keeps it reasonably live without adding a second signalling path.
+  useEffect(() => {
+    if (activeSideDrawer !== 'chat' || !meetingConversationId) return;
+    let cancelled = false;
+
+    const load = async () => {
+      try {
+        const msgs = await MessagingService.listMessages(meetingConversationId);
+        if (!cancelled) setConversationMessages(msgs);
+      } catch (error) {
+        if (!cancelled) setChatError(error instanceof Error ? error.message : 'Could not load chat history.');
+      } finally {
+        if (!cancelled) setIsLoadingConversationMessages(false);
+      }
+    };
+
+    setIsLoadingConversationMessages(true);
+    load();
+    const interval = setInterval(load, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [activeSideDrawer, meetingConversationId]);
+
+  // Refreshes the meeting's REST snapshot: real participants' display names
+  // (the signalling layer only ever gives you a joiner's own name, never
+  // retroactively for people already in the room) and whether the backend
+  // has linked this call to a Messaging conversation yet.
+  useEffect(() => {
+    if (activeTab !== 'in-call' || !currentMeetingId) return;
+    let cancelled = false;
+
+    const refresh = async () => {
+      try {
+        const meeting = await MeetingService.getMeeting(currentMeetingId);
+        if (cancelled) return;
+        setMeetingRoster(meeting.participants || []);
+        setMeetingConversationId(meeting.conversationId ?? null);
+      } catch (error) {
+        console.warn('Failed to refresh meeting roster:', error);
+      }
+    };
+
+    refresh();
+    const interval = setInterval(refresh, 8000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [activeTab, currentMeetingId]);
+
+  // Reconciles the rendered roster with who is actually WebRTC-connected.
+  // Only ids this effect itself added are ever removed again, so the
+  // separate (simulated) waiting-room admit flow is never touched by it.
   useEffect(() => {
     if (activeTab !== 'in-call') return;
-    const interval = setInterval(() => {
-      setParticipants((prev) => {
-        const randomIdx = Math.floor(Math.random() * (prev.length - 1)) + 1;
-        return prev.map((p, idx) => ({
-          ...p,
-          isSpeaking: idx === randomIdx ? !p.isMuted && Math.random() > 0.4 : false,
-        }));
+    const remoteIds = new Set(Object.keys(connectionState));
+    const previouslyKnown = knownRemoteIdsRef.current;
+
+    setParticipants((prev) => {
+      let next = prev;
+      previouslyKnown.forEach((id) => {
+        if (!remoteIds.has(id)) next = next.filter((p) => p.id !== id);
       });
-    }, 3500);
-    return () => clearInterval(interval);
-  }, [activeTab]);
+      remoteIds.forEach((id) => {
+        if (previouslyKnown.has(id) || next.some((p) => p.id === id)) return;
+        const rosterEntry = meetingRoster.find((m) => m.userId === id);
+        const liveState = remoteParticipantState[id];
+        next = [
+          ...next,
+          {
+            id,
+            name: rosterEntry?.name || 'Participant',
+            role: rosterEntry?.role === 'host' ? 'Host' : rosterEntry?.role === 'cohost' ? 'Co-host' : 'Participant',
+            avatar: '',
+            isMuted: liveState?.isMuted ?? rosterEntry?.isMuted ?? false,
+            isVideoOn: liveState?.isVideoOn ?? rosterEntry?.isVideoOn ?? true,
+            isHandRaised: liveState?.isHandRaised ?? false,
+            isSpeaking: false,
+            isScreenSharing: liveState?.isScreenSharing ?? false,
+            bgGradient: gradientForId(id),
+          },
+        ];
+      });
+      return next;
+    });
+
+    knownRemoteIdsRef.current = remoteIds;
+  }, [connectionState, meetingRoster, remoteParticipantState, activeTab]);
+
+  // Live mic/camera/hand/presenting badges for already-known remote tiles,
+  // from the `state` broadcasts other participants send when theirs change.
+  // Each broadcast may carry only the field(s) that actually changed (see
+  // `webrtc.ts`'s merge-on-receipt), so a missing field here falls back to
+  // the tile's current value rather than clobbering it with `undefined`.
+  useEffect(() => {
+    if (activeTab !== 'in-call') return;
+    setParticipants((prev) => {
+      let changed = false;
+      const next = prev.map((p) => {
+        if (p.id === 'me') return p;
+        const state = remoteParticipantState[p.id];
+        if (!state) return p;
+        const merged = {
+          isMuted: state.isMuted ?? p.isMuted,
+          isVideoOn: state.isVideoOn ?? p.isVideoOn,
+          isHandRaised: state.isHandRaised ?? p.isHandRaised,
+          isScreenSharing: state.isScreenSharing ?? p.isScreenSharing,
+        };
+        if (
+          merged.isMuted === p.isMuted &&
+          merged.isVideoOn === p.isVideoOn &&
+          merged.isHandRaised === p.isHandRaised &&
+          merged.isScreenSharing === p.isScreenSharing
+        ) {
+          return p;
+        }
+        changed = true;
+        return { ...p, ...merged };
+      });
+      return changed ? next : prev;
+    });
+  }, [remoteParticipantState, activeTab]);
+
+  // Broadcasts this user's own mic/camera state whenever it changes — a
+  // fresh join, a toolbar toggle, or the Ctrl+D/Ctrl+E shortcuts all update
+  // `isMicOn`/`isVideoOn`, and this is the single place that tells the room.
+  // Also persisted via REST so a participant who joins later still sees the
+  // right badge even though they missed the live broadcast.
+  useEffect(() => {
+    if (activeTab !== 'in-call') return;
+    broadcastState({ isMuted: !isMicOn, isVideoOn });
+    if (currentMeetingId) {
+      MeetingService.updateParticipant(currentMeetingId, { isMuted: !isMicOn, isVideoOn }).catch(() => {});
+    }
+  }, [isMicOn, isVideoOn, activeTab, currentMeetingId, broadcastState]);
+
+  /**
+   * Real active-speaker detection: an `AnalyserNode` per live stream (the
+   * local capture plus every connected remote stream), sampled on a
+   * `requestAnimationFrame` loop. A short hysteresis window (150ms) avoids
+   * the badge flickering on brief dips instead of genuinely stopping.
+   */
+  const speakingAnalysersRef = useRef<
+    Map<string, { ctx: AudioContext; raf: number; aboveSince: number | null; belowSince: number | null; speaking: boolean }>
+  >(new Map());
+
+  useEffect(() => {
+    if (activeTab !== 'in-call') {
+      speakingAnalysersRef.current.forEach((entry) => {
+        cancelAnimationFrame(entry.raf);
+        entry.ctx.close().catch(() => {});
+      });
+      speakingAnalysersRef.current.clear();
+      return;
+    }
+
+    const streams: Record<string, MediaStream> = { ...remoteStreams };
+    if (webcamStream) streams.me = webcamStream;
+
+    const analysers = speakingAnalysersRef.current;
+    const SPEAKING_THRESHOLD = 14;
+    const HOLD_MS = 150;
+
+    // Drop analysers for streams that are gone (participant left, or camera
+    // stream swapped out).
+    Array.from(analysers.keys()).forEach((id) => {
+      if (streams[id]) return;
+      const entry = analysers.get(id);
+      if (entry) {
+        cancelAnimationFrame(entry.raf);
+        entry.ctx.close().catch(() => {});
+      }
+      analysers.delete(id);
+      setParticipants((prev) => prev.map((p) => (p.id === id ? { ...p, isSpeaking: false } : p)));
+    });
+
+    // Start an analyser for every stream that doesn't have one yet.
+    Object.entries(streams).forEach(([id, stream]) => {
+      if (analysers.has(id) || !stream.getAudioTracks().length) return;
+
+      let ctx: AudioContext;
+      try {
+        ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      } catch {
+        return;
+      }
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      try {
+        ctx.createMediaStreamSource(stream).connect(analyser);
+      } catch {
+        ctx.close().catch(() => {});
+        return;
+      }
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      const state = { ctx, raf: 0, aboveSince: null as number | null, belowSince: null as number | null, speaking: false };
+      analysers.set(id, state);
+
+      const tick = () => {
+        if (!analysers.has(id)) return;
+        analyser.getByteFrequencyData(data);
+        const avg = data.reduce((a, b) => a + b, 0) / data.length;
+        const now = performance.now();
+
+        if (avg > SPEAKING_THRESHOLD) {
+          state.belowSince = null;
+          if (state.aboveSince === null) state.aboveSince = now;
+          if (!state.speaking && now - state.aboveSince >= HOLD_MS) {
+            state.speaking = true;
+            setParticipants((prev) => prev.map((p) => (p.id === id ? { ...p, isSpeaking: true } : p)));
+          }
+        } else {
+          state.aboveSince = null;
+          if (state.belowSince === null) state.belowSince = now;
+          if (state.speaking && now - state.belowSince >= HOLD_MS) {
+            state.speaking = false;
+            setParticipants((prev) => prev.map((p) => (p.id === id ? { ...p, isSpeaking: false } : p)));
+          }
+        }
+
+        state.raf = requestAnimationFrame(tick);
+      };
+      state.raf = requestAnimationFrame(tick);
+    });
+  }, [activeTab, webcamStream, remoteStreams]);
+
+  // Belt-and-suspenders teardown if the component unmounts mid-call.
+  useEffect(() => {
+    return () => {
+      speakingAnalysersRef.current.forEach((entry) => {
+        cancelAnimationFrame(entry.raf);
+        entry.ctx.close().catch(() => {});
+      });
+      speakingAnalysersRef.current.clear();
+    };
+  }, []);
 
   // Start instant meeting
   const handleStartInstantMeeting = async (title = 'Instant Sync') => {
-    const code = `meet-${Math.floor(1000 + Math.random() * 9000)}-${Math.random().toString(36).substring(2, 5)}`;
-    setCurrentMeetingId(code);
     setMeetingTitle(title);
     setActiveTab('pre-meeting');
 
     try {
       const meeting = await MeetingService.createMeeting({ title });
       if (meeting) {
-        setCurrentMeetingId(meeting.meetingCode || meeting._id || code);
+        // `id` (the DB uuid) is what every other `/meetings/:meetingId` route
+        // — and the WebRTC signalling room — actually accept; `meetingCode`
+        // is only ever a display label. Keeping the two straight is what
+        // lets a real-time call with someone who joined via `handleJoinByCode`
+        // land in the same signalling room as this one.
+        setCurrentMeetingId(meeting.id || meeting._id);
+        setMeetingShareCode(meeting.meetingCode || '');
         setMeetingTitle(meeting.title || title);
+        setMeetingConversationId(meeting.conversationId ?? null);
+        setMeetingHostId(meeting.hostId ?? null);
       }
     } catch (error) {
       console.warn('Failed to create meeting:', error);
     }
   };
+
+  /**
+   * Joins (or, for the host, simply re-enters) a meeting already known by id
+   * or share code. Shared by manual code/link entry, "Today's Meetings", and
+   * the hand-off from a call started in Messages — all three end up with an
+   * identifier and just need to land in the same place.
+   */
+  const resumeMeeting = async (idOrCode: string, passcode?: string) => {
+    const target = idOrCode.trim();
+    if (!target) return;
+
+    setJoinError(null);
+    setActiveTab('pre-meeting');
+
+    try {
+      const meeting = await MeetingService.joinMeeting(target, passcode);
+      if (meeting) {
+        setCurrentMeetingId(meeting.id || meeting._id || target);
+        setMeetingShareCode(meeting.meetingCode || '');
+        setMeetingTitle(meeting.title || `Meeting (${target})`);
+        setMeetingConversationId(meeting.conversationId ?? null);
+        setMeetingHostId(meeting.hostId ?? null);
+        // The API never returns a meeting passcode. Keep the one the user
+        // entered so the security panel can show that a passcode is in force.
+        if (meeting.hasPasscode) {
+          setSecuritySettings((prev) => ({ ...prev, passcode: passcode ?? '' }));
+        }
+      }
+    } catch (error: any) {
+      setJoinError(error.message || 'Failed to join meeting');
+      setActiveTab('lobby');
+    }
+  };
+
+  // A call started from Messages hands off a specific meeting to join,
+  // rather than leaving the caller to find it again on the lobby.
+  useEffect(() => {
+    if (!pendingMeetingId) return;
+    const meetingId = consumePendingMeeting();
+    if (meetingId) void resumeMeeting(meetingId);
+    // `resumeMeeting` is intentionally omitted: it's redefined every render
+    // (it closes over plenty of state) and this effect must fire exactly
+    // once per pending id, not on every one of those redefinitions.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingMeetingId, consumePendingMeeting]);
 
   // Join meeting via code / link
   const handleJoinByCode = async () => {
@@ -1101,26 +1825,7 @@ export default function MeetingApp() {
       const parts = cleanCode.split('/');
       cleanCode = parts[parts.length - 1];
     }
-    if (!cleanCode) return;
-
-    setJoinError(null);
-    setActiveTab('pre-meeting');
-
-    try {
-      const meeting = await MeetingService.joinMeeting(cleanCode, inputPasscode);
-      if (meeting) {
-        setCurrentMeetingId(meeting._id || cleanCode);
-        setMeetingTitle(meeting.title || `Meeting (${cleanCode})`);
-        // The API never returns a meeting passcode. Keep the one the user
-        // entered so the security panel can show that a passcode is in force.
-        if (meeting.hasPasscode) {
-          setSecuritySettings((prev) => ({ ...prev, passcode: inputPasscode ?? '' }));
-        }
-      }
-    } catch (error: any) {
-      setJoinError(error.message || 'Failed to join meeting');
-      setActiveTab('lobby');
-    }
+    await resumeMeeting(cleanCode, inputPasscode);
   };
 
   const handleEndCall = async () => {
@@ -1140,12 +1845,20 @@ export default function MeetingApp() {
     setCaptionsOn(false);
     setPinnedParticipantId(null);
     setParticipants([selfParticipant]);
-    setChatMessages([]);
+    setConversationMessages([]);
+    setChatError(null);
+    setMeetingConversationId(null);
+    setMeetingShareCode('');
+    setMeetingHostId(null);
     setWaitingQueue([]);
+    setShowUnmuteRequest(false);
+    setPipPosition(null);
+    setPipSize(DEFAULT_PIP_WIDTH);
+    knownRemoteIdsRef.current = new Set();
   };
 
   const handleCopyLink = () => {
-    const link = `https://meet.driveosx.app/${currentMeetingId}`;
+    const link = `${window.location.origin}/meeting/${currentMeetingId}`;
     navigator.clipboard.writeText(link);
     setIsCopied(true);
     setTimeout(() => setIsCopied(false), 2000);
@@ -1169,11 +1882,19 @@ export default function MeetingApp() {
         mediaRef.current.screen = stream;
         setScreenStream(stream);
         setIsScreenSharing(true);
+        const track = stream.getVideoTracks()[0];
+        // Swaps this track onto every peer connection's outgoing video
+        // sender (see `webrtc.ts`), so the room actually sees the screen —
+        // capturing it alone previously went nowhere.
+        setScreenShareTrack(track);
+        broadcastState({ isScreenSharing: true });
         // The browser's own "Stop sharing" bar ends the track behind our back.
-        stream.getVideoTracks()[0].onended = () => {
+        track.onended = () => {
           mediaRef.current.screen = null;
           setScreenStream(null);
           setIsScreenSharing(false);
+          setScreenShareTrack(null);
+          broadcastState({ isScreenSharing: false });
         };
       } catch (error) {
         console.warn('Screen share denied:', error);
@@ -1183,41 +1904,47 @@ export default function MeetingApp() {
       mediaRef.current.screen = null;
       setScreenStream(null);
       setIsScreenSharing(false);
+      setScreenShareTrack(null);
+      broadcastState({ isScreenSharing: false });
     }
   };
 
-  // Chat message & attachment
-  const handleSendMessage = async (fileAttachment?: ChatMessage['attachment']) => {
-    if (!chatInput.trim() && !fileAttachment) return;
-    const myMsg: ChatMessage = {
-      id: Date.now().toString(),
-      sender: 'You',
-      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      text: chatInput.trim(),
-      isMe: true,
-      attachment: fileAttachment,
-    };
-    setChatMessages((prev) => [...prev, myMsg]);
-    setChatInput('');
-
-    if (currentMeetingId) {
-      try {
-        await MeetingService.sendChatMessage(currentMeetingId, chatInput.trim());
-      } catch (error) {
-        console.warn('Failed to send chat message:', error);
-      }
+  // Chat & file sharing — a thin view over MessagingService once the call
+  // has a linked conversation (see `meetingConversationId`'s doc comment).
+  const handleSendMeetingChatMessage = async () => {
+    const body = chatInput.trim();
+    if (!body || !meetingConversationId || isSendingChatMessage) return;
+    setIsSendingChatMessage(true);
+    setChatError(null);
+    try {
+      const message = await MessagingService.sendMessage(meetingConversationId, body);
+      setConversationMessages((prev) => [...prev, message]);
+      setChatInput('');
+    } catch (error) {
+      setChatError(error instanceof Error ? error.message : 'Could not send that message.');
+    } finally {
+      setIsSendingChatMessage(false);
     }
   };
 
-  const handleAttachSampleFile = () => {
-    handleSendMessage({
-      name: 'Project_Design_Specs.pdf',
-      size: '2.4 MB',
-      type: 'pdf',
-    });
+  const handleSendMeetingFile = async (file: File | null | undefined) => {
+    if (!file || !meetingConversationId) return;
+    setIsUploadingMeetingFile(true);
+    setChatError(null);
+    try {
+      const message = await MessagingService.sendFileMessage(meetingConversationId, file);
+      setConversationMessages((prev) => [...prev, message]);
+    } catch (error) {
+      setChatError(error instanceof Error ? error.message : 'Could not share that file.');
+    } finally {
+      setIsUploadingMeetingFile(false);
+    }
   };
 
-  // Poll actions
+  // Poll actions. Each broadcasts over the same realtime channel `webrtc.ts`
+  // uses for reactions/captions, so every participant's `polls` state (and
+  // vote tallies) stays in sync — session-only, same as the rest of the
+  // call's state (no backend persistence for this).
   const handleCreatePoll = (question: string, optionsList: string[]) => {
     const newPoll: Poll = {
       id: `poll-${Date.now()}`,
@@ -1226,33 +1953,25 @@ export default function MeetingApp() {
       isActive: true,
       creator: 'You (Host)',
       totalVotes: 0,
+      votesByVoter: {},
     };
     setPolls((prev) => [newPoll, ...prev]);
+    broadcastEvent({ kind: 'poll-create', poll: newPoll });
   };
 
   const handleVotePoll = (pollId: string, optionId: string) => {
-    setPolls((prev) =>
-      prev.map((p) => {
-        if (p.id !== pollId) return p;
-        if (p.userVotedOptionId === optionId) return p;
-        const newOpts = p.options.map((opt) => {
-          if (opt.id === optionId) return { ...opt, votes: opt.votes + 1 };
-          if (opt.id === p.userVotedOptionId) return { ...opt, votes: Math.max(0, opt.votes - 1) };
-          return opt;
-        });
-        const total = newOpts.reduce((acc, curr) => acc + curr.votes, 0);
-        return {
-          ...p,
-          options: newOpts,
-          totalVotes: total,
-          userVotedOptionId: optionId,
-        };
-      })
-    );
+    const voterId = selfUserId ?? 'me';
+    setPolls((prev) => prev.map((p) => (p.id === pollId ? applyVote(p, voterId, optionId) : p)));
+    broadcastEvent({ kind: 'poll-vote', pollId, optionId, voterId });
   };
 
   const handleDeletePoll = (pollId: string) => {
+    // The drawer already hides the delete button from non-hosts (see
+    // `isHost` passed to `PollsDrawer` below); this check is a second,
+    // consistent layer rather than trusting that UI gate alone.
+    if (!isHost) return;
     setPolls((prev) => prev.filter((p) => p.id !== pollId));
+    broadcastEvent({ kind: 'poll-delete', pollId });
   };
 
   // Waiting Room approvals
@@ -1269,6 +1988,7 @@ export default function MeetingApp() {
         isVideoOn: true,
         isHandRaised: false,
         isSpeaking: false,
+        isScreenSharing: false,
         bgGradient: 'from-cyan-600 to-blue-700',
       },
     ]);
@@ -1278,17 +1998,35 @@ export default function MeetingApp() {
     setWaitingQueue((prev) => prev.filter((item) => item.id !== id));
   };
 
-  // Host Participant Management
+  // Host Participant Management. A host's client cannot reach into someone
+  // else's device and flip a hardware switch — these broadcast a command
+  // every recipient's own client obeys by muting *itself* (`force-mute` in
+  // `handleRemoteEvent` above), and the room's roster only reflects the mute
+  // once that recipient's own real state broadcast lands, same as any other
+  // participant's mic toggle. No optimistic local mutation of `participants`
+  // here: that's exactly the fakery this replaces.
   const handleMuteParticipant = (id: string) => {
-    setParticipants((prev) =>
-      prev.map((p) => (p.id === id ? { ...p, isMuted: true } : p))
-    );
+    if (!isHost) return;
+    broadcastEvent({ kind: 'force-mute', targetUserId: id });
   };
 
   const handleMuteAll = () => {
-    setParticipants((prev) =>
-      prev.map((p) => (p.id !== 'me' ? { ...p, isMuted: true } : p))
-    );
+    if (!isHost) return;
+    broadcastEvent({ kind: 'force-mute', targetUserId: 'all' });
+  };
+
+  // The unmute counterpart is deliberately only ever a *request*: forcibly
+  // turning on someone else's microphone without consent is a real privacy
+  // problem real conferencing apps avoid (Zoom/Meet's "Unmute all" asks,
+  // it doesn't force). The recipient decides via the banner this triggers.
+  const handleAskUnmuteParticipant = (id: string) => {
+    if (!isHost) return;
+    broadcastEvent({ kind: 'unmute-request', targetUserId: id });
+  };
+
+  const handleAskUnmuteAll = () => {
+    if (!isHost) return;
+    broadcastEvent({ kind: 'unmute-request', targetUserId: 'all' });
   };
 
   const handleRemoveParticipant = (id: string) => {
@@ -1297,30 +2035,29 @@ export default function MeetingApp() {
 
   // Reaction
   const handleSendReaction = (emoji: string) => {
-    const newReaction = {
-      id: Date.now().toString() + Math.random(),
-      emoji,
-      x: 20 + Math.random() * 60,
-    };
-    setActiveReactions((prev) => [...prev, newReaction]);
+    const id = Date.now().toString() + Math.random().toString(36).slice(2, 7);
+    setActiveReactions((prev) => [...prev, { id, emoji, participantId: 'me' }]);
     setShowReactionsMenu(false);
+    broadcastEvent({ kind: 'reaction', id, emoji });
 
     setTimeout(() => {
-      setActiveReactions((prev) => prev.filter((r) => r.id !== newReaction.id));
+      setActiveReactions((prev) => prev.filter((r) => r.id !== id));
     }, 2500);
   };
 
   // Raising a hand is visible to the room, so it belongs on the participant
-  // record and not only on the toolbar button.
+  // record and not only on the toolbar button — and is broadcast so every
+  // other participant's roster/tile reflects it too.
   const handleToggleHand = useCallback(() => {
     setIsHandRaised((prev) => {
       const next = !prev;
       setParticipants((list) =>
         list.map((p) => (p.id === 'me' ? { ...p, isHandRaised: next } : p))
       );
+      broadcastState({ isHandRaised: next });
       return next;
     });
-  }, []);
+  }, [broadcastState]);
 
   // Keyboard shortcuts, matching Google Meet's defaults.
   useEffect(() => {
@@ -1338,7 +2075,7 @@ export default function MeetingApp() {
       const key = e.key.toLowerCase();
       if (key === 'd') {
         e.preventDefault();
-        setIsMicOn((prev) => !prev);
+        setMicEnabled(!isMicOn);
       } else if (key === 'e') {
         e.preventDefault();
         setIsVideoOn((prev) => !prev);
@@ -1353,15 +2090,20 @@ export default function MeetingApp() {
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [activeTab, handleToggleHand]);
+  }, [activeTab, handleToggleHand, isMicOn, setMicEnabled]);
 
-  // Stage layout. "Auto" spotlights whoever is presenting or pinned and
+  // Stage layout. "Auto" spotlights whoever is presenting (locally or a
+  // remote participant broadcasting `isScreenSharing`) or pinned, and
   // otherwise tiles the room, which is how Meet behaves.
+  const someoneElseIsPresenting = useMemo(
+    () => participants.some((p) => p.id !== 'me' && p.isScreenSharing),
+    [participants],
+  );
   const effectiveLayout = useMemo(() => {
     if (layoutMode !== 'auto') return layoutMode;
-    if (isScreenSharing || pinnedParticipantId) return 'spotlight';
+    if (isScreenSharing || someoneElseIsPresenting || pinnedParticipantId) return 'spotlight';
     return 'tiled';
-  }, [layoutMode, isScreenSharing, pinnedParticipantId]);
+  }, [layoutMode, isScreenSharing, someoneElseIsPresenting, pinnedParticipantId]);
 
   const raisedHandCount = participants.filter((p) => p.isHandRaised).length;
 
@@ -1374,13 +2116,25 @@ export default function MeetingApp() {
       const pinned = participants.find((p) => p.id === pinnedParticipantId);
       if (pinned) return pinned;
     }
-    return participants.find((p) => p.isSpeaking) || participants[0] || null;
+    // Prefer whoever is presenting, then whoever is talking, then anyone but
+    // yourself (your own view lives in the picture-in-picture corner instead
+    // — see the spotlight/sidebar layouts below), and only fall back to
+    // yourself in a solo call.
+    return (
+      participants.find((p) => p.id !== 'me' && p.isScreenSharing) ||
+      participants.find((p) => p.isSpeaking) ||
+      participants.find((p) => p.id !== 'me') ||
+      participants[0] ||
+      null
+    );
   }, [participants, pinnedParticipantId]);
 
   const otherParticipants = useMemo(
-    () => participants.filter((p) => p.id !== spotlightParticipant?.id),
+    () => participants.filter((p) => p.id !== spotlightParticipant?.id && p.id !== 'me'),
     [participants, spotlightParticipant]
   );
+
+  const selfParticipantData = useMemo(() => participants.find((p) => p.id === 'me') ?? null, [participants]);
 
   // Column count for the tiled stage: derived from the room size and the
   // width actually available, so tiles stay legible instead of slivers.
@@ -1395,20 +2149,13 @@ export default function MeetingApp() {
   const handleSaveSchedule = async () => {
     if (!schedTitle.trim()) return;
     const todayISO = new Date().toISOString().split('T')[0];
-    const meetingCodeGenerated = `meet-${Math.floor(1000 + Math.random() * 9000)}`;
 
-    addCalendarEvent({
-      title: `🎥 ${schedTitle.trim()}`,
-      date: todayISO,
-      time: schedTime,
-      category: schedCategory,
-      description: `Video Meeting Link: https://meet.driveosx.app/${meetingCodeGenerated}${
-        schedPasscode ? ` | Passcode: ${schedPasscode}` : ''
-      }`,
-    });
-
+    // Create the meeting first so the calendar event links to a real,
+    // joinable meeting id/code instead of a fabricated one that never
+    // matched what `createMeeting` actually returns.
+    let meeting: Meeting | null = null;
     try {
-      await MeetingService.createMeeting({
+      meeting = await MeetingService.createMeeting({
         title: schedTitle.trim(),
         description: `Scheduled meeting`,
         startTime: new Date().toISOString(),
@@ -1418,6 +2165,19 @@ export default function MeetingApp() {
     } catch (error) {
       console.warn('Failed to save scheduled meeting:', error);
     }
+
+    const meetingId = meeting?.id || meeting?._id;
+    addCalendarEvent({
+      title: `🎥 ${schedTitle.trim()}`,
+      date: todayISO,
+      time: schedTime,
+      category: schedCategory,
+      description: meetingId
+        ? `Video Meeting Link: ${window.location.origin}/meeting/${meetingId}${
+            schedPasscode ? ` | Passcode: ${schedPasscode}` : ''
+          }`
+        : `Video meeting${schedPasscode ? ` | Passcode: ${schedPasscode}` : ''} (link unavailable — could not reach the server)`,
+    });
 
     if (schedPasscode) {
       setSecuritySettings((prev) => ({ ...prev, passcode: schedPasscode, waitingRoomEnabled: schedWaitingRoom }));
@@ -1774,7 +2534,7 @@ export default function MeetingApp() {
                         </div>
                       </div>
                       <button
-                        onClick={() => handleStartInstantMeeting(evt.title)}
+                        onClick={() => resumeMeeting(evt.id || evt._id)}
                         className="px-3 py-1 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white cursor-pointer transition-colors shrink-0"
                       >
                         Join
@@ -1969,7 +2729,20 @@ export default function MeetingApp() {
              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3">
                <button
                  onClick={async () => {
-                   await MeetingService.startMeeting(currentMeetingId);
+                   try {
+                     await MeetingService.startMeeting(currentMeetingId);
+                   } catch (error) {
+                     // Only the host can start a meeting — a joining
+                     // participant hits exactly this every time, since the
+                     // normal case is that the host already has it running.
+                     // Any other failure (offline, meeting ended, wrong id)
+                     // should still block entry and surface to the user.
+                     if (!(error instanceof ApiError) || error.code !== 'permission_error') {
+                       setJoinError(error instanceof Error ? error.message : 'Could not join this meeting.');
+                       setActiveTab('lobby');
+                       return;
+                     }
+                   }
                    setActiveTab('in-call');
                  }}
                  className="flex-1 px-4 py-3 rounded-xl text-sm font-bold bg-blue-600 hover:bg-blue-500 text-white cursor-pointer transition-colors shadow-md shadow-blue-500/20 flex items-center justify-center gap-2"
@@ -2003,19 +2776,52 @@ export default function MeetingApp() {
            VIEW 2: IN-CALL MEETING ROOM VIEW
           ========================================================= */}
        {activeTab === 'in-call' && (
-        <div className="flex-1 flex flex-col min-h-0 relative overflow-hidden bg-zinc-950 text-white">
+        <div className={`flex-1 flex flex-col min-h-0 relative overflow-hidden ${palette.stageBg} ${palette.text}`}>
+          {/* Host is asking this participant to unmute — a dismissible
+              *request*, never an automatic unmute (see `unmute-request` in
+              `handleRemoteEvent`). Floats above the stage so it's visible
+              regardless of which drawer or layout is active. */}
+          {showUnmuteRequest && (
+            <div className="absolute top-14 inset-x-0 z-50 flex justify-center px-3 pointer-events-none">
+              <div className="pointer-events-auto flex items-center gap-2.5 px-3.5 py-2 rounded-2xl bg-blue-600 text-white shadow-2xl border border-blue-400/40 max-w-full">
+                <Mic size={15} className="shrink-0" />
+                <span className="text-xs font-semibold">Host is asking you to unmute</span>
+                <button
+                  onClick={() => {
+                    setMicEnabled(true);
+                    setShowUnmuteRequest(false);
+                  }}
+                  className="px-2.5 py-1 rounded-lg bg-white text-blue-700 text-[11px] font-bold cursor-pointer hover:bg-blue-50 shrink-0"
+                >
+                  Unmute
+                </button>
+                <button
+                  onClick={() => setShowUnmuteRequest(false)}
+                  className="p-1 rounded-lg hover:bg-white/20 cursor-pointer shrink-0"
+                  title="Dismiss"
+                >
+                  <X size={13} />
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Top Bar: Title & Code & Link Copy & Security/Rec Status */}
-          <div className="h-12 px-3 sm:px-4 flex items-center justify-between bg-zinc-900/90 border-b border-zinc-800 shrink-0 z-10 gap-2">
+          <div
+            className={`h-12 px-3 sm:px-4 flex items-center justify-between border-b shrink-0 z-10 gap-2 ${palette.topBarBg} ${palette.topBarBorder}`}
+          >
             <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-              <span className="font-bold text-xs sm:text-sm tracking-tight text-zinc-100 truncate max-w-[120px] sm:max-w-[200px] md:max-w-xs">
+              <span className={`font-bold text-xs sm:text-sm tracking-tight truncate max-w-[120px] sm:max-w-[200px] md:max-w-xs ${palette.text}`}>
                 {meetingTitle}
               </span>
-              <div className="flex items-center gap-1.5 px-2 sm:px-2.5 py-0.5 rounded-full bg-zinc-800 text-[11px] sm:text-xs text-zinc-400 border border-zinc-700/50 shrink-0">
-                <span className={isVeryCompact ? 'hidden' : 'inline'}>Code: {currentMeetingId}</span>
-                <span className={isVeryCompact ? 'inline' : 'hidden'}>{currentMeetingId}</span>
+              <div
+                className={`flex items-center gap-1.5 px-2 sm:px-2.5 py-0.5 rounded-full text-[11px] sm:text-xs border shrink-0 ${palette.controlButtonIdle} ${palette.textMuted} ${palette.border}`}
+              >
+                <span className={isVeryCompact ? 'hidden' : 'inline'}>Code: {meetingShareCode || currentMeetingId}</span>
+                <span className={isVeryCompact ? 'inline' : 'hidden'}>{meetingShareCode || currentMeetingId}</span>
                 <button
                   onClick={handleCopyLink}
-                  className="hover:text-white cursor-pointer p-0.5 transition-colors"
+                  className={`cursor-pointer p-0.5 transition-colors ${palette.text}`}
                   title="Copy Link"
                 >
                   {isCopied ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
@@ -2026,7 +2832,7 @@ export default function MeetingApp() {
             {/* Recording & Status Indicators */}
             <div className="flex items-center gap-2 shrink-0">
               {!isVeryCompact && (
-                <span className="text-[11px] font-mono text-zinc-400 tabular-nums" title="Meeting duration">
+                <span className={`text-[11px] font-mono tabular-nums ${palette.textMuted}`} title="Meeting duration">
                   {formatRecordingTime(meetingSeconds)}
                 </span>
               )}
@@ -2036,7 +2842,7 @@ export default function MeetingApp() {
                 <button
                   onClick={() => setShowLayoutMenu((prev) => !prev)}
                   className={`p-1.5 rounded-lg cursor-pointer transition-colors ${
-                    showLayoutMenu ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
+                    showLayoutMenu ? `${palette.controlButtonIdle}` : `${palette.textMuted} ${palette.hover}`
                   }`}
                   title="Change layout"
                 >
@@ -2045,8 +2851,12 @@ export default function MeetingApp() {
                 {showLayoutMenu && (
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => setShowLayoutMenu(false)} />
-                    <div className="absolute right-0 top-full mt-1.5 w-44 p-1.5 rounded-xl bg-zinc-800 border border-zinc-700 shadow-2xl z-50 flex flex-col gap-0.5">
-                      <span className="px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-zinc-500">
+                    <div
+                      className={`absolute right-0 top-full mt-1.5 w-44 p-1.5 rounded-xl border shadow-2xl z-50 flex flex-col gap-0.5 ${
+                        isLight ? 'bg-white border-slate-200' : 'bg-zinc-800 border-zinc-700'
+                      }`}
+                    >
+                      <span className={`px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${isLight ? 'text-slate-400' : 'text-zinc-500'}`}>
                         Change layout
                       </span>
                       {([
@@ -2062,7 +2872,11 @@ export default function MeetingApp() {
                             setShowLayoutMenu(false);
                           }}
                           className={`px-2 py-1.5 rounded-lg text-left cursor-pointer transition-colors ${
-                            layoutMode === option.id ? 'bg-blue-600 text-white' : 'hover:bg-zinc-700 text-zinc-200'
+                            layoutMode === option.id
+                              ? 'bg-blue-600 text-white'
+                              : isLight
+                                ? 'hover:bg-slate-100 text-slate-700'
+                                : 'hover:bg-zinc-700 text-zinc-200'
                           }`}
                         >
                           <span className="block text-xs font-bold">{option.label}</span>
@@ -2159,8 +2973,11 @@ export default function MeetingApp() {
                           isVideoOn={isVideoOn}
                           isMicOn={isMicOn}
                           webcamStream={webcamStream}
+                          remoteStream={remoteStreams[p.id]}
+                          peerConnectionState={connectionState[p.id]}
                           pinnedParticipantId={pinnedParticipantId}
                           onTogglePin={setPinnedParticipantId}
+                          reactions={activeReactions}
                           compact
                           className="h-full aspect-video shrink-0"
                         />
@@ -2169,7 +2986,7 @@ export default function MeetingApp() {
                   )}
                 </div>
               ) : effectiveLayout === 'spotlight' ? (
-                <div className="flex-1 flex flex-col min-h-0 gap-2">
+                <div ref={pipBoundsRef} className="flex-1 flex flex-col min-h-0 gap-2 relative">
                   <div className="flex-1 min-h-0">
                     {spotlightParticipant && (
                       <ParticipantTile
@@ -2178,12 +2995,37 @@ export default function MeetingApp() {
                         isVideoOn={isVideoOn}
                         isMicOn={isMicOn}
                         webcamStream={webcamStream}
+                        remoteStream={remoteStreams[spotlightParticipant.id]}
+                        peerConnectionState={connectionState[spotlightParticipant.id]}
                         pinnedParticipantId={pinnedParticipantId}
                         onTogglePin={setPinnedParticipantId}
+                        reactions={activeReactions}
                         className="w-full h-full"
                       />
                     )}
                   </div>
+
+                  {/* Self picture-in-picture — Meet's signature: your own
+                      tile floats over the corner rather than taking a full
+                      grid slot once someone else is the spotlight. Draggable
+                      and resizable within this stage's bounds. */}
+                  {selfParticipantData && spotlightParticipant?.id !== 'me' && (
+                    <SelfPictureInPicture
+                      participant={selfParticipantData}
+                      isVideoOn={isVideoOn}
+                      isMicOn={isMicOn}
+                      webcamStream={webcamStream}
+                      pinnedParticipantId={pinnedParticipantId}
+                      onTogglePin={setPinnedParticipantId}
+                      reactions={activeReactions}
+                      boundsRef={pipBoundsRef}
+                      position={pipPosition}
+                      size={pipSize}
+                      onPositionChange={setPipPosition}
+                      onSizeChange={setPipSize}
+                    />
+                  )}
+
                   {otherParticipants.length > 0 && containerHeight >= 420 && (
                     <div className="shrink-0 h-20 sm:h-24 flex items-center gap-2 overflow-x-auto pb-0.5">
                       {otherParticipants.map((p) => (
@@ -2194,8 +3036,11 @@ export default function MeetingApp() {
                           isVideoOn={isVideoOn}
                           isMicOn={isMicOn}
                           webcamStream={webcamStream}
+                          remoteStream={remoteStreams[p.id]}
+                          peerConnectionState={connectionState[p.id]}
                           pinnedParticipantId={pinnedParticipantId}
                           onTogglePin={setPinnedParticipantId}
+                          reactions={activeReactions}
                           compact
                           className="h-full aspect-video shrink-0"
                         />
@@ -2204,8 +3049,8 @@ export default function MeetingApp() {
                   )}
                 </div>
               ) : effectiveLayout === 'sidebar' && !isCompact ? (
-                <div className="flex-1 flex min-h-0 gap-2">
-                  <div className="flex-1 min-h-0">
+                <div className="flex-1 flex min-h-0 gap-2 relative">
+                  <div ref={pipBoundsRef} className="flex-1 min-h-0 relative">
                     {spotlightParticipant && (
                       <ParticipantTile
                         participant={spotlightParticipant}
@@ -2213,9 +3058,28 @@ export default function MeetingApp() {
                         isVideoOn={isVideoOn}
                         isMicOn={isMicOn}
                         webcamStream={webcamStream}
+                        remoteStream={remoteStreams[spotlightParticipant.id]}
+                        peerConnectionState={connectionState[spotlightParticipant.id]}
                         pinnedParticipantId={pinnedParticipantId}
                         onTogglePin={setPinnedParticipantId}
+                        reactions={activeReactions}
                         className="w-full h-full"
+                      />
+                    )}
+                    {selfParticipantData && spotlightParticipant?.id !== 'me' && (
+                      <SelfPictureInPicture
+                        participant={selfParticipantData}
+                        isVideoOn={isVideoOn}
+                        isMicOn={isMicOn}
+                        webcamStream={webcamStream}
+                        pinnedParticipantId={pinnedParticipantId}
+                        onTogglePin={setPinnedParticipantId}
+                        reactions={activeReactions}
+                        boundsRef={pipBoundsRef}
+                        position={pipPosition}
+                        size={pipSize}
+                        onPositionChange={setPipPosition}
+                        onSizeChange={setPipSize}
                       />
                     )}
                   </div>
@@ -2228,8 +3092,11 @@ export default function MeetingApp() {
                         isVideoOn={isVideoOn}
                         isMicOn={isMicOn}
                         webcamStream={webcamStream}
+                        remoteStream={remoteStreams[p.id]}
+                        peerConnectionState={connectionState[p.id]}
                         pinnedParticipantId={pinnedParticipantId}
                         onTogglePin={setPinnedParticipantId}
+                        reactions={activeReactions}
                         compact
                         className="w-full aspect-video shrink-0"
                       />
@@ -2252,8 +3119,11 @@ export default function MeetingApp() {
                         isVideoOn={isVideoOn}
                         isMicOn={isMicOn}
                         webcamStream={webcamStream}
+                        remoteStream={remoteStreams[p.id]}
+                        peerConnectionState={connectionState[p.id]}
                         pinnedParticipantId={pinnedParticipantId}
                         onTogglePin={setPinnedParticipantId}
+                        reactions={activeReactions}
                         compact={tileColumns > 2}
                         className="w-full aspect-video"
                       />
@@ -2262,18 +3132,14 @@ export default function MeetingApp() {
                 </div>
               )}
 
-              {/* Live captions overlay */}
+              {/* Live captions overlay. Lines (local or remote) always take
+                  priority over the local error/placeholder text: a browser
+                  that can't transcribe the local mic can still display
+                  captions other participants broadcast, so a stale local
+                  `captionError` must never hide those. */}
               {captionsOn && (
                 <div className="absolute inset-x-3 bottom-3 z-30 pointer-events-none flex flex-col items-center gap-1">
-                  {captionError ? (
-                    <div className="px-3 py-1.5 rounded-xl bg-black/85 text-amber-300 text-[11px] font-semibold max-w-xl text-center border border-amber-500/30">
-                      {captionError}
-                    </div>
-                  ) : captionLines.length === 0 ? (
-                    <div className="px-3 py-1.5 rounded-xl bg-black/70 text-zinc-300 text-[11px] font-medium">
-                      Listening for speech…
-                    </div>
-                  ) : (
+                  {captionLines.length > 0 ? (
                     captionLines.map((line) => (
                       <div
                         key={line.id}
@@ -2283,38 +3149,43 @@ export default function MeetingApp() {
                         {line.text}
                       </div>
                     ))
+                  ) : captionError ? (
+                    <div className="px-3 py-1.5 rounded-xl bg-black/85 text-amber-300 text-[11px] font-semibold max-w-xl text-center border border-amber-500/30">
+                      {captionError}
+                    </div>
+                  ) : (
+                    <div className="px-3 py-1.5 rounded-xl bg-black/70 text-zinc-300 text-[11px] font-medium">
+                      Listening for speech…
+                    </div>
                   )}
                 </div>
               )}
             </div>
 
-            {/* Floating Reactions Overlay */}
-            <div className="absolute inset-0 pointer-events-none z-30 overflow-hidden">
-              {activeReactions.map((r) => (
-                <div
-                  key={r.id}
-                  style={{ left: `${r.x}%` }}
-                  className="absolute bottom-16 text-3xl animate-bounce transition-all duration-1000"
-                >
-                  {r.emoji}
-                </div>
-              ))}
-            </div>
+            {/* Reactions now float over the sending participant's own tile
+                (see `ParticipantTile`'s `reactions` prop) rather than a
+                generic overlay here, so who sent it is visually obvious. */}
 
             {/* Side Drawers: Chat / People / Polls / Waiting / Info */}
             {activeSideDrawer && (
               <div
-                className={`bg-zinc-900 border-l border-zinc-800 flex flex-col shrink-0 min-h-0 transition-all ${
+                className={`border-l flex flex-col shrink-0 min-h-0 transition-all ${
+                  isLight ? 'bg-white border-slate-200' : 'bg-zinc-900 border-zinc-800'
+                } ${
                   isCompact
                     ? `absolute inset-y-0 right-0 ${
                         isVeryCompact ? 'w-full' : 'w-80'
-                      } bg-zinc-900/95 backdrop-blur-md z-40 shadow-2xl animate-in slide-in-from-right duration-200`
+                      } ${isLight ? 'bg-white/95' : 'bg-zinc-900/95'} backdrop-blur-md z-40 shadow-2xl animate-in slide-in-from-right duration-200`
                     : 'w-80 relative z-20'
                 }`}
               >
                 {/* Drawer Header */}
-                <div className="h-12 px-4 flex items-center justify-between border-b border-zinc-800 shrink-0">
-                  <span className="font-bold text-sm text-zinc-100">
+                <div
+                  className={`h-12 px-4 flex items-center justify-between border-b shrink-0 ${
+                    isLight ? 'border-slate-200' : 'border-zinc-800'
+                  }`}
+                >
+                  <span className={`font-bold text-sm ${isLight ? 'text-slate-900' : 'text-zinc-100'}`}>
                     {activeSideDrawer === 'chat'
                       ? 'In-Call Chat'
                       : activeSideDrawer === 'people'
@@ -2327,7 +3198,9 @@ export default function MeetingApp() {
                   </span>
                   <button
                     onClick={() => setActiveSideDrawer(null)}
-                    className="p-1 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 cursor-pointer"
+                    className={`p-1 rounded-lg cursor-pointer ${
+                      isLight ? 'text-slate-400 hover:text-slate-900 hover:bg-slate-100' : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
+                    }`}
                   >
                     <X size={15} />
                   </button>
@@ -2336,80 +3209,169 @@ export default function MeetingApp() {
                 {/* Drawer Content: Chat with Attachments */}
                 {activeSideDrawer === 'chat' && (
                   <div className="flex-1 flex flex-col min-h-0 p-3">
-                    <div className="flex-1 overflow-y-auto flex flex-col gap-2.5 pr-1">
-                      {chatMessages.map((msg) => (
-                        <div
-                          key={msg.id}
-                          className={`flex flex-col text-xs ${msg.isMe ? 'items-end' : 'items-start'}`}
-                        >
-                          <span className="text-[10px] text-zinc-500 mb-0.5">
-                            {msg.sender} • {msg.time}
-                          </span>
-                          <div
-                            className={`p-2.5 rounded-2xl max-w-[85%] flex flex-col gap-1.5 ${
-                              msg.isMe
-                                ? 'bg-blue-600 text-white rounded-br-none'
-                                : 'bg-zinc-800 text-zinc-200 rounded-bl-none'
-                            }`}
-                          >
-                            <span>{msg.text}</span>
-                            {msg.attachment && (
-                              <div className="p-2 rounded-xl bg-black/30 border border-white/10 flex items-center justify-between gap-2 text-[11px]">
-                                <div className="flex items-center gap-1.5 min-w-0">
-                                  <FileText size={14} className="text-blue-300 shrink-0" />
-                                  <span className="truncate font-semibold">{msg.attachment.name}</span>
-                                </div>
-                                <button
-                                  onClick={() => alert(`Downloaded ${msg.attachment?.name}`)}
-                                  className="p-1 text-white hover:text-blue-200 cursor-pointer shrink-0"
+                    {!meetingConversationId ? (
+                      // No conversation to talk in yet — this is real: the
+                      // backend only links one once a second person has ever
+                      // joined the call. Say so plainly rather than showing a
+                      // silently-empty or mysteriously-disabled panel.
+                      <div className={`flex-1 flex flex-col items-center justify-center text-center gap-2 p-6 ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>
+                        <MessageSquare size={28} className="opacity-40" />
+                        <span className={`text-xs font-bold ${isLight ? 'text-slate-700' : 'text-zinc-300'}`}>Chat isn't open yet</span>
+                        <p className="text-[11px] leading-relaxed max-w-[220px]">
+                          Chat and file sharing open up once someone else joins this call.
+                        </p>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="flex-1 overflow-y-auto flex flex-col gap-2.5 pr-1">
+                          {isLoadingConversationMessages && conversationMessages.length === 0 ? (
+                            <div className={`text-center text-xs py-4 ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>Loading chat…</div>
+                          ) : conversationMessages.length === 0 ? (
+                            <div className={`text-center text-xs py-4 ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>No messages yet — say hello!</div>
+                          ) : (
+                            conversationMessages.map((msg) => (
+                              <div
+                                key={msg.id}
+                                className={`flex flex-col text-xs ${msg.isMine ? 'items-end' : 'items-start'}`}
+                              >
+                                <span className={`text-[10px] mb-0.5 ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>
+                                  {msg.isMine ? 'You' : msg.senderName} •{' '}
+                                  {new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                </span>
+                                <div
+                                  className={`p-2.5 rounded-2xl max-w-[85%] flex flex-col gap-1.5 ${
+                                    msg.isMine
+                                      ? 'bg-blue-600 text-white rounded-br-none'
+                                      : isLight
+                                        ? 'bg-slate-100 text-slate-800 rounded-bl-none'
+                                        : 'bg-zinc-800 text-zinc-200 rounded-bl-none'
+                                  }`}
                                 >
-                                  <Download size={13} />
-                                </button>
+                                  {msg.isDeleted ? (
+                                    <span className="italic opacity-70">This message was deleted</span>
+                                  ) : (
+                                    <>
+                                      {msg.body && <span className="whitespace-pre-wrap break-words">{msg.body}</span>}
+                                      {msg.attachments.map((att) => (
+                                        <div
+                                          key={att.id}
+                                          className={`p-2 rounded-xl border flex items-center justify-between gap-2 text-[11px] ${
+                                            msg.isMine ? 'bg-black/20 border-white/10' : isLight ? 'bg-white border-slate-200' : 'bg-black/30 border-white/10'
+                                          }`}
+                                        >
+                                          <div className="flex items-center gap-1.5 min-w-0">
+                                            <FileText size={14} className={msg.isMine ? 'text-blue-100 shrink-0' : isLight ? 'text-blue-600 shrink-0' : 'text-blue-300 shrink-0'} />
+                                            <span className="truncate font-semibold">{att.name}</span>
+                                          </div>
+                                          <a
+                                            href={att.url}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className={`p-1 cursor-pointer shrink-0 ${
+                                              msg.isMine ? 'text-white hover:text-blue-100' : isLight ? 'text-slate-700 hover:text-blue-600' : 'text-white hover:text-blue-200'
+                                            }`}
+                                            title={`Download ${att.name}`}
+                                          >
+                                            <Download size={13} />
+                                          </a>
+                                        </div>
+                                      ))}
+                                    </>
+                                  )}
+                                </div>
                               </div>
-                            )}
-                          </div>
+                            ))
+                          )}
                         </div>
-                      ))}
-                    </div>
 
-                    {/* Chat Input & File Attachment */}
-                    <div className="mt-2 flex items-center gap-1.5 pt-2 border-t border-zinc-800 shrink-0">
-                      <button
-                        onClick={handleAttachSampleFile}
-                        className="p-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 cursor-pointer"
-                        title="Share File"
-                      >
-                        <Paperclip size={14} />
-                      </button>
+                        {chatError && (
+                          <div className={`mt-1.5 text-[11px] font-semibold flex items-center gap-1 shrink-0 ${isLight ? 'text-red-600' : 'text-red-400'}`}>
+                            <AlertTriangle size={11} className="shrink-0" /> {chatError}
+                          </div>
+                        )}
 
-                      <input
-                        type="text"
-                        placeholder="Send message to everyone..."
-                        value={chatInput}
-                        onChange={(e) => setChatInput(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
-                        className="flex-1 px-3 py-2 text-xs rounded-xl bg-zinc-800 border border-zinc-700/80 text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
-                      />
-                      <button
-                        onClick={() => handleSendMessage()}
-                        className="p-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white cursor-pointer transition-colors"
-                      >
-                        <Send size={13} />
-                      </button>
-                    </div>
+                        {/* Chat Input & File Attachment */}
+                        <div className={`mt-2 flex items-center gap-1.5 pt-2 border-t shrink-0 ${isLight ? 'border-slate-200' : 'border-zinc-800'}`}>
+                          <button
+                            onClick={() => meetingFileInputRef.current?.click()}
+                            disabled={isUploadingMeetingFile}
+                            className={`p-2 rounded-xl cursor-pointer disabled:opacity-50 ${
+                              isLight ? 'bg-slate-100 hover:bg-slate-200 text-slate-600' : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300'
+                            }`}
+                            title="Share a file"
+                          >
+                            {isUploadingMeetingFile ? (
+                              <RefreshCw size={14} className="animate-spin" />
+                            ) : (
+                              <Paperclip size={14} />
+                            )}
+                          </button>
+                          <input
+                            ref={meetingFileInputRef}
+                            type="file"
+                            className="hidden"
+                            onChange={(event) => {
+                              void handleSendMeetingFile(event.target.files?.[0]);
+                              event.target.value = '';
+                            }}
+                          />
+
+                          <input
+                            type="text"
+                            placeholder="Send message to everyone..."
+                            value={chatInput}
+                            onChange={(e) => setChatInput(e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && handleSendMeetingChatMessage()}
+                            className={`flex-1 px-3 py-2 text-xs rounded-xl border focus:outline-none focus:ring-1 focus:ring-blue-500 ${
+                              isLight ? 'bg-slate-100 border-slate-300 text-slate-900 placeholder:text-slate-400' : 'bg-zinc-800 border-zinc-700/80 text-white'
+                            }`}
+                          />
+                          <button
+                            onClick={() => void handleSendMeetingChatMessage()}
+                            disabled={isSendingChatMessage || !chatInput.trim()}
+                            className="p-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white cursor-pointer transition-colors disabled:opacity-50"
+                          >
+                            <Send size={13} />
+                          </button>
+                        </div>
+                      </>
+                    )}
                   </div>
                 )}
 
                 {/* Drawer Content: People / Participant List with Host Actions */}
                 {activeSideDrawer === 'people' && (
                   <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-2">
-                    <button
-                      onClick={handleMuteAll}
-                      className="w-full py-2 rounded-xl text-xs font-bold bg-zinc-800 hover:bg-red-900/30 text-red-400 border border-zinc-700/60 flex items-center justify-center gap-1.5 cursor-pointer"
-                    >
-                      <VolumeX size={13} />
-                      <span>Mute All Participants</span>
-                    </button>
+                    {/* Host-only: everyone else never even sees these
+                        controls, and `handleMuteAll`/`handleAskUnmuteAll`
+                        no-op for a non-host regardless (defense in depth). */}
+                    {isHost && (
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={handleMuteAll}
+                          className={`flex-1 py-2 rounded-xl text-xs font-bold border flex items-center justify-center gap-1.5 cursor-pointer ${
+                            isLight
+                              ? 'bg-red-50 hover:bg-red-100 text-red-600 border-red-200'
+                              : 'bg-zinc-800 hover:bg-red-900/30 text-red-400 border-zinc-700/60'
+                          }`}
+                        >
+                          <VolumeX size={13} />
+                          <span>Mute All</span>
+                        </button>
+                        <button
+                          onClick={handleAskUnmuteAll}
+                          title="Sends a request — participants must unmute themselves"
+                          className={`flex-1 py-2 rounded-xl text-xs font-bold border flex items-center justify-center gap-1.5 cursor-pointer ${
+                            isLight
+                              ? 'bg-blue-50 hover:bg-blue-100 text-blue-600 border-blue-200'
+                              : 'bg-zinc-800 hover:bg-blue-900/30 text-blue-300 border-zinc-700/60'
+                          }`}
+                        >
+                          <Mic size={13} />
+                          <span>Ask All to Unmute</span>
+                        </button>
+                      </div>
+                    )}
 
                     {[...participants]
                       .sort((a, b) => Number(b.isHandRaised) - Number(a.isHandRaised))
@@ -2417,17 +3379,21 @@ export default function MeetingApp() {
                       <div
                         key={p.id}
                         className={`p-2.5 rounded-xl border flex items-center justify-between gap-2 ${
-                          p.isHandRaised ? 'bg-amber-500/10 border-amber-500/30' : 'bg-zinc-800/60 border-zinc-800'
+                          p.isHandRaised
+                            ? 'bg-amber-500/10 border-amber-500/30'
+                            : isLight
+                              ? 'bg-slate-50 border-slate-200'
+                              : 'bg-zinc-800/60 border-zinc-800'
                         }`}
                       >
                         <div className="flex items-center gap-2.5 min-w-0">
                           <img src={p.avatar} alt={p.name} className="w-8 h-8 rounded-full object-cover" />
                           <div className="flex flex-col min-w-0">
-                            <span className="text-xs font-bold truncate text-zinc-200 flex items-center gap-1.5">
+                            <span className={`text-xs font-bold truncate flex items-center gap-1.5 ${isLight ? 'text-slate-800' : 'text-zinc-200'}`}>
                               <span className="truncate">{p.name}</span>
-                              {p.isHandRaised && <Hand size={11} className="text-amber-400 shrink-0" />}
+                              {p.isHandRaised && <Hand size={11} className="text-amber-500 shrink-0" />}
                             </span>
-                            <span className="text-[10px] text-zinc-400">
+                            <span className={`text-[10px] ${isLight ? 'text-slate-500' : 'text-zinc-400'}`}>
                               {p.role}
                               {p.isHandRaised ? ' · hand raised' : ''}
                             </span>
@@ -2438,23 +3404,36 @@ export default function MeetingApp() {
                           {p.id === 'me' && p.isHandRaised && (
                             <button
                               onClick={handleToggleHand}
-                              className="px-2 py-1 rounded-lg text-[10px] font-bold bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 cursor-pointer"
+                              className={`px-2 py-1 rounded-lg text-[10px] font-bold bg-amber-500/20 hover:bg-amber-500/30 cursor-pointer ${
+                                isLight ? 'text-amber-700' : 'text-amber-300'
+                              }`}
                             >
                               Lower
                             </button>
                           )}
                           {p.id !== 'me' && (
                             <>
-                              <button
-                                onClick={() => handleMuteParticipant(p.id)}
-                                className="p-1 rounded text-zinc-400 hover:text-red-400 cursor-pointer"
-                                title="Mute Participant"
-                              >
-                                {p.isMuted ? <MicOff size={13} className="text-red-400" /> : <Mic size={13} />}
-                              </button>
+                              {isHost &&
+                                (p.isMuted ? (
+                                  <button
+                                    onClick={() => handleAskUnmuteParticipant(p.id)}
+                                    className={`p-1 rounded cursor-pointer ${isLight ? 'text-slate-400 hover:text-blue-600' : 'text-zinc-400 hover:text-blue-300'}`}
+                                    title="Ask to unmute — sends a request, doesn't unmute them for you"
+                                  >
+                                    <MicOff size={13} className="text-red-400" />
+                                  </button>
+                                ) : (
+                                  <button
+                                    onClick={() => handleMuteParticipant(p.id)}
+                                    className={`p-1 rounded cursor-pointer ${isLight ? 'text-slate-400 hover:text-red-500' : 'text-zinc-400 hover:text-red-400'}`}
+                                    title="Mute Participant"
+                                  >
+                                    <Mic size={13} />
+                                  </button>
+                                ))}
                               <button
                                 onClick={() => handleRemoveParticipant(p.id)}
-                                className="p-1 rounded text-zinc-400 hover:text-red-400 cursor-pointer"
+                                className={`p-1 rounded cursor-pointer ${isLight ? 'text-slate-400 hover:text-red-500' : 'text-zinc-400 hover:text-red-400'}`}
                                 title="Remove Participant"
                               >
                                 <UserX size={13} />
@@ -2471,18 +3450,23 @@ export default function MeetingApp() {
                 {activeSideDrawer === 'waiting' && (
                   <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-2">
                     {waitingQueue.length === 0 ? (
-                      <div className="flex-1 flex flex-col items-center justify-center text-center p-6 text-zinc-500 gap-2 my-auto">
+                      <div className={`flex-1 flex flex-col items-center justify-center text-center p-6 gap-2 my-auto ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>
                         <UserCheck size={32} className="opacity-40" />
                         <span className="text-xs font-medium">Waiting Room is clear</span>
                       </div>
                     ) : (
                       waitingQueue.map((w) => (
-                        <div key={w.id} className="p-3 rounded-xl bg-zinc-800 border border-zinc-700 flex items-center justify-between gap-2">
+                        <div
+                          key={w.id}
+                          className={`p-3 rounded-xl border flex items-center justify-between gap-2 ${
+                            isLight ? 'bg-slate-50 border-slate-200' : 'bg-zinc-800 border-zinc-700'
+                          }`}
+                        >
                           <div className="flex items-center gap-2.5 min-w-0">
                             <img src={w.avatar} alt={w.name} className="w-8 h-8 rounded-full object-cover" />
                             <div className="flex flex-col min-w-0">
-                              <span className="text-xs font-bold text-white truncate">{w.name}</span>
-                              <span className="text-[10px] text-zinc-400">Waiting since {w.joinedAt}</span>
+                              <span className={`text-xs font-bold truncate ${isLight ? 'text-slate-900' : 'text-white'}`}>{w.name}</span>
+                              <span className={`text-[10px] ${isLight ? 'text-slate-500' : 'text-zinc-400'}`}>Waiting since {w.joinedAt}</span>
                             </div>
                           </div>
                           <div className="flex items-center gap-1 shrink-0">
@@ -2494,7 +3478,9 @@ export default function MeetingApp() {
                             </button>
                             <button
                               onClick={() => handleDenyWaiting(w.id)}
-                              className="px-2 py-1 rounded-lg text-xs font-bold bg-zinc-700 hover:bg-zinc-600 text-zinc-300 cursor-pointer"
+                              className={`px-2 py-1 rounded-lg text-xs font-bold cursor-pointer ${
+                                isLight ? 'bg-slate-200 hover:bg-slate-300 text-slate-700' : 'bg-zinc-700 hover:bg-zinc-600 text-zinc-300'
+                              }`}
                             >
                               Deny
                             </button>
@@ -2508,34 +3494,34 @@ export default function MeetingApp() {
                 {/* Drawer Content: Activities */}
                 {activeSideDrawer === 'activities' && (
                   <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-2">
-                    <p className="text-[11px] text-zinc-400 leading-relaxed px-0.5">
+                    <p className={`text-[11px] leading-relaxed px-0.5 ${isLight ? 'text-slate-500' : 'text-zinc-400'}`}>
                       Run something together without leaving the call.
                     </p>
                     {[
                       {
                         id: 'whiteboard',
-                        icon: <Sparkles size={16} className="text-purple-300" />,
+                        icon: <Sparkles size={16} className="text-purple-500" />,
                         title: 'Whiteboard',
                         description: 'Sketch together on a shared canvas',
                         onClick: () => setShowWhiteboard(true),
                       },
                       {
                         id: 'polls',
-                        icon: <BarChart2 size={16} className="text-amber-300" />,
+                        icon: <BarChart2 size={16} className="text-amber-500" />,
                         title: 'Polls',
                         description: `Ask the room a question${polls.length ? ` · ${polls.length} active` : ''}`,
                         onClick: () => setActiveSideDrawer('polls'),
                       },
                       {
                         id: 'breakout',
-                        icon: <Split size={16} className="text-indigo-300" />,
+                        icon: <Split size={16} className="text-indigo-500" />,
                         title: 'Breakout rooms',
                         description: 'Split participants into smaller groups',
                         onClick: () => setShowBreakoutRooms(true),
                       },
                       {
                         id: 'recording',
-                        icon: <Disc size={16} className={isRecording ? 'text-red-400' : 'text-zinc-300'} />,
+                        icon: <Disc size={16} className={isRecording ? 'text-red-500' : isLight ? 'text-slate-500' : 'text-zinc-300'} />,
                         title: isRecording ? 'Stop recording' : 'Recording',
                         description: isRecording
                           ? `Recording for ${formatRecordingTime(recordingSeconds)}`
@@ -2544,25 +3530,29 @@ export default function MeetingApp() {
                       },
                       {
                         id: 'captions',
-                        icon: <Captions size={16} className={captionsOn ? 'text-blue-300' : 'text-zinc-300'} />,
+                        icon: <Captions size={16} className={captionsOn ? 'text-blue-500' : isLight ? 'text-slate-500' : 'text-zinc-300'} />,
                         title: captionsOn ? 'Turn off captions' : 'Live captions',
+                        // This browser may not be able to transcribe the
+                        // local mic, but it can still display captions
+                        // other participants broadcast — so the toggle
+                        // always stays enabled.
                         description: captionsSupported
                           ? 'Transcribe speech on screen as people talk'
-                          : 'Not available in this browser',
-                        onClick: () => captionsSupported && setCaptionsOn((prev) => !prev),
-                        disabled: !captionsSupported,
+                          : "Can't transcribe here, but you'll still see others' captions",
+                        onClick: () => setCaptionsOn((prev) => !prev),
                       },
                     ].map((activity) => (
                       <button
                         key={activity.id}
                         onClick={activity.onClick}
-                        disabled={activity.disabled}
-                        className="p-3 rounded-xl bg-zinc-800/60 border border-zinc-800 hover:bg-zinc-800 flex items-start gap-2.5 text-left cursor-pointer transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                        className={`p-3 rounded-xl border flex items-start gap-2.5 text-left cursor-pointer transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                          isLight ? 'bg-slate-50 border-slate-200 hover:bg-slate-100' : 'bg-zinc-800/60 border-zinc-800 hover:bg-zinc-800'
+                        }`}
                       >
                         <span className="mt-0.5 shrink-0">{activity.icon}</span>
                         <span className="flex flex-col min-w-0">
-                          <span className="text-xs font-bold text-zinc-100">{activity.title}</span>
-                          <span className="text-[11px] text-zinc-400 leading-snug">{activity.description}</span>
+                          <span className={`text-xs font-bold ${isLight ? 'text-slate-900' : 'text-zinc-100'}`}>{activity.title}</span>
+                          <span className={`text-[11px] leading-snug ${isLight ? 'text-slate-500' : 'text-zinc-400'}`}>{activity.description}</span>
                         </span>
                       </button>
                     ))}
@@ -2571,11 +3561,11 @@ export default function MeetingApp() {
 
                 {/* Drawer Content: Info */}
                 {activeSideDrawer === 'info' && (
-                  <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3 text-xs text-zinc-300">
+                  <div className={`flex-1 overflow-y-auto p-4 flex flex-col gap-3 text-xs ${isLight ? 'text-slate-600' : 'text-zinc-300'}`}>
                     <div className="flex flex-col gap-1">
-                      <span className="font-bold text-zinc-400 uppercase text-[10px]">Joining Info</span>
-                      <span className="font-semibold text-white">{meetingTitle}</span>
-                      <span className="text-zinc-500 break-all">https://meet.driveosx.app/{currentMeetingId}</span>
+                      <span className={`font-bold uppercase text-[10px] ${isLight ? 'text-slate-500' : 'text-zinc-400'}`}>Joining Info</span>
+                      <span className={`font-semibold ${isLight ? 'text-slate-900' : 'text-white'}`}>{meetingTitle}</span>
+                      <span className={`break-all ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>{`${window.location.origin}/meeting/${currentMeetingId}`}</span>
                     </div>
                     <button
                       onClick={handleCopyLink}
@@ -2585,32 +3575,32 @@ export default function MeetingApp() {
                       <span>{isCopied ? 'Link Copied!' : 'Copy Joining Link'}</span>
                     </button>
 
-                    <div className="flex flex-col gap-2 pt-1 border-t border-zinc-800">
-                      <span className="font-bold text-zinc-400 uppercase text-[10px] pt-2">This call</span>
+                    <div className={`flex flex-col gap-2 pt-1 border-t ${isLight ? 'border-slate-200' : 'border-zinc-800'}`}>
+                      <span className={`font-bold uppercase text-[10px] pt-2 ${isLight ? 'text-slate-500' : 'text-zinc-400'}`}>This call</span>
                       <div className="flex items-center justify-between">
-                        <span className="text-zinc-400">Duration</span>
-                        <span className="font-mono text-zinc-200">{formatRecordingTime(meetingSeconds)}</span>
+                        <span className={isLight ? 'text-slate-500' : 'text-zinc-400'}>Duration</span>
+                        <span className={`font-mono ${isLight ? 'text-slate-800' : 'text-zinc-200'}`}>{formatRecordingTime(meetingSeconds)}</span>
                       </div>
                       <div className="flex items-center justify-between">
-                        <span className="text-zinc-400">Participants</span>
-                        <span className="text-zinc-200">{participants.length}</span>
+                        <span className={isLight ? 'text-slate-500' : 'text-zinc-400'}>Participants</span>
+                        <span className={isLight ? 'text-slate-800' : 'text-zinc-200'}>{participants.length}</span>
                       </div>
                       <div className="flex items-center justify-between">
-                        <span className="text-zinc-400">Recording</span>
-                        <span className={isRecording ? 'text-red-400 font-semibold' : 'text-zinc-200'}>
+                        <span className={isLight ? 'text-slate-500' : 'text-zinc-400'}>Recording</span>
+                        <span className={isRecording ? (isLight ? 'text-red-600 font-semibold' : 'text-red-400 font-semibold') : (isLight ? 'text-slate-800' : 'text-zinc-200')}>
                           {isRecording ? `On · ${formatRecordingTime(recordingSeconds)}` : 'Off'}
                         </span>
                       </div>
                       <div className="flex items-center justify-between">
-                        <span className="text-zinc-400">Captions</span>
-                        <span className="text-zinc-200">
-                          {!captionsSupported ? 'Unavailable' : captionsOn ? 'On' : 'Off'}
+                        <span className={isLight ? 'text-slate-500' : 'text-zinc-400'}>Captions</span>
+                        <span className={isLight ? 'text-slate-800' : 'text-zinc-200'}>
+                          {captionsOn ? (captionsSupported ? 'On' : 'On (view only)') : 'Off'}
                         </span>
                       </div>
                     </div>
 
-                    <div className="flex flex-col gap-1.5 pt-1 border-t border-zinc-800">
-                      <span className="font-bold text-zinc-400 uppercase text-[10px] pt-2">Shortcuts</span>
+                    <div className={`flex flex-col gap-1.5 pt-1 border-t ${isLight ? 'border-slate-200' : 'border-zinc-800'}`}>
+                      <span className={`font-bold uppercase text-[10px] pt-2 ${isLight ? 'text-slate-500' : 'text-zinc-400'}`}>Shortcuts</span>
                       {[
                         { keys: 'Ctrl + D', label: 'Mute / unmute' },
                         { keys: 'Ctrl + E', label: 'Camera on / off' },
@@ -2618,8 +3608,12 @@ export default function MeetingApp() {
                         { keys: 'Ctrl + Alt + C', label: 'Toggle chat' },
                       ].map((shortcut) => (
                         <div key={shortcut.keys} className="flex items-center justify-between gap-2">
-                          <span className="text-zinc-400">{shortcut.label}</span>
-                          <kbd className="px-1.5 py-0.5 rounded bg-black/40 border border-zinc-700 text-[10px] font-mono text-zinc-300 shrink-0">
+                          <span className={isLight ? 'text-slate-500' : 'text-zinc-400'}>{shortcut.label}</span>
+                          <kbd
+                            className={`px-1.5 py-0.5 rounded border text-[10px] font-mono shrink-0 ${
+                              isLight ? 'bg-slate-100 border-slate-300 text-slate-600' : 'bg-black/40 border-zinc-700 text-zinc-300'
+                            }`}
+                          >
                             {shortcut.keys}
                           </kbd>
                         </div>
@@ -2634,31 +3628,38 @@ export default function MeetingApp() {
             <PollsDrawer
               isOpen={activeSideDrawer === 'polls'}
               onClose={() => setActiveSideDrawer(null)}
-              polls={polls}
+              // `userVotedOptionId` is derived per viewer from `votesByVoter`
+              // right before rendering — it's never itself broadcast, so
+              // each participant highlights their own vote, not the
+              // creator's or whoever voted most recently.
+              polls={polls.map((p) => ({ ...p, userVotedOptionId: p.votesByVoter[selfUserId ?? 'me'] }))}
               onCreatePoll={handleCreatePoll}
               onVotePoll={handleVotePoll}
               onDeletePoll={handleDeletePoll}
+              isHost={isHost}
               isLight={isLight}
             />
           </div>
 
-          {/* Bottom Call Control Toolbar.
+          {/* Bottom Call Control Toolbar: a centered, floating pill — Meet's
+              signature control bar — rather than a full-width docked strip.
               Primary controls are always on screen; everything else collapses
               into an overflow menu as the window narrows, so nothing is ever
               pushed out of reach. */}
-          <div
-            className={`min-h-14 bg-zinc-900 border-t border-zinc-800 px-2 sm:px-3 py-2 flex flex-wrap items-center shrink-0 z-20 gap-1.5 gap-y-2 relative ${
-              isCompact ? 'justify-center' : 'justify-between'
-            }`}
-          >
+          <div className="min-h-16 px-2 py-2 flex items-center justify-center shrink-0 z-20 relative">
+            <div
+              className={`flex flex-wrap items-center gap-1.5 gap-y-2 rounded-full border shadow-2xl px-2 sm:px-3 py-1.5 sm:py-2 ${palette.controlBarBg} ${palette.controlBarBorder} ${
+                isCompact ? 'justify-center' : ''
+              }`}
+            >
             {/* Left: mic, camera, virtual cam */}
             <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
               <button
-                onClick={() => setIsMicOn(!isMicOn)}
+                onClick={() => setMicEnabled(!isMicOn)}
                 className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl flex items-center justify-center transition-all cursor-pointer ${
                   isMicOn
-                    ? 'bg-zinc-800 hover:bg-zinc-700 text-white'
-                    : 'bg-red-500 hover:bg-red-600 text-white shadow-lg shadow-red-500/20'
+                    ? `${palette.controlButtonIdle} ${palette.controlButtonIdleHover}`
+                    : palette.controlButtonActive
                 }`}
                 title={isMicOn ? 'Mute Microphone (Ctrl+D)' : 'Unmute Microphone (Ctrl+D)'}
               >
@@ -2667,13 +3668,23 @@ export default function MeetingApp() {
 
               <button
                 onClick={() => {
-                  setIsVideoOn(!isVideoOn);
+                  const next = !isVideoOn;
+                  setIsVideoOn(next);
                   if (!isVideoOn) setUseVirtualCam(false);
+                  const videoTracks = webcamStream?.getVideoTracks() ?? [];
+                  if (videoTracks.length > 0) {
+                    videoTracks.forEach((track) => {
+                      track.enabled = next;
+                    });
+                  } else if (next) {
+                    // Joined with the camera off entirely — acquire it now.
+                    requestCameraAccess(selectedVideoDeviceId || undefined);
+                  }
                 }}
                 className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl flex items-center justify-center transition-all cursor-pointer ${
                   isVideoOn
-                    ? 'bg-zinc-800 hover:bg-zinc-700 text-white'
-                    : 'bg-red-500 hover:bg-red-600 text-white shadow-lg shadow-red-500/20'
+                    ? `${palette.controlButtonIdle} ${palette.controlButtonIdleHover}`
+                    : palette.controlButtonActive
                 }`}
                 title={isVideoOn ? 'Turn Camera Off (Ctrl+E)' : 'Turn Camera On (Ctrl+E)'}
               >
@@ -2687,7 +3698,7 @@ export default function MeetingApp() {
                     setUseVirtualCam(!useVirtualCam);
                   }}
                   className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl flex items-center justify-center transition-all cursor-pointer ${
-                    useVirtualCam ? 'bg-indigo-600 text-white' : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300'
+                    useVirtualCam ? 'bg-indigo-600 text-white' : `${palette.controlButtonIdle} ${palette.controlButtonIdleHover}`
                   }`}
                   title={useVirtualCam ? 'Switch to Physical Camera' : 'Switch to Virtual Studio Cam'}
                 >
@@ -2702,7 +3713,7 @@ export default function MeetingApp() {
                 <button
                   onClick={() => setShowReactionsMenu(!showReactionsMenu)}
                   className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl cursor-pointer transition-colors ${
-                    showReactionsMenu ? 'bg-zinc-700 text-white' : 'bg-zinc-800 hover:bg-zinc-700 text-white'
+                    showReactionsMenu ? palette.controlButtonActive : `${palette.controlButtonIdle} ${palette.controlButtonIdleHover}`
                   }`}
                   title="Send a reaction"
                 >
@@ -2712,12 +3723,18 @@ export default function MeetingApp() {
                 {showReactionsMenu && (
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => setShowReactionsMenu(false)} />
-                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 p-1.5 sm:p-2 rounded-2xl bg-zinc-800 border border-zinc-700 shadow-xl grid grid-cols-4 gap-1 z-50">
+                    <div
+                      className={`absolute bottom-full left-1/2 -translate-x-1/2 mb-2 p-1.5 sm:p-2 rounded-2xl border shadow-xl grid grid-cols-4 gap-1 z-50 ${
+                        isLight ? 'bg-white border-slate-200' : 'bg-zinc-800 border-zinc-700'
+                      }`}
+                    >
                       {['👏', '👍', '❤️', '🎉', '😂', '👋', '🔥', '💡'].map((emoji) => (
                         <button
                           key={emoji}
                           onClick={() => handleSendReaction(emoji)}
-                          className="p-1.5 text-lg hover:bg-zinc-700 rounded-xl cursor-pointer transition-transform hover:scale-125"
+                          className={`p-1.5 text-lg rounded-xl cursor-pointer transition-transform hover:scale-125 ${
+                            isLight ? 'hover:bg-slate-100' : 'hover:bg-zinc-700'
+                          }`}
                         >
                           {emoji}
                         </button>
@@ -2736,7 +3753,7 @@ export default function MeetingApp() {
                   className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl transition-all cursor-pointer ${
                     isScreenSharing
                       ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20'
-                      : 'bg-zinc-800 hover:bg-zinc-700 text-white'
+                      : `${palette.controlButtonIdle} ${palette.controlButtonIdleHover}`
                   }`}
                   title={isScreenSharing ? 'Stop presenting' : 'Present now'}
                 >
@@ -2746,8 +3763,12 @@ export default function MeetingApp() {
                 {showScreenShareMenu && !isScreenSharing && (
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => setShowScreenShareMenu(false)} />
-                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-44 p-1.5 rounded-xl bg-zinc-800 border border-zinc-700 shadow-2xl z-50 flex flex-col gap-0.5">
-                      <span className="px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-zinc-500">
+                    <div
+                      className={`absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-44 p-1.5 rounded-xl border shadow-2xl z-50 flex flex-col gap-0.5 ${
+                        isLight ? 'bg-white border-slate-200' : 'bg-zinc-800 border-zinc-700'
+                      }`}
+                    >
+                      <span className={`px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${isLight ? 'text-slate-400' : 'text-zinc-500'}`}>
                         Present now
                       </span>
                       {([
@@ -2761,7 +3782,9 @@ export default function MeetingApp() {
                             setShowScreenShareMenu(false);
                             toggleScreenShare(option.id);
                           }}
-                          className="px-2.5 py-2 rounded-lg text-left text-xs font-semibold text-zinc-200 hover:bg-zinc-700 cursor-pointer transition-colors"
+                          className={`px-2.5 py-2 rounded-lg text-left text-xs font-semibold cursor-pointer transition-colors ${
+                            isLight ? 'text-slate-700 hover:bg-slate-100' : 'text-zinc-200 hover:bg-zinc-700'
+                          }`}
                         >
                           {option.label}
                         </button>
@@ -2773,16 +3796,17 @@ export default function MeetingApp() {
 
               <button
                 onClick={() => setCaptionsOn((prev) => !prev)}
-                disabled={!captionsSupported}
-                className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
-                  captionsOn ? 'bg-blue-600 text-white' : 'bg-zinc-800 hover:bg-zinc-700 text-white'
+                className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl transition-all cursor-pointer ${
+                  captionsOn ? 'bg-blue-600 text-white' : `${palette.controlButtonIdle} ${palette.controlButtonIdleHover}`
                 }`}
                 title={
                   captionsSupported
                     ? captionsOn
                       ? 'Turn off captions'
                       : 'Turn on captions'
-                    : 'Captions need a browser with speech recognition (Chrome or Edge)'
+                    : captionsOn
+                      ? "Showing others' captions (this browser can't transcribe your own speech)"
+                      : "View others' captions (this browser can't transcribe your own speech)"
                 }
               >
                 <Captions size={isVeryCompact ? 16 : 18} />
@@ -2791,7 +3815,7 @@ export default function MeetingApp() {
               <button
                 onClick={handleToggleHand}
                 className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl transition-all cursor-pointer ${
-                  isHandRaised ? 'bg-amber-500 text-white' : 'bg-zinc-800 hover:bg-zinc-700 text-white'
+                  isHandRaised ? 'bg-amber-500 text-white' : `${palette.controlButtonIdle} ${palette.controlButtonIdleHover}`
                 }`}
                 title={isHandRaised ? 'Lower hand (Ctrl+Alt+H)' : 'Raise hand (Ctrl+Alt+H)'}
               >
@@ -2803,7 +3827,7 @@ export default function MeetingApp() {
                 <button
                   onClick={() => setShowMoreMenu((prev) => !prev)}
                   className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl cursor-pointer transition-colors ${
-                    showMoreMenu ? 'bg-zinc-700 text-white' : 'bg-zinc-800 hover:bg-zinc-700 text-white'
+                    showMoreMenu ? palette.controlButtonActive : `${palette.controlButtonIdle} ${palette.controlButtonIdleHover}`
                   }`}
                   title="More options"
                 >
@@ -2813,41 +3837,45 @@ export default function MeetingApp() {
                 {showMoreMenu && (
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => setShowMoreMenu(false)} />
-                    <div className="absolute bottom-full right-0 mb-2 w-56 p-1.5 rounded-xl bg-zinc-800 border border-zinc-700 shadow-2xl z-50 flex flex-col gap-0.5 max-h-[60vh] overflow-y-auto">
+                    <div
+                      className={`absolute bottom-full right-0 mb-2 w-56 p-1.5 rounded-xl border shadow-2xl z-50 flex flex-col gap-0.5 max-h-[60vh] overflow-y-auto ${
+                        isLight ? 'bg-white border-slate-200' : 'bg-zinc-800 border-zinc-700'
+                      }`}
+                    >
                       {[
                         {
                           id: 'record',
-                          icon: <Disc size={14} className={isRecording ? 'text-red-400' : ''} />,
+                          icon: <Disc size={14} className={isRecording ? 'text-red-500' : ''} />,
                           label: isRecording ? `Stop recording (${formatRecordingTime(recordingSeconds)})` : 'Record meeting',
                           onClick: handleToggleRecording,
                         },
                         {
                           id: 'whiteboard',
-                          icon: <Sparkles size={14} className="text-purple-300" />,
+                          icon: <Sparkles size={14} className="text-purple-500" />,
                           label: 'Open whiteboard',
                           onClick: () => setShowWhiteboard(true),
                         },
                         {
                           id: 'polls',
-                          icon: <BarChart2 size={14} className="text-amber-300" />,
+                          icon: <BarChart2 size={14} className="text-amber-500" />,
                           label: 'Polls',
                           onClick: () => setActiveSideDrawer(activeSideDrawer === 'polls' ? null : 'polls'),
                         },
                         {
                           id: 'breakout',
-                          icon: <Split size={14} className="text-indigo-300" />,
+                          icon: <Split size={14} className="text-indigo-500" />,
                           label: 'Breakout rooms',
                           onClick: () => setShowBreakoutRooms(true),
                         },
                         {
                           id: 'activities',
-                          icon: <LayoutGrid size={14} className="text-blue-300" />,
+                          icon: <LayoutGrid size={14} className="text-blue-500" />,
                           label: 'Activities',
                           onClick: () => setActiveSideDrawer(activeSideDrawer === 'activities' ? null : 'activities'),
                         },
                         {
                           id: 'virtual-cam',
-                          icon: <Sparkles size={14} className="text-indigo-300" />,
+                          icon: <Sparkles size={14} className="text-indigo-500" />,
                           label: useVirtualCam ? 'Use physical camera' : 'Use virtual studio cam',
                           onClick: () => {
                             setIsVideoOn(true);
@@ -2857,13 +3885,13 @@ export default function MeetingApp() {
                         },
                         {
                           id: 'security',
-                          icon: <ShieldCheck size={14} className="text-emerald-400" />,
+                          icon: <ShieldCheck size={14} className="text-emerald-500" />,
                           label: 'Security & host controls',
                           onClick: () => setShowSecurityModal(true),
                         },
                         {
                           id: 'info',
-                          icon: <Info size={14} className="text-zinc-300" />,
+                          icon: <Info size={14} className={isLight ? 'text-slate-500' : 'text-zinc-300'} />,
                           label: 'Meeting details',
                           onClick: () => setActiveSideDrawer(activeSideDrawer === 'info' ? null : 'info'),
                         },
@@ -2876,7 +3904,9 @@ export default function MeetingApp() {
                               item.onClick();
                               setShowMoreMenu(false);
                             }}
-                            className="px-2.5 py-2 rounded-lg text-left text-xs font-semibold text-zinc-200 hover:bg-zinc-700 cursor-pointer flex items-center gap-2.5 transition-colors"
+                            className={`px-2.5 py-2 rounded-lg text-left text-xs font-semibold cursor-pointer flex items-center gap-2.5 transition-colors ${
+                              isLight ? 'text-slate-700 hover:bg-slate-100' : 'text-zinc-200 hover:bg-zinc-700'
+                            }`}
                           >
                             {item.icon}
                             <span className="truncate">{item.label}</span>
@@ -2902,7 +3932,7 @@ export default function MeetingApp() {
               <button
                 onClick={() => setActiveSideDrawer(activeSideDrawer === 'chat' ? null : 'chat')}
                 className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl cursor-pointer transition-colors ${
-                  activeSideDrawer === 'chat' ? 'bg-blue-600 text-white' : 'bg-zinc-800 hover:bg-zinc-700 text-white'
+                  activeSideDrawer === 'chat' ? 'bg-blue-600 text-white' : `${palette.controlButtonIdle} ${palette.controlButtonIdleHover}`
                 }`}
                 title="Chat with everyone (Ctrl+Alt+C)"
               >
@@ -2912,7 +3942,7 @@ export default function MeetingApp() {
               <button
                 onClick={() => setActiveSideDrawer(activeSideDrawer === 'people' ? null : 'people')}
                 className={`relative p-2 sm:p-2.5 rounded-xl sm:rounded-2xl cursor-pointer transition-colors ${
-                  activeSideDrawer === 'people' ? 'bg-blue-600 text-white' : 'bg-zinc-800 hover:bg-zinc-700 text-white'
+                  activeSideDrawer === 'people' ? 'bg-blue-600 text-white' : `${palette.controlButtonIdle} ${palette.controlButtonIdleHover}`
                 }`}
                 title="Show everyone"
               >
@@ -2928,13 +3958,14 @@ export default function MeetingApp() {
                 <button
                   onClick={() => setActiveSideDrawer(activeSideDrawer === 'activities' ? null : 'activities')}
                   className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl cursor-pointer transition-colors ${
-                    activeSideDrawer === 'activities' ? 'bg-blue-600 text-white' : 'bg-zinc-800 hover:bg-zinc-700 text-white'
+                    activeSideDrawer === 'activities' ? 'bg-blue-600 text-white' : `${palette.controlButtonIdle} ${palette.controlButtonIdleHover}`
                   }`}
                   title="Activities"
                 >
                   <PictureInPicture2 size={isVeryCompact ? 16 : 18} />
                 </button>
               )}
+            </div>
             </div>
           </div>
         </div>
@@ -3010,7 +4041,7 @@ export default function MeetingApp() {
               }`}
             />
 
-            <label className="flex items-center gap-2 text-xs text-zinc-400 cursor-pointer pt-0.5">
+            <label className={`flex items-center gap-2 text-xs cursor-pointer pt-0.5 ${isLight ? 'text-slate-500' : 'text-zinc-400'}`}>
               <input
                 type="checkbox"
                 checked={schedWaitingRoom}

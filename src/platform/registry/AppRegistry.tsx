@@ -613,10 +613,12 @@ export const AppRegistry = {
     const route = pathname.replace(/^\//, '').replace(/\/$/, '');
     const exact = Object.entries(appRoutes).find(([, value]) => value === route)?.[0];
     if (exact) return exact;
-    // `/folder/:folderId` is the only route with a sub-path — everything
-    // else in `appRoutes` is matched exactly above.
+    // `/folder/:folderId` and `/meeting/:meetingId` are the only routes with
+    // a sub-path — everything else in `appRoutes` is matched exactly above.
     const [firstSegment] = route.split('/');
-    return firstSegment === appRoutes.fileManager ? 'fileManager' : undefined;
+    if (firstSegment === appRoutes.fileManager) return 'fileManager';
+    if (firstSegment === appRoutes.meeting) return 'meeting';
+    return undefined;
   },
 
   /** The `:folderId` segment of `/folder/:folderId`, or null for `/folder` (root) or any other route. */
@@ -625,6 +627,18 @@ export const AppRegistry = {
     const [firstSegment, folderId] = route.split('/');
     if (firstSegment !== appRoutes.fileManager) return null;
     return folderId || null;
+  },
+
+  /** The `:meetingId` segment of `/meeting/:meetingId` — an invite link's
+   *  target — or null for bare `/meeting` or any other route. Unlike the
+   *  folder id, this is consumed once (see `openMeeting`/`pendingMeetingId`
+   *  in `systemStore.tsx`) rather than reflected back into the URL: once
+   *  joined, the meeting's current path is just `/meeting`. */
+  getMeetingIdFromPath(pathname: string): string | null {
+    const route = pathname.replace(/^\//, '').replace(/\/$/, '');
+    const [firstSegment, meetingId] = route.split('/');
+    if (firstSegment !== appRoutes.meeting) return null;
+    return meetingId || null;
   },
 
   getAppIcon(id: string, className?: string): React.ReactNode {

@@ -7,6 +7,7 @@ export interface Participant {
   isVideoOn: boolean;
   isHandRaised: boolean;
   isSpeaking: boolean;
+  isScreenSharing: boolean;
   bgGradient: string;
   breakoutRoomId?: string | null;
 }
@@ -38,6 +39,13 @@ export interface Poll {
   isActive: boolean;
   creator: string;
   totalVotes: number;
+  /** Every voter's current choice, keyed by their userId (or `'me'` for a
+   *  vote cast before the socket knows the local user's id). Kept so a vote
+   *  broadcast from a peer can be merged without clobbering anyone else's
+   *  vote, and so switching a vote can undo the previous one correctly. */
+  votesByVoter: Record<string, string>;
+  /** Derived for display, not stored on the wire: the *viewing* user's own
+   *  vote, looked up from `votesByVoter` right before rendering. */
   userVotedOptionId?: string;
 }
 

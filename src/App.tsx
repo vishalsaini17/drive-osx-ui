@@ -113,14 +113,23 @@ export default function App() {
         location.pathname !== '/reset-password' &&
         !location.pathname.startsWith('/s/')
       ) {
-        navigate('/login');
+        // Remembers where the visitor was actually headed — a Meet invite
+        // link chiefly, since its whole point is being opened by someone
+        // who often isn't signed in yet — so login can return them there
+        // instead of always landing on the bare desktop.
+        const intended = location.pathname + location.search;
+        navigate(`/login?next=${encodeURIComponent(intended)}`);
       }
     } else {
       if (location.pathname === '/login' || location.pathname === '/register') {
-        navigate('/');
+        const next = new URLSearchParams(location.search).get('next');
+        // Only ever follow a same-origin relative path — an open redirect
+        // otherwise, since `next` came off the URL a visitor followed here.
+        const isSafeRelativePath = next && next.startsWith('/') && !next.startsWith('//');
+        navigate(isSafeRelativePath ? next : '/');
       }
     }
-  }, [isAuthenticated, isInitializing, location.pathname, navigate]);
+  }, [isAuthenticated, isInitializing, location.pathname, location.search, navigate]);
 
   return (
     <main 
@@ -139,6 +148,11 @@ export default function App() {
             the folder currently open, so a reload or a direct link lands
             back in the same folder instead of always resetting to root. */}
         <Route path="/folder/:folderId" element={<DesktopLayout />} />
+        {/* A Meet invite link ("copy invite link" in OSX Meet). Unlike the
+            folder route, the id here is consumed once to join the call
+            rather than kept reflected in the URL — see
+            `AppRegistry.getMeetingIdFromPath`. */}
+        <Route path="/meeting/:meetingId" element={<DesktopLayout />} />
         <Route path="/:appRoute" element={<DesktopLayout />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
@@ -159,6 +173,7 @@ function DesktopLayout() {
   const setFiles = useSystemStore((state) => state.setFiles);
   const fileManagerCurrentFolderId = useSystemStore((state) => state.fileManagerCurrentFolderId);
   const setFileManagerCurrentFolderId = useSystemStore((state) => state.setFileManagerCurrentFolderId);
+  const openMeeting = useSystemStore((state) => state.openMeeting);
   const logout = useSystemStore((state) => state.logout);
   const clampWindowsToViewport = useSystemStore((state) => state.clampWindowsToViewport);
   const openContextMenu = useContextMenuStore((state) => state.openContextMenu);
@@ -362,9 +377,19 @@ function DesktopLayout() {
         if (appId === 'fileManager') {
           setFileManagerCurrentFolderId(AppRegistry.getFolderIdFromPath(currentPath));
         }
-        const targetWin = windows.find(w => w.id === appId);
-        if (!targetWin?.isOpen || currentActiveWindow !== appId) {
-          openAppWindow(appId);
+        // Likewise `/meeting/:meetingId` (an invite link): `openMeeting`
+        // both opens the window and hands OSX Meet the id to auto-join
+        // (the same `pendingMeetingId` hand-off a call started from
+        // Messages already uses), so it takes the place of the generic
+        // open-if-not-already-open call below rather than running after it.
+        const meetingIdFromPath = appId === 'meeting' ? AppRegistry.getMeetingIdFromPath(currentPath) : null;
+        if (meetingIdFromPath) {
+          openMeeting(meetingIdFromPath);
+        } else {
+          const targetWin = windows.find(w => w.id === appId);
+          if (!targetWin?.isOpen || currentActiveWindow !== appId) {
+            openAppWindow(appId);
+          }
         }
       } else if (currentPath !== '/') {
         // We're about to navigate ourselves, so record the path this settles
@@ -436,6 +461,7 @@ function DesktopLayout() {
     openAppWindow,
     focusWindow,
     setFileManagerCurrentFolderId,
+    openMeeting,
   ]);
 
   return (

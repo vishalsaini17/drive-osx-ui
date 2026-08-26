@@ -47,8 +47,14 @@ COPY --chown=node:node . .
 
 EXPOSE 3000
 
+# Tries https first (dev TLS cert present, self-signed — validation is
+# disabled here since this is a loopback health probe, not a trust decision),
+# falling back to http for a checkout with no cert generated yet. Either
+# configuration must pass without editing this file (see vite.config.ts).
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
-  CMD node -e "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD NODE_TLS_REJECT_UNAUTHORIZED=0 node -e "\
+    const ok = (url) => fetch(url).then((r) => r.ok); \
+    ok('https://127.0.0.1:3000/').catch(() => ok('http://127.0.0.1:3000/')).then((r) => process.exit(r ? 0 : 1)).catch(() => process.exit(1))"
 
 CMD ["npm", "run", "dev"]
 

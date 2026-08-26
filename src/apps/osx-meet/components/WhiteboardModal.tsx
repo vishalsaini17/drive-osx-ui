@@ -219,14 +219,14 @@ export default function WhiteboardModal({ isOpen, onClose, isLight }: Whiteboard
         }`}
       >
         {/* Header Toolbar */}
-        <div className="h-14 px-4 flex items-center justify-between border-b border-white/10 shrink-0 bg-black/20">
+        <div className={`h-14 px-4 flex items-center justify-between border-b shrink-0 ${isLight ? 'border-slate-200 bg-slate-50' : 'border-white/10 bg-black/20'}`}>
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-purple-600 to-indigo-500 flex items-center justify-center text-white shadow-md">
               <Sparkles size={16} />
             </div>
             <div>
               <h2 className="text-sm font-bold tracking-tight">Collaborative Whiteboard</h2>
-              <p className="text-[11px] text-zinc-400 hidden sm:block">Draw, sketch diagrams & export to DriveOSX</p>
+              <p className={`text-[11px] hidden sm:block ${isLight ? 'text-slate-500' : 'text-zinc-400'}`}>Draw, sketch diagrams & export to DriveOSX</p>
             </div>
           </div>
 
@@ -235,7 +235,9 @@ export default function WhiteboardModal({ isOpen, onClose, isLight }: Whiteboard
             <button
               onClick={handleUndo}
               disabled={history.length <= 1}
-              className="p-2 rounded-xl text-xs font-semibold bg-zinc-800/80 hover:bg-zinc-700 disabled:opacity-30 text-zinc-300 cursor-pointer transition-colors flex items-center gap-1.5"
+              className={`p-2 rounded-xl text-xs font-semibold disabled:opacity-30 cursor-pointer transition-colors flex items-center gap-1.5 ${
+                isLight ? 'bg-slate-100 hover:bg-slate-200 text-slate-600' : 'bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300'
+              }`}
               title="Undo"
             >
               <RotateCcw size={14} />
@@ -244,14 +246,16 @@ export default function WhiteboardModal({ isOpen, onClose, isLight }: Whiteboard
 
             <button
               onClick={handleClearAll}
-              className="p-2 rounded-xl text-xs font-semibold bg-zinc-800/80 hover:bg-red-900/40 text-red-400 cursor-pointer transition-colors flex items-center gap-1.5"
+              className={`p-2 rounded-xl text-xs font-semibold cursor-pointer transition-colors flex items-center gap-1.5 ${
+                isLight ? 'bg-slate-100 hover:bg-red-50 text-red-600' : 'bg-zinc-800/80 hover:bg-red-900/40 text-red-400'
+              }`}
               title="Clear Canvas"
             >
               <Trash2 size={14} />
               <span className="hidden sm:inline">Clear</span>
             </button>
 
-            <div className="h-4 w-px bg-white/15 mx-1" />
+            <div className={`h-4 w-px mx-1 ${isLight ? 'bg-slate-300' : 'bg-white/15'}`} />
 
             <button
               onClick={handleSaveToDriveOSX}
@@ -271,7 +275,9 @@ export default function WhiteboardModal({ isOpen, onClose, isLight }: Whiteboard
 
             <button
               onClick={onClose}
-              className="p-1.5 rounded-xl text-zinc-400 hover:text-white hover:bg-white/10 cursor-pointer ml-1"
+              className={`p-1.5 rounded-xl cursor-pointer ml-1 ${
+                isLight ? 'text-slate-400 hover:text-slate-900 hover:bg-slate-200' : 'text-zinc-400 hover:text-white hover:bg-white/10'
+              }`}
             >
               <X size={18} />
             </button>
@@ -279,16 +285,22 @@ export default function WhiteboardModal({ isOpen, onClose, isLight }: Whiteboard
         </div>
 
         {/* Tools Bar + Canvas Container */}
-        <div className="flex-1 flex flex-col sm:flex-row min-h-0 relative overflow-hidden bg-slate-200 dark:bg-zinc-950">
+        <div className={`flex-1 flex flex-col sm:flex-row min-h-0 relative overflow-hidden ${isLight ? 'bg-slate-200' : 'bg-zinc-950'}`}>
           {/* Side Tool Palette */}
-          <div className="w-full sm:w-16 p-2 sm:p-3 bg-zinc-900 border-b sm:border-b-0 sm:border-r border-zinc-800 flex sm:flex-col items-center justify-between sm:justify-start gap-2 shrink-0 overflow-x-auto">
+          <div
+            className={`w-full sm:w-16 p-2 sm:p-3 border-b sm:border-b-0 sm:border-r flex sm:flex-col items-center justify-between sm:justify-start gap-2 shrink-0 overflow-x-auto ${
+              isLight ? 'bg-white border-slate-200' : 'bg-zinc-900 border-zinc-800'
+            }`}
+          >
             <div className="flex sm:flex-col items-center gap-2">
               <button
                 onClick={() => setActiveTool('pen')}
                 className={`p-2.5 rounded-xl transition-all cursor-pointer ${
                   activeTool === 'pen'
                     ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
-                    : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-400'
+                    : isLight
+                      ? 'bg-slate-100 hover:bg-slate-200 text-slate-500'
+                      : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-400'
                 }`}
                 title="Pen Tool"
               >
@@ -300,7 +312,9 @@ export default function WhiteboardModal({ isOpen, onClose, isLight }: Whiteboard
                 className={`p-2.5 rounded-xl transition-all cursor-pointer ${
                   activeTool === 'eraser'
                     ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
-                    : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-400'
+                    : isLight
+                      ? 'bg-slate-100 hover:bg-slate-200 text-slate-500'
+                      : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-400'
                 }`}
                 title="Eraser Tool"
               >
@@ -312,7 +326,9 @@ export default function WhiteboardModal({ isOpen, onClose, isLight }: Whiteboard
                 className={`p-2.5 rounded-xl transition-all cursor-pointer ${
                   activeTool === 'rect'
                     ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
-                    : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-400'
+                    : isLight
+                      ? 'bg-slate-100 hover:bg-slate-200 text-slate-500'
+                      : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-400'
                 }`}
                 title="Rectangle"
               >
@@ -324,7 +340,9 @@ export default function WhiteboardModal({ isOpen, onClose, isLight }: Whiteboard
                 className={`p-2.5 rounded-xl transition-all cursor-pointer ${
                   activeTool === 'circle'
                     ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
-                    : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-400'
+                    : isLight
+                      ? 'bg-slate-100 hover:bg-slate-200 text-slate-500'
+                      : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-400'
                 }`}
                 title="Circle"
               >
@@ -336,7 +354,9 @@ export default function WhiteboardModal({ isOpen, onClose, isLight }: Whiteboard
                 className={`p-2.5 rounded-xl transition-all cursor-pointer ${
                   activeTool === 'line'
                     ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
-                    : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-400'
+                    : isLight
+                      ? 'bg-slate-100 hover:bg-slate-200 text-slate-500'
+                      : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-400'
                 }`}
                 title="Line"
               >
@@ -348,7 +368,9 @@ export default function WhiteboardModal({ isOpen, onClose, isLight }: Whiteboard
                 className={`p-2.5 rounded-xl transition-all cursor-pointer ${
                   activeTool === 'text'
                     ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
-                    : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-400'
+                    : isLight
+                      ? 'bg-slate-100 hover:bg-slate-200 text-slate-500'
+                      : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-400'
                 }`}
                 title="Text Note"
               >
@@ -357,14 +379,18 @@ export default function WhiteboardModal({ isOpen, onClose, isLight }: Whiteboard
             </div>
 
             {/* Colors Palette */}
-            <div className="flex sm:flex-col items-center gap-1.5 pt-2 sm:pt-4 border-l sm:border-l-0 sm:border-t border-zinc-800">
+            <div className={`flex sm:flex-col items-center gap-1.5 pt-2 sm:pt-4 border-l sm:border-l-0 sm:border-t ${isLight ? 'border-slate-200' : 'border-zinc-800'}`}>
               {['#3b82f6', '#ef4444', '#10b981', '#8b5cf6', '#f59e0b', '#000000'].map((c) => (
                 <button
                   key={c}
                   onClick={() => setColor(c)}
                   style={{ backgroundColor: c }}
-                  className={`w-5 h-5 sm:w-6 sm:h-6 rounded-full cursor-pointer transition-transform ${
-                    color === c ? 'ring-2 ring-white scale-125' : 'opacity-80 hover:opacity-100'
+                  className={`w-5 h-5 sm:w-6 sm:h-6 rounded-full cursor-pointer transition-transform ring-offset-2 ${
+                    color === c
+                      ? isLight
+                        ? 'ring-2 ring-slate-900 ring-offset-white scale-125'
+                        : 'ring-2 ring-white ring-offset-zinc-900 scale-125'
+                      : 'opacity-80 hover:opacity-100'
                   }`}
                 />
               ))}
