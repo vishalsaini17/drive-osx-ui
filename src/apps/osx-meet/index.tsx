@@ -3387,7 +3387,15 @@ export default function MeetingApp() {
                         }`}
                       >
                         <div className="flex items-center gap-2.5 min-w-0">
-                          <img src={p.avatar} alt={p.name} className="w-8 h-8 rounded-full object-cover" />
+                          {p.avatar ? (
+                            <img src={p.avatar} alt={p.name} className="w-8 h-8 rounded-full object-cover shrink-0" />
+                          ) : (
+                            <div
+                              className={`w-8 h-8 rounded-full bg-gradient-to-tr ${p.bgGradient} flex items-center justify-center text-[10px] font-bold text-white shrink-0`}
+                            >
+                              {initials(p.name)}
+                            </div>
+                          )}
                           <div className="flex flex-col min-w-0">
                             <span className={`text-xs font-bold truncate flex items-center gap-1.5 ${isLight ? 'text-slate-800' : 'text-zinc-200'}`}>
                               <span className="truncate">{p.name}</span>
@@ -3463,7 +3471,15 @@ export default function MeetingApp() {
                           }`}
                         >
                           <div className="flex items-center gap-2.5 min-w-0">
-                            <img src={w.avatar} alt={w.name} className="w-8 h-8 rounded-full object-cover" />
+                            {w.avatar ? (
+                              <img src={w.avatar} alt={w.name} className="w-8 h-8 rounded-full object-cover shrink-0" />
+                            ) : (
+                              <div
+                                className={`w-8 h-8 rounded-full bg-gradient-to-tr ${gradientForId(w.id)} flex items-center justify-center text-[10px] font-bold text-white shrink-0`}
+                              >
+                                {initials(w.name)}
+                              </div>
+                            )}
                             <div className="flex flex-col min-w-0">
                               <span className={`text-xs font-bold truncate ${isLight ? 'text-slate-900' : 'text-white'}`}>{w.name}</span>
                               <span className={`text-[10px] ${isLight ? 'text-slate-500' : 'text-zinc-400'}`}>Waiting since {w.joinedAt}</span>
@@ -3724,21 +3740,27 @@ export default function MeetingApp() {
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => setShowReactionsMenu(false)} />
                     <div
-                      className={`absolute bottom-full left-1/2 -translate-x-1/2 mb-2 p-1.5 sm:p-2 rounded-2xl border shadow-xl grid grid-cols-4 gap-1 z-50 ${
+                      className={`absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-60 sm:w-64 p-2 rounded-2xl border shadow-xl z-50 ${
                         isLight ? 'bg-white border-slate-200' : 'bg-zinc-800 border-zinc-700'
                       }`}
                     >
-                      {['👏', '👍', '❤️', '🎉', '😂', '👋', '🔥', '💡'].map((emoji) => (
-                        <button
-                          key={emoji}
-                          onClick={() => handleSendReaction(emoji)}
-                          className={`p-1.5 text-lg rounded-xl cursor-pointer transition-transform hover:scale-125 ${
-                            isLight ? 'hover:bg-slate-100' : 'hover:bg-zinc-700'
-                          }`}
-                        >
-                          {emoji}
-                        </button>
-                      ))}
+                      <div className={`px-1 pb-1.5 text-[10px] font-bold uppercase tracking-wide ${isLight ? 'text-slate-400' : 'text-zinc-500'}`}>
+                        Reactions
+                      </div>
+                      <div className="grid grid-cols-4 gap-1">
+                        {['👏', '👍', '❤️', '🎉', '😂', '😮', '👋', '🔥', '💡', '🙌', '👀', '💯', '✅', '❌', '🤔', '😢'].map((emoji) => (
+                          <button
+                            key={emoji}
+                            onClick={() => handleSendReaction(emoji)}
+                            title={emoji}
+                            className={`w-11 h-11 sm:w-12 sm:h-12 flex items-center justify-center text-xl rounded-xl cursor-pointer transition-transform hover:scale-110 ${
+                              isLight ? 'hover:bg-slate-100' : 'hover:bg-zinc-700'
+                            }`}
+                          >
+                            {emoji}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   </>
                 )}
