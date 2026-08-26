@@ -1810,8 +1810,16 @@ export default function MeetingApp() {
   // rather than leaving the caller to find it again on the lobby.
   useEffect(() => {
     if (!pendingMeetingId) return;
-    const meetingId = consumePendingMeeting();
-    if (meetingId) void resumeMeeting(meetingId);
+    const pending = consumePendingMeeting();
+    if (pending) {
+      // A voice call hands off with the camera left off — accepting one
+      // shouldn't unexpectedly turn it on. A video call (or a plain "Today's
+      // Meetings" resume, which never sets this) keeps the usual camera-on
+      // default. The mic is always on either way.
+      setIsVideoOn(pending.video);
+      setIsMicOn(true);
+      void resumeMeeting(pending.id);
+    }
     // `resumeMeeting` is intentionally omitted: it's redefined every render
     // (it closes over plenty of state) and this effect must fire exactly
     // once per pending id, not on every one of those redefinitions.
@@ -2342,8 +2350,22 @@ export default function MeetingApp() {
                    </div>
                  )}
 
-                 {/* Camera & Noise Suppression Toggles */}
+                 {/* Mic, Camera & Noise Suppression Toggles */}
                  <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                   <button
+                     onClick={() => setIsMicOn(!isMicOn)}
+                     className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap ${
+                       isMicOn
+                         ? 'bg-blue-600 hover:bg-blue-500 text-white'
+                         : isLight
+                         ? 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                         : 'bg-white/10 hover:bg-white/15 text-white'
+                     }`}
+                   >
+                     {isMicOn ? <Mic size={13} /> : <MicOff size={13} />}
+                     <span>{isMicOn ? 'Microphone On' : 'Turn Microphone On'}</span>
+                   </button>
+
                    <button
                      onClick={() => {
                        setIsVideoOn(!isVideoOn);
@@ -2355,7 +2377,9 @@ export default function MeetingApp() {
                      className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap ${
                        isVideoOn
                          ? 'bg-blue-600 hover:bg-blue-500 text-white'
-                         : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300'
+                         : isLight
+                         ? 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                         : 'bg-white/10 hover:bg-white/15 text-white'
                      }`}
                    >
                      {isVideoOn ? <Video size={13} /> : <VideoOff size={13} />}
@@ -2384,7 +2408,9 @@ export default function MeetingApp() {
                      className={`px-2.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1 cursor-pointer transition-colors ${
                        isNoiseSuppressionOn
                          ? 'bg-emerald-600 text-white'
-                         : 'bg-zinc-800 text-zinc-400'
+                         : isLight
+                         ? 'bg-slate-100 hover:bg-slate-200 text-slate-500'
+                         : 'bg-white/10 hover:bg-white/15 text-zinc-400'
                      }`}
                      title="Toggle Noise Suppression"
                    >
@@ -2636,7 +2662,9 @@ export default function MeetingApp() {
                      onClick={() => setIsMicOn(!isMicOn)}
                      className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors ${
                        isMicOn
-                         ? 'bg-zinc-800 hover:bg-zinc-700 text-white'
+                         ? isLight
+                           ? 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                           : 'bg-zinc-800 hover:bg-zinc-700 text-white'
                          : 'bg-red-500 hover:bg-red-600 text-white'
                      }`}
                    >
@@ -2651,7 +2679,9 @@ export default function MeetingApp() {
                      }}
                      className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors ${
                        isVideoOn
-                         ? 'bg-zinc-800 hover:bg-zinc-700 text-white'
+                         ? isLight
+                           ? 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                           : 'bg-zinc-800 hover:bg-zinc-700 text-white'
                          : 'bg-red-500 hover:bg-red-600 text-white'
                      }`}
                    >
@@ -2678,7 +2708,7 @@ export default function MeetingApp() {
                  </div>
 
                  <div className="flex flex-col gap-1.5">
-                   <span className="text-[11px] font-bold text-zinc-400 uppercase tracking-wide">Camera</span>
+                   <span className={`text-[11px] font-bold uppercase tracking-wide ${isLight ? 'text-slate-400' : 'text-zinc-500'}`}>Camera</span>
                    <select
                      value={selectedVideoDeviceId}
                      onChange={(e) => setSelectedVideoDeviceId(e.target.value)}
@@ -2693,7 +2723,7 @@ export default function MeetingApp() {
                  </div>
 
                  <div className="flex flex-col gap-1.5">
-                   <span className="text-[11px] font-bold text-zinc-400 uppercase tracking-wide">Microphone</span>
+                   <span className={`text-[11px] font-bold uppercase tracking-wide ${isLight ? 'text-slate-400' : 'text-zinc-500'}`}>Microphone</span>
                    <select
                      value={selectedAudioDeviceId}
                      onChange={(e) => setSelectedAudioDeviceId(e.target.value)}
@@ -2752,9 +2782,11 @@ export default function MeetingApp() {
                </button>
                <button
                  onClick={handleCopyLink}
-                 className="px-4 py-3 rounded-xl text-sm font-bold bg-zinc-800 hover:bg-zinc-700 text-white cursor-pointer transition-colors flex items-center justify-center gap-2"
+                 className={`px-4 py-3 rounded-xl text-sm font-bold cursor-pointer transition-colors flex items-center justify-center gap-2 ${
+                   isLight ? 'bg-slate-100 hover:bg-slate-200 text-slate-700' : 'bg-zinc-800 hover:bg-zinc-700 text-white'
+                 }`}
                >
-                 {isCopied ? <Check size={16} className="text-emerald-400" /> : <Copy size={16} />}
+                 {isCopied ? <Check size={16} className="text-emerald-500" /> : <Copy size={16} />}
                  {isCopied ? 'Copied' : 'Copy Link'}
                </button>
                <button
@@ -2762,7 +2794,9 @@ export default function MeetingApp() {
                    stopLocalMedia();
                    setActiveTab('lobby');
                  }}
-                 className="px-4 py-3 rounded-xl text-sm font-bold bg-zinc-800 hover:bg-zinc-700 text-zinc-300 cursor-pointer transition-colors"
+                 className={`px-4 py-3 rounded-xl text-sm font-bold cursor-pointer transition-colors ${
+                   isLight ? 'bg-slate-100 hover:bg-slate-200 text-slate-600' : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300'
+                 }`}
                >
                  Back
                </button>
@@ -2808,7 +2842,7 @@ export default function MeetingApp() {
 
           {/* Top Bar: Title & Code & Link Copy & Security/Rec Status */}
           <div
-            className={`h-12 px-3 sm:px-4 flex items-center justify-between border-b shrink-0 z-10 gap-2 ${palette.topBarBg} ${palette.topBarBorder}`}
+            className={`h-14 px-3 sm:px-5 flex items-center justify-between border-b shrink-0 z-10 gap-2 shadow-sm ${palette.topBarBg} ${palette.topBarBorder}`}
           >
             <div className="flex items-center gap-2 sm:gap-3 min-w-0">
               <span className={`font-bold text-xs sm:text-sm tracking-tight truncate max-w-[120px] sm:max-w-[200px] md:max-w-xs ${palette.text}`}>
@@ -3181,7 +3215,7 @@ export default function MeetingApp() {
               >
                 {/* Drawer Header */}
                 <div
-                  className={`h-12 px-4 flex items-center justify-between border-b shrink-0 ${
+                  className={`h-14 px-4 flex items-center justify-between border-b shrink-0 ${
                     isLight ? 'border-slate-200' : 'border-zinc-800'
                   }`}
                 >
@@ -3672,7 +3706,7 @@ export default function MeetingApp() {
             <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
               <button
                 onClick={() => setMicEnabled(!isMicOn)}
-                className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl flex items-center justify-center transition-all cursor-pointer ${
+                className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl flex items-center justify-center transition-all cursor-pointer hover:scale-105 active:scale-95 ${
                   isMicOn
                     ? `${palette.controlButtonIdle} ${palette.controlButtonIdleHover}`
                     : palette.controlButtonActive
@@ -3697,7 +3731,7 @@ export default function MeetingApp() {
                     requestCameraAccess(selectedVideoDeviceId || undefined);
                   }
                 }}
-                className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl flex items-center justify-center transition-all cursor-pointer ${
+                className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl flex items-center justify-center transition-all cursor-pointer hover:scale-105 active:scale-95 ${
                   isVideoOn
                     ? `${palette.controlButtonIdle} ${palette.controlButtonIdleHover}`
                     : palette.controlButtonActive
@@ -3713,7 +3747,7 @@ export default function MeetingApp() {
                     setIsVideoOn(true);
                     setUseVirtualCam(!useVirtualCam);
                   }}
-                  className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl flex items-center justify-center transition-all cursor-pointer ${
+                  className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl flex items-center justify-center transition-all cursor-pointer hover:scale-105 active:scale-95 ${
                     useVirtualCam ? 'bg-indigo-600 text-white' : `${palette.controlButtonIdle} ${palette.controlButtonIdleHover}`
                   }`}
                   title={useVirtualCam ? 'Switch to Physical Camera' : 'Switch to Virtual Studio Cam'}
@@ -3723,12 +3757,14 @@ export default function MeetingApp() {
               )}
             </div>
 
+            <div className={`hidden sm:block w-px h-6 mx-0.5 shrink-0 ${isLight ? 'bg-slate-200' : 'bg-white/10'}`} />
+
             {/* Center: presentation, captions, hand, reactions, leave */}
             <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
               <div className="relative">
                 <button
                   onClick={() => setShowReactionsMenu(!showReactionsMenu)}
-                  className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl cursor-pointer transition-colors ${
+                  className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl cursor-pointer transition-colors hover:scale-105 active:scale-95 ${
                     showReactionsMenu ? palette.controlButtonActive : `${palette.controlButtonIdle} ${palette.controlButtonIdleHover}`
                   }`}
                   title="Send a reaction"
@@ -3772,7 +3808,7 @@ export default function MeetingApp() {
                     if (isScreenSharing) toggleScreenShare();
                     else setShowScreenShareMenu((prev) => !prev);
                   }}
-                  className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl transition-all cursor-pointer ${
+                  className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl transition-all cursor-pointer hover:scale-105 active:scale-95 ${
                     isScreenSharing
                       ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20'
                       : `${palette.controlButtonIdle} ${palette.controlButtonIdleHover}`
@@ -3818,7 +3854,7 @@ export default function MeetingApp() {
 
               <button
                 onClick={() => setCaptionsOn((prev) => !prev)}
-                className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl transition-all cursor-pointer ${
+                className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl transition-all cursor-pointer hover:scale-105 active:scale-95 ${
                   captionsOn ? 'bg-blue-600 text-white' : `${palette.controlButtonIdle} ${palette.controlButtonIdleHover}`
                 }`}
                 title={
@@ -3836,7 +3872,7 @@ export default function MeetingApp() {
 
               <button
                 onClick={handleToggleHand}
-                className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl transition-all cursor-pointer ${
+                className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl transition-all cursor-pointer hover:scale-105 active:scale-95 ${
                   isHandRaised ? 'bg-amber-500 text-white' : `${palette.controlButtonIdle} ${palette.controlButtonIdleHover}`
                 }`}
                 title={isHandRaised ? 'Lower hand (Ctrl+Alt+H)' : 'Raise hand (Ctrl+Alt+H)'}
@@ -3848,7 +3884,7 @@ export default function MeetingApp() {
               <div className="relative">
                 <button
                   onClick={() => setShowMoreMenu((prev) => !prev)}
-                  className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl cursor-pointer transition-colors ${
+                  className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl cursor-pointer transition-colors hover:scale-105 active:scale-95 ${
                     showMoreMenu ? palette.controlButtonActive : `${palette.controlButtonIdle} ${palette.controlButtonIdleHover}`
                   }`}
                   title="More options"
@@ -3941,7 +3977,7 @@ export default function MeetingApp() {
 
               <button
                 onClick={handleEndCall}
-                className="px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl sm:rounded-2xl bg-red-600 hover:bg-red-500 text-white font-bold flex items-center gap-1.5 shadow-lg shadow-red-600/30 cursor-pointer transition-colors ml-1"
+                className="px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl sm:rounded-2xl bg-red-600 hover:bg-red-500 text-white font-bold flex items-center gap-1.5 shadow-lg shadow-red-600/30 cursor-pointer transition-all hover:scale-105 active:scale-95 ml-1"
                 title="Leave meeting"
               >
                 <PhoneOff size={isVeryCompact ? 16 : 18} />
@@ -3949,11 +3985,13 @@ export default function MeetingApp() {
               </button>
             </div>
 
+            <div className={`hidden sm:block w-px h-6 mx-0.5 shrink-0 ${isLight ? 'bg-slate-200' : 'bg-white/10'}`} />
+
             {/* Right: panels. Chat and people stay reachable at every size. */}
             <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
               <button
                 onClick={() => setActiveSideDrawer(activeSideDrawer === 'chat' ? null : 'chat')}
-                className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl cursor-pointer transition-colors ${
+                className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl cursor-pointer transition-colors hover:scale-105 active:scale-95 ${
                   activeSideDrawer === 'chat' ? 'bg-blue-600 text-white' : `${palette.controlButtonIdle} ${palette.controlButtonIdleHover}`
                 }`}
                 title="Chat with everyone (Ctrl+Alt+C)"
@@ -3963,7 +4001,7 @@ export default function MeetingApp() {
 
               <button
                 onClick={() => setActiveSideDrawer(activeSideDrawer === 'people' ? null : 'people')}
-                className={`relative p-2 sm:p-2.5 rounded-xl sm:rounded-2xl cursor-pointer transition-colors ${
+                className={`relative p-2 sm:p-2.5 rounded-xl sm:rounded-2xl cursor-pointer transition-colors hover:scale-105 active:scale-95 ${
                   activeSideDrawer === 'people' ? 'bg-blue-600 text-white' : `${palette.controlButtonIdle} ${palette.controlButtonIdleHover}`
                 }`}
                 title="Show everyone"
@@ -3979,7 +4017,7 @@ export default function MeetingApp() {
               {!isCompact && (
                 <button
                   onClick={() => setActiveSideDrawer(activeSideDrawer === 'activities' ? null : 'activities')}
-                  className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl cursor-pointer transition-colors ${
+                  className={`p-2 sm:p-2.5 rounded-xl sm:rounded-2xl cursor-pointer transition-colors hover:scale-105 active:scale-95 ${
                     activeSideDrawer === 'activities' ? 'bg-blue-600 text-white' : `${palette.controlButtonIdle} ${palette.controlButtonIdleHover}`
                   }`}
                   title="Activities"

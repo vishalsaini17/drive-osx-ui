@@ -10,6 +10,39 @@ interface SecurityModalProps {
   isLight?: boolean;
 }
 
+/** A switch, not a checkbox — these all read as feature toggles ("Lock
+ *  Meeting", "Allow Participants To: ...") rather than form fields, so the
+ *  control should look like the setting it flips. */
+function ToggleSwitch({
+  checked,
+  onChange,
+  isLight,
+  accent = 'bg-blue-500',
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  isLight?: boolean;
+  accent?: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className={`relative w-9 h-5 rounded-full shrink-0 cursor-pointer transition-colors duration-200 ${
+        checked ? accent : isLight ? 'bg-slate-300' : 'bg-zinc-600'
+      }`}
+    >
+      <span
+        className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform duration-200 ${
+          checked ? 'translate-x-4' : 'translate-x-0'
+        }`}
+      />
+    </button>
+  );
+}
+
 export default function SecurityModal({
   isOpen,
   onClose,
@@ -60,11 +93,11 @@ export default function SecurityModal({
                   <span className={`text-[10px] ${isLight ? 'text-slate-500' : 'text-zinc-400'}`}>Prevent any new participants from joining</span>
                 </div>
               </div>
-              <input
-                type="checkbox"
+              <ToggleSwitch
                 checked={settings.isLocked}
-                onChange={(e) => onUpdateSettings({ isLocked: e.target.checked })}
-                className="w-4 h-4 accent-amber-500 cursor-pointer"
+                onChange={(checked) => onUpdateSettings({ isLocked: checked })}
+                isLight={isLight}
+                accent="bg-amber-500"
               />
             </div>
 
@@ -77,11 +110,11 @@ export default function SecurityModal({
                   <span className={`text-[10px] ${isLight ? 'text-slate-500' : 'text-zinc-400'}`}>Host must manually approve participants</span>
                 </div>
               </div>
-              <input
-                type="checkbox"
+              <ToggleSwitch
                 checked={settings.waitingRoomEnabled}
-                onChange={(e) => onUpdateSettings({ waitingRoomEnabled: e.target.checked })}
-                className="w-4 h-4 accent-emerald-500 cursor-pointer"
+                onChange={(checked) => onUpdateSettings({ waitingRoomEnabled: checked })}
+                isLight={isLight}
+                accent="bg-emerald-500"
               />
             </div>
 
@@ -105,7 +138,8 @@ export default function SecurityModal({
             <span className={`text-[11px] font-bold uppercase tracking-wider ${isLight ? 'text-slate-500' : 'text-zinc-400'}`}>Allow Participants To:</span>
 
             <div className="grid grid-cols-2 gap-2">
-              <label
+              <div
+                onClick={() => onUpdateSettings({ allowScreenShare: !settings.allowScreenShare })}
                 className={`flex items-center justify-between p-2.5 rounded-xl border cursor-pointer ${
                   isLight ? 'bg-slate-50 border-slate-200 hover:bg-slate-100' : 'bg-zinc-800/40 border-zinc-700/50 hover:bg-zinc-800/80'
                 }`}
@@ -114,15 +148,16 @@ export default function SecurityModal({
                   <Monitor size={13} className="text-blue-500" />
                   <span className={`text-xs font-medium ${isLight ? 'text-slate-700' : 'text-zinc-300'}`}>Share Screen</span>
                 </div>
-                <input
-                  type="checkbox"
+                <ToggleSwitch
                   checked={settings.allowScreenShare}
-                  onChange={(e) => onUpdateSettings({ allowScreenShare: e.target.checked })}
-                  className="accent-blue-500"
+                  onChange={(checked) => onUpdateSettings({ allowScreenShare: checked })}
+                  isLight={isLight}
+                  accent="bg-blue-500"
                 />
-              </label>
+              </div>
 
-              <label
+              <div
+                onClick={() => onUpdateSettings({ allowChat: !settings.allowChat })}
                 className={`flex items-center justify-between p-2.5 rounded-xl border cursor-pointer ${
                   isLight ? 'bg-slate-50 border-slate-200 hover:bg-slate-100' : 'bg-zinc-800/40 border-zinc-700/50 hover:bg-zinc-800/80'
                 }`}
@@ -131,15 +166,16 @@ export default function SecurityModal({
                   <MessageSquare size={13} className="text-purple-500" />
                   <span className={`text-xs font-medium ${isLight ? 'text-slate-700' : 'text-zinc-300'}`}>Send Chat</span>
                 </div>
-                <input
-                  type="checkbox"
+                <ToggleSwitch
                   checked={settings.allowChat}
-                  onChange={(e) => onUpdateSettings({ allowChat: e.target.checked })}
-                  className="accent-purple-500"
+                  onChange={(checked) => onUpdateSettings({ allowChat: checked })}
+                  isLight={isLight}
+                  accent="bg-purple-500"
                 />
-              </label>
+              </div>
 
-              <label
+              <div
+                onClick={() => onUpdateSettings({ allowUnmute: !settings.allowUnmute })}
                 className={`flex items-center justify-between p-2.5 rounded-xl border cursor-pointer ${
                   isLight ? 'bg-slate-50 border-slate-200 hover:bg-slate-100' : 'bg-zinc-800/40 border-zinc-700/50 hover:bg-zinc-800/80'
                 }`}
@@ -148,15 +184,16 @@ export default function SecurityModal({
                   <Mic size={13} className="text-emerald-500" />
                   <span className={`text-xs font-medium ${isLight ? 'text-slate-700' : 'text-zinc-300'}`}>Unmute Self</span>
                 </div>
-                <input
-                  type="checkbox"
+                <ToggleSwitch
                   checked={settings.allowUnmute}
-                  onChange={(e) => onUpdateSettings({ allowUnmute: e.target.checked })}
-                  className="accent-emerald-500"
+                  onChange={(checked) => onUpdateSettings({ allowUnmute: checked })}
+                  isLight={isLight}
+                  accent="bg-emerald-500"
                 />
-              </label>
+              </div>
 
-              <label
+              <div
+                onClick={() => onUpdateSettings({ allowRecording: !settings.allowRecording })}
                 className={`flex items-center justify-between p-2.5 rounded-xl border cursor-pointer ${
                   isLight ? 'bg-slate-50 border-slate-200 hover:bg-slate-100' : 'bg-zinc-800/40 border-zinc-700/50 hover:bg-zinc-800/80'
                 }`}
@@ -165,13 +202,13 @@ export default function SecurityModal({
                   <Disc size={13} className="text-red-500" />
                   <span className={`text-xs font-medium ${isLight ? 'text-slate-700' : 'text-zinc-300'}`}>Record Call</span>
                 </div>
-                <input
-                  type="checkbox"
+                <ToggleSwitch
                   checked={settings.allowRecording}
-                  onChange={(e) => onUpdateSettings({ allowRecording: e.target.checked })}
-                  className="accent-red-500"
+                  onChange={(checked) => onUpdateSettings({ allowRecording: checked })}
+                  isLight={isLight}
+                  accent="bg-red-500"
                 />
-              </label>
+              </div>
             </div>
           </div>
         </div>

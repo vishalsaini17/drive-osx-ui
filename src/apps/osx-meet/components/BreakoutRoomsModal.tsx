@@ -9,6 +9,28 @@ interface BreakoutRoomsModalProps {
   isLight?: boolean;
 }
 
+/** Mirrors the fallback in `index.tsx`'s `AvatarBadge` — a participant with
+ *  no avatar image gets their initials instead of a broken `<img>`. */
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '?';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+function RoomMemberAvatar({ participant }: { participant: Participant }) {
+  if (participant.avatar) {
+    return <img src={participant.avatar} alt={participant.name} className="w-5 h-5 rounded-full object-cover shrink-0" />;
+  }
+  return (
+    <div
+      className={`w-5 h-5 rounded-full bg-gradient-to-tr ${participant.bgGradient} flex items-center justify-center text-[8px] font-bold text-white shrink-0`}
+    >
+      {initials(participant.name)}
+    </div>
+  );
+}
+
 export default function BreakoutRoomsModal({
   isOpen,
   onClose,
@@ -148,7 +170,7 @@ export default function BreakoutRoomsModal({
                           if (!p) return null;
                           return (
                             <div key={p.id} className={`flex items-center gap-2 text-xs ${isLight ? 'text-slate-700' : 'text-zinc-300'}`}>
-                              <img src={p.avatar} alt={p.name} className="w-5 h-5 rounded-full object-cover" />
+                              <RoomMemberAvatar participant={p} />
                               <span className="truncate">{p.name}</span>
                             </div>
                           );
@@ -221,7 +243,7 @@ export default function BreakoutRoomsModal({
                         if (!p) return null;
                         return (
                           <div key={p.id} className={`flex items-center gap-2 text-xs ${isLight ? 'text-slate-700' : 'text-zinc-300'}`}>
-                            <img src={p.avatar} alt={p.name} className="w-5 h-5 rounded-full object-cover" />
+                            <RoomMemberAvatar participant={p} />
                             <span className="truncate">{p.name}</span>
                           </div>
                         );

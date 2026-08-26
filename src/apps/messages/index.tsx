@@ -1137,7 +1137,7 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
           ? `Call started — meeting code ${meeting.meetingCode} copied to clipboard`
           : `Call started — meeting code ${meeting.meetingCode}`,
       );
-      openMeeting(meeting.id);
+      openMeeting(meeting.id, { video: kind === 'video' });
     } catch (error) {
       setPanelError(describeError(error));
     } finally {
@@ -2658,7 +2658,7 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                                   </div>
                                 </div>
                                 <button
-                                  onClick={() => openMeeting(callInvite.meetingCode)}
+                                  onClick={() => openMeeting(callInvite.meetingCode, { video: callInvite.kind === 'video' })}
                                   className="shrink-0 px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-[11px] font-bold cursor-pointer transition-colors"
                                 >
                                   Join

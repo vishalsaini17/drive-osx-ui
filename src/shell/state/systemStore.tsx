@@ -155,10 +155,18 @@ interface SystemState {
    * solves for Messenger.
    */
   pendingMeetingId: string | null;
+  /**
+   * Whether the pending meeting should join with the camera on.
+   *
+   * A voice call defaults this to `false` (mic only) so accepting one doesn't
+   * unexpectedly turn the camera on; a video call — and anything else that
+   * doesn't say — keeps the camera on.
+   */
+  pendingMeetingVideo: boolean;
   /** Opens Meet and asks it to join this meeting. */
-  openMeeting: (meetingId: string) => void;
+  openMeeting: (meetingId: string, options?: { video?: boolean }) => void;
   /** Reads and clears the target, so it is acted on exactly once. */
-  consumePendingMeeting: () => string | null;
+  consumePendingMeeting: () => { id: string; video: boolean } | null;
 
   // Actions
   initializeStore: () => void;
@@ -533,18 +541,21 @@ export const useSystemStore = create<SystemState>((set, get) => ({
   },
 
   pendingMeetingId: null,
+  pendingMeetingVideo: true,
 
-  openMeeting: (meetingId: string) => {
+  openMeeting: (meetingId: string, options) => {
     // Order matters: the target is set before the window opens, so Meet
     // already has it on its first render rather than showing the lobby.
-    set({ pendingMeetingId: meetingId });
+    set({ pendingMeetingId: meetingId, pendingMeetingVideo: options?.video ?? true });
     get().openAppWindow('meeting');
   },
 
   consumePendingMeeting: () => {
     const pending = get().pendingMeetingId;
-    if (pending) set({ pendingMeetingId: null });
-    return pending;
+    if (!pending) return null;
+    const video = get().pendingMeetingVideo;
+    set({ pendingMeetingId: null, pendingMeetingVideo: true });
+    return { id: pending, video };
   },
 
   addNotification: (notification) => {

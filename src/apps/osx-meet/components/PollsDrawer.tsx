@@ -62,7 +62,7 @@ export default function PollsDrawer({
       }`}
     >
       {/* Header */}
-      <div className={`h-12 px-4 flex items-center justify-between border-b shrink-0 ${isLight ? 'border-slate-200' : 'border-white/10'}`}>
+      <div className={`h-14 px-4 flex items-center justify-between border-b shrink-0 ${isLight ? 'border-slate-200' : 'border-white/10'}`}>
         <div className="flex items-center gap-2">
           <BarChart2 size={16} className="text-amber-500" />
           <span className="font-bold text-sm">Meeting Polls</span>
