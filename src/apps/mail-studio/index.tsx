@@ -60,6 +60,13 @@ import {
   MoreVertical,
   RefreshCw
 } from 'lucide-react';
+import { useEditor, EditorContent } from '@tiptap/react';
+import StarterKit from '@tiptap/starter-kit';
+import TiptapUnderline from '@tiptap/extension-underline';
+import TiptapLink from '@tiptap/extension-link';
+import TiptapImage from '@tiptap/extension-image';
+import { Table as TiptapTable, TableRow as TiptapTableRow, TableHeader as TiptapTableHeader, TableCell as TiptapTableCell } from '@tiptap/extension-table';
+import DOMPurify from 'dompurify';
 import { useSystemStore } from '../../shell/state/systemStore';
 import { useAppTheme } from '../../platform/theme/useAppTheme';
 import AppShell from '../../design-system/components/AppShell';
@@ -73,6 +80,24 @@ import { TaskModal } from './components/TaskModal';
 import { RulesModal } from './components/RulesModal';
 import { ContactsModal } from './components/ContactsModal';
 import { CustomFolderModal } from './components/CustomFolderModal';
+
+/** Escapes plain text and turns line breaks into <br> so it is safe to drop into the rich editor. */
+function textToEditorHtml(text: string): string {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return `<p>${div.innerHTML.replace(/\n/g, '<br>')}</p>`;
+}
+
+const MAIL_EDITOR_EXTENSIONS = [
+  StarterKit,
+  TiptapUnderline,
+  TiptapLink.configure({ openOnClick: false, autolink: true }),
+  TiptapImage,
+  TiptapTable.configure({ resizable: false }),
+  TiptapTableRow,
+  TiptapTableHeader,
+  TiptapTableCell,
+];
 
 export default function MailApp() {
   const isLight = !useAppTheme('mail').isDark;
@@ -131,6 +156,7 @@ export default function MailApp() {
           subject: e.subject || '(No Subject)',
           preview: (e.body || '').slice(0, 120) || 'No preview',
           body: e.body || '',
+          bodyHtml: e.bodyHtml ?? null,
           timestamp: e.timestamp || new Date(e.createdAt).toLocaleString(),
           dateISO: e.dateISO || e.createdAt || new Date().toISOString(),
           folder: e.folder || 'inbox',
@@ -186,6 +212,7 @@ export default function MailApp() {
   const [showCcBcc, setShowCcBcc] = useState<boolean>(false);
   const [composeSubject, setComposeSubject] = useState<string>('');
   const [composeBody, setComposeBody] = useState<string>('');
+  const [composeBodyHtml, setComposeBodyHtml] = useState<string>('');
   const [priority, setPriority] = useState<'normal' | 'high' | 'low'>('normal');
   const [attachments, setAttachments] = useState<EmailAttachment[]>([]);
   const [includeSignature, setIncludeSignature] = useState<boolean>(true);
@@ -208,7 +235,30 @@ export default function MailApp() {
   const [isCustomFolderModalOpen, setIsCustomFolderModalOpen] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Rich text compose editor. Kept mounted for the app's whole lifetime (not
+  // just while isComposing is true) so reply/forward/draft-load can push
+  // content into it with a plain command call, no mount-timing dance.
+  const editor = useEditor({
+    extensions: MAIL_EDITOR_EXTENSIONS,
+    content: '',
+    onUpdate: ({ editor: instance }) => {
+      setComposeBody(instance.getText());
+      setComposeBodyHtml(instance.getHTML());
+    },
+  });
+
+  /** Replaces the editor's content and keeps composeBody/composeBodyHtml in sync. */
+  const setEditorContent = (html: string) => {
+    if (editor) {
+      editor.commands.setContent(html);
+      setComposeBody(editor.getText());
+      setComposeBodyHtml(editor.getHTML());
+    } else {
+      setComposeBody(html.replace(/<[^>]+>/g, ''));
+      setComposeBodyHtml(html);
+    }
+  };
 
   // Auto-Save Draft Debounce Timer
   useEffect(() => {
@@ -306,28 +356,59 @@ export default function MailApp() {
 
   const handleSelectEmail = (id: string) => {
     setSelectedEmailId(id);
-    setEmails((prev) =>
-      prev.map((e) => (e.id === id ? { ...e, isUnread: false } : e))
-    );
     if (isCompact) setCompactView('reader');
+
+    const target = emails.find((e) => e.id === id);
+    if (!target || !target.isUnread || target.id.startsWith('draft-') || target.id.startsWith('sent-')) return;
+
+    // Optimistic: the reader should feel instant. If the persist call fails,
+    // the row goes back to unread rather than silently keeping a state the
+    // server never agreed to (CLAUDE.md §36 — errors must be explicit).
+    setEmails((prev) => prev.map((e) => (e.id === id ? { ...e, isUnread: false } : e)));
+    ApiService.markMailRead(id).then((result) => {
+      if (!result.success) {
+        setEmails((prev) => prev.map((e) => (e.id === id ? { ...e, isUnread: true } : e)));
+        showToast(result.message || 'Could not mark this message as read.');
+      }
+    });
   };
 
   const toggleStar = (id: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
+    if (id.startsWith('draft-') || id.startsWith('sent-')) return;
+
     setEmails((prev) =>
       prev.map((item) => (item.id === id ? { ...item, isStarred: !item.isStarred } : item))
     );
+    ApiService.toggleMailStar(id).then((result) => {
+      if (!result.success) {
+        setEmails((prev) => prev.map((item) => (item.id === id ? { ...item, isStarred: !item.isStarred } : item)));
+        showToast(result.message || 'Could not update the star.');
+      }
+    });
   };
 
   const togglePin = (id: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
+    if (id.startsWith('draft-') || id.startsWith('sent-')) return;
+
     setEmails((prev) =>
       prev.map((item) => (item.id === id ? { ...item, isPinned: !item.isPinned } : item))
     );
     showToast('Updated pin status');
+    ApiService.toggleMailPin(id).then((result) => {
+      if (!result.success) {
+        setEmails((prev) => prev.map((item) => (item.id === id ? { ...item, isPinned: !item.isPinned } : item)));
+        showToast(result.message || 'Could not update the pin.');
+      }
+    });
   };
 
+  const BACKEND_FOLDERS = ['inbox', 'sent', 'drafts', 'trash', 'spam', 'archive'];
+
   const handleMoveFolder = (id: string, targetFolder: FolderType) => {
+    const previousFolder = emails.find((item) => item.id === id)?.folder;
+
     setEmails((prev) =>
       prev.map((item) => (item.id === id ? { ...item, folder: targetFolder } : item))
     );
@@ -335,6 +416,17 @@ export default function MailApp() {
     if (selectedEmailId === id) {
       handleCloseEmail();
     }
+
+    // Custom folders are a client-only concept; the server only knows the
+    // standard set, so there is nothing to persist for the rest.
+    if (!BACKEND_FOLDERS.includes(targetFolder) || id.startsWith('draft-') || id.startsWith('sent-')) return;
+
+    ApiService.moveMailToFolder(id, targetFolder).then((result) => {
+      if (!result.success && previousFolder) {
+        setEmails((prev) => prev.map((item) => (item.id === id ? { ...item, folder: previousFolder } : item)));
+        showToast(result.message || 'Could not move the message.');
+      }
+    });
   };
 
   const handleBlockSender = (emailAddress: string) => {
@@ -350,7 +442,7 @@ export default function MailApp() {
     setComposeTo(email.senderEmail);
     if (isAll && email.ccEmail) setComposeCc(email.ccEmail);
     setComposeSubject(email.subject.startsWith('Re:') ? email.subject : `Re: ${email.subject}`);
-    setComposeBody(`\n\n---\nOn ${new Date(email.dateISO).toLocaleString()}, ${email.senderName} <${email.senderEmail}> wrote:\n> ${email.body.replace(/\n/g, '\n> ')}`);
+    setEditorContent(textToEditorHtml(`\n\n---\nOn ${new Date(email.dateISO).toLocaleString()}, ${email.senderName} <${email.senderEmail}> wrote:\n> ${email.body.replace(/\n/g, '\n> ')}`));
     if (isCompact) setCompactView('reader');
   };
 
@@ -358,7 +450,7 @@ export default function MailApp() {
     setIsComposing(true);
     setComposeTo('');
     setComposeSubject(email.subject.startsWith('Fwd:') ? email.subject : `Fwd: ${email.subject}`);
-    setComposeBody(`\n\n---------- Forwarded message ---------\nFrom: ${email.senderName} <${email.senderEmail}>\nSubject: ${email.subject}\nDate: ${email.timestamp}\n\n${email.body}`);
+    setEditorContent(textToEditorHtml(`\n\n---------- Forwarded message ---------\nFrom: ${email.senderName} <${email.senderEmail}>\nSubject: ${email.subject}\nDate: ${email.timestamp}\n\n${email.body}`));
     if (email.attachments) {
       setAttachments(email.attachments);
     }
@@ -369,7 +461,7 @@ export default function MailApp() {
     setIsComposing(true);
     setComposeTo('');
     setComposeSubject(`Fwd: [Attachment] ${email.subject}`);
-    setComposeBody(`Please find the attached raw message file (.eml) for "${email.subject}".`);
+    setEditorContent(textToEditorHtml(`Please find the attached raw message file (.eml) for "${email.subject}".`));
     const emlAttachment: EmailAttachment = {
       id: `eml-${Date.now()}`,
       name: `${email.subject.slice(0, 20)}.eml`,
@@ -430,7 +522,7 @@ export default function MailApp() {
     setComposeBcc('');
     setShowCcBcc(false);
     setComposeSubject('');
-    setComposeBody('');
+    setEditorContent('');
     setPriority('normal');
     setAttachments([]);
     setAutoSaveStatus('');
@@ -469,43 +561,25 @@ export default function MailApp() {
     }
   };
 
-  const applyTextFormatting = (prefix: string, suffix: string = '') => {
-    if (!textareaRef.current) {
-      setComposeBody((prev) => prev + `${prefix}text${suffix}`);
-      return;
-    }
-    const start = textareaRef.current.selectionStart;
-    const end = textareaRef.current.selectionEnd;
-    const currentVal = composeBody;
-    const selectedText = currentVal.substring(start, end) || 'text';
-    const replacement = `${prefix}${selectedText}${suffix}`;
-    const newVal = currentVal.substring(0, start) + replacement + currentVal.substring(end);
-    setComposeBody(newVal);
-
-    setTimeout(() => {
-      if (textareaRef.current) {
-        textareaRef.current.focus();
-        textareaRef.current.setSelectionRange(start + prefix.length, start + prefix.length + selectedText.length);
-      }
-    }, 30);
-  };
-
   const handleInsertTable = () => {
-    const tableSnippet = `\n| Item | Description | Quantity |\n|---|---|---|\n| Task 1 | Deliverable review | 1 |\n| Task 2 | Documentation | 2 |\n`;
-    setComposeBody((prev) => prev + tableSnippet);
+    editor?.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run();
   };
 
   const handleInsertHyperlink = () => {
     const url = prompt('Enter link URL (e.g. https://drive-osx.local):', 'https://');
-    if (url) {
-      applyTextFormatting('[', `](${url})`);
+    if (!url || !editor) return;
+
+    if (editor.state.selection.empty) {
+      editor.chain().focus().insertContent(`<a href="${url}">${url}</a>`).run();
+    } else {
+      editor.chain().focus().extendMarkRange('link').setLink({ href: url }).run();
     }
   };
 
   const handleInsertImage = () => {
     const imgUrl = prompt('Enter image URL or path:', 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=600');
     if (imgUrl) {
-      setComposeBody((prev) => prev + `\n![Image](${imgUrl})\n`);
+      editor?.chain().focus().setImage({ src: imgUrl }).run();
     }
   };
 
@@ -523,6 +597,7 @@ export default function MailApp() {
       subject: composeSubject ? `[Draft] ${composeSubject}` : '[Draft] (No subject)',
       preview: composeBody.slice(0, 80) || 'Empty draft body...',
       body: composeBody,
+      bodyHtml: composeBodyHtml,
       timestamp: 'Draft',
       dateISO: new Date().toISOString(),
       folder: 'drafts',
@@ -544,10 +619,14 @@ export default function MailApp() {
       return;
     }
 
-    let finalBody = composeBody;
-    if (includeSignature) {
-      finalBody += `\n\n--\nBest regards,\n${currentUser?.fullName || 'Vishal Saini'}\nProduct Engineer | Drive OSX Mail Studio`;
-    }
+    const signaturePlain = `\n\n--\nBest regards,\n${currentUser?.fullName || 'Vishal Saini'}\nProduct Engineer | Drive OSX Mail Studio`;
+    const signatureHtml = `<p>--<br>Best regards,<br>${currentUser?.fullName || 'Vishal Saini'}<br>Product Engineer | Drive OSX Mail Studio</p>`;
+
+    const finalBody = includeSignature ? composeBody + signaturePlain : composeBody;
+    // Sanitized here too, not just at render time: this HTML is about to be
+    // stored and later rendered back in every recipient's reading pane, so
+    // it should never carry more than what the editor itself can produce.
+    const finalBodyHtml = DOMPurify.sanitize(includeSignature ? composeBodyHtml + signatureHtml : composeBodyHtml);
 
     const newSentEmail: Email = {
       id: `sent-${Date.now()}`,
@@ -559,6 +638,7 @@ export default function MailApp() {
       subject: priority === 'high' ? `[URGENT] ${composeSubject}` : composeSubject,
       preview: composeBody.slice(0, 80) || 'No content preview',
       body: finalBody,
+      bodyHtml: finalBodyHtml,
       timestamp: 'Just now',
       dateISO: new Date().toISOString(),
       folder: 'sent',
@@ -574,6 +654,7 @@ export default function MailApp() {
           to: composeTo,
           subject: composeSubject,
           body: finalBody,
+          bodyHtml: finalBodyHtml,
           cc: composeCc,
           bcc: composeBcc,
           priority,
@@ -595,7 +676,7 @@ export default function MailApp() {
     setIsAiDrafting(true);
     setTimeout(() => {
       setComposeSubject('Drive OSX Mail Studio Upgrade Summary');
-      setComposeBody(`Hi team,\n\nI am excited to announce that Drive OSX Mail Studio has been updated with rich formatting, Drive integration, custom rules, and task/calendar workflows.\n\nPlease test out the features and let me know your thoughts!\n\nBest regards,\n${currentUser?.fullName || 'Vishal'}`);
+      setEditorContent(textToEditorHtml(`Hi team,\n\nI am excited to announce that Drive OSX Mail Studio has been updated with rich formatting, Drive integration, custom rules, and task/calendar workflows.\n\nPlease test out the features and let me know your thoughts!\n\nBest regards,\n${currentUser?.fullName || 'Vishal'}`));
       setIsAiDrafting(false);
     }, 600);
   };
@@ -603,12 +684,13 @@ export default function MailApp() {
   const handleAiTonePolish = (tone: 'formal' | 'short' | 'friendly') => {
     setIsAiDrafting(true);
     setTimeout(() => {
+      const prev = composeBody;
       if (tone === 'formal') {
-        setComposeBody((prev) => `Dear Colleague,\n\nI am writing to communicate the updated operational specifications.\n\n${prev}\n\nSincerely,\n${currentUser?.fullName || 'Vishal Saini'}`);
+        setEditorContent(textToEditorHtml(`Dear Colleague,\n\nI am writing to communicate the updated operational specifications.\n\n${prev}\n\nSincerely,\n${currentUser?.fullName || 'Vishal Saini'}`));
       } else if (tone === 'short') {
-        setComposeBody((prev) => prev.split('\n').filter(Boolean).slice(0, 3).join('\n'));
+        setEditorContent(textToEditorHtml(prev.split('\n').filter(Boolean).slice(0, 3).join('\n')));
       } else if (tone === 'friendly') {
-        setComposeBody((prev) => `Hope you're having an awesome week! 😊\n\n${prev}\n\nCheers!`);
+        setEditorContent(textToEditorHtml(`Hope you're having an awesome week! 😊\n\n${prev}\n\nCheers!`));
       }
       setIsAiDrafting(false);
     }, 500);
@@ -619,10 +701,10 @@ export default function MailApp() {
     <div className="flex flex-col p-3 sm:p-2.5 gap-3 h-full overflow-y-auto">
       {/* Top Header */}
       {isCompact ? (
-        <div className="flex items-center justify-between pb-3 border-b dark:border-white/10">
+        <div className={`flex items-center justify-between pb-3 border-b ${isLight ? '' : 'border-white/10'}`}>
           <div className="flex items-center gap-2">
-            <Folder size={18} className="text-blue-600 dark:text-blue-400" />
-            <span className="text-sm font-bold text-slate-900 dark:text-white">Mailboxes</span>
+            <Folder size={18} className={isLight ? 'text-blue-600' : 'text-blue-400'} />
+            <span className={`text-sm font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>Mailboxes</span>
           </div>
           <button
             onClick={() => setCompactView('list')}
@@ -633,12 +715,14 @@ export default function MailApp() {
         </div>
       ) : (
         <div className="flex items-center justify-between px-1 pt-0.5">
-          <span className="text-xs font-extrabold uppercase tracking-wider text-slate-400 dark:text-white/40">
+          <span className={`text-xs font-extrabold uppercase tracking-wider ${isLight ? 'text-slate-400' : 'text-white/40'}`}>
             Navigation
           </span>
           <button
             onClick={() => setIsSidebarOpen(false)}
-            className="p-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-200/60 dark:hover:bg-white/10 cursor-pointer"
+            className={`p-1 rounded-lg cursor-pointer ${
+              isLight ? 'text-slate-400 hover:text-slate-700 hover:bg-slate-200/60' : 'text-slate-400 hover:text-white hover:bg-white/10'
+            }`}
             title="Collapse sidebar"
           >
             <PanelLeftClose size={16} />
@@ -656,7 +740,7 @@ export default function MailApp() {
             <span className="text-xs font-bold truncate leading-tight">
               {currentUser?.fullName || 'Vishal Saini'}
             </span>
-            <span className="text-[10px] text-slate-400 dark:text-white/40 truncate">
+            <span className={`text-[10px] truncate ${isLight ? 'text-slate-400' : 'text-white/40'}`}>
               {currentUser?.email || 'vishalsaini154@gmail.com'}
             </span>
           </div>
@@ -673,7 +757,7 @@ export default function MailApp() {
 
       {/* Main Mail Folders */}
       <div className="flex flex-col gap-0.5">
-        <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 dark:text-white/40 px-2 mb-1">
+        <span className={`text-[10px] font-extrabold uppercase tracking-wider px-2 mb-1 ${isLight ? 'text-slate-400' : 'text-white/40'}`}>
           Folders
         </span>
 
@@ -719,7 +803,7 @@ export default function MailApp() {
       {/* Custom Folders Section */}
       <div className="flex flex-col gap-0.5 mt-1">
         <div className="flex items-center justify-between px-2 mb-1">
-          <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 dark:text-white/40">
+          <span className={`text-[10px] font-extrabold uppercase tracking-wider ${isLight ? 'text-slate-400' : 'text-white/40'}`}>
             Custom Folders
           </span>
           <button
@@ -752,7 +836,7 @@ export default function MailApp() {
 
       {/* Categories / Labels */}
       <div className="flex flex-col gap-0.5 mt-1">
-        <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 dark:text-white/40 px-2 mb-1">
+        <span className={`text-[10px] font-extrabold uppercase tracking-wider px-2 mb-1 ${isLight ? 'text-slate-400' : 'text-white/40'}`}>
           Categories
         </span>
 
@@ -776,10 +860,12 @@ export default function MailApp() {
       </div>
 
       {/* Automation Rules Button */}
-      <div className="mt-auto pt-2 border-t dark:border-white/10">
+      <div className={`mt-auto pt-2 border-t ${isLight ? '' : 'border-white/10'}`}>
         <button
           onClick={() => setIsRulesModalOpen(true)}
-          className="w-full px-2.5 py-2 rounded-xl bg-purple-500/10 hover:bg-purple-500/20 text-purple-600 dark:text-purple-300 text-xs font-bold flex items-center gap-2 transition-colors cursor-pointer"
+          className={`w-full px-2.5 py-2 rounded-xl bg-purple-500/10 hover:bg-purple-500/20 text-xs font-bold flex items-center gap-2 transition-colors cursor-pointer ${
+            isLight ? 'text-purple-600' : 'text-purple-300'
+          }`}
         >
           <Sliders size={15} />
           <span>Automation Rules</span>
@@ -799,8 +885,8 @@ export default function MailApp() {
           {isCompact ? (
             <button
               onClick={() => setCompactView('sidebar')}
-              className={`p-1.5 rounded-lg border text-slate-500 hover:text-slate-800 dark:text-white/70 dark:hover:text-white cursor-pointer ${
-                isLight ? 'bg-white border-slate-200' : 'bg-[#18181b] border-white/10'
+              className={`p-1.5 rounded-lg border cursor-pointer ${
+                isLight ? 'bg-white border-slate-200 text-slate-500 hover:text-slate-800' : 'bg-[#18181b] border-white/10 text-white/70 hover:text-white'
               }`}
             >
               <Menu size={16} />
@@ -808,8 +894,8 @@ export default function MailApp() {
           ) : (
             <button
               onClick={() => setIsSidebarOpen((prev) => !prev)}
-              className={`p-1.5 rounded-lg border text-slate-500 hover:text-slate-800 dark:text-white/70 dark:hover:text-white cursor-pointer ${
-                isLight ? 'bg-white border-slate-200' : 'bg-[#18181b] border-white/10'
+              className={`p-1.5 rounded-lg border cursor-pointer ${
+                isLight ? 'bg-white border-slate-200 text-slate-500 hover:text-slate-800' : 'bg-[#18181b] border-white/10 text-white/70 hover:text-white'
               }`}
             >
               {isSidebarOpen ? <PanelLeftClose size={15} /> : <PanelLeftOpen size={15} />}
@@ -859,7 +945,7 @@ export default function MailApp() {
       </div>
 
       {/* Email Item List */}
-      <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-white/5 pb-16">
+      <div className={`flex-1 overflow-y-auto divide-y ${isLight ? 'divide-slate-100' : 'divide-white/5'} pb-16`}>
         {isLoadingEmails ? (
           <div className="p-8 text-center flex flex-col items-center justify-center text-slate-400 gap-3">
             <div className="w-5 h-5 border-2 border-blue-500/30 border-t-blue-600 rounded-full animate-spin" />
@@ -906,7 +992,9 @@ export default function MailApp() {
                     {email.isPinned && (
                       <Pin size={12} className="text-blue-500 fill-blue-500 shrink-0" />
                     )}
-                    <span className={`text-xs truncate ${email.isUnread ? 'font-bold text-slate-900 dark:text-white' : 'font-semibold text-slate-700 dark:text-white/80'}`}>
+                    <span className={`text-xs truncate ${email.isUnread ? 'font-bold' : 'font-semibold'} ${
+                      email.isUnread ? (isLight ? 'text-slate-900' : 'text-white') : (isLight ? 'text-slate-700' : 'text-white/80')
+                    }`}>
                       {email.senderName}
                     </span>
                   </div>
@@ -916,12 +1004,14 @@ export default function MailApp() {
                 </div>
 
                 {/* Subject Row */}
-                <div className={`text-xs truncate ${email.isUnread ? 'font-bold text-slate-800 dark:text-white' : 'text-slate-600 dark:text-white/70'}`}>
+                <div className={`text-xs truncate ${email.isUnread ? 'font-bold' : ''} ${
+                  email.isUnread ? (isLight ? 'text-slate-800' : 'text-white') : (isLight ? 'text-slate-600' : 'text-white/70')
+                }`}>
                   {email.subject}
                 </div>
 
                 {/* Preview Snippet */}
-                <div className="text-[11px] text-slate-400 dark:text-white/40 line-clamp-2 leading-relaxed">
+                <div className={`text-[11px] ${isLight ? 'text-slate-400' : 'text-white/40'} line-clamp-2 leading-relaxed`}>
                   {email.preview}
                 </div>
 
@@ -1013,7 +1103,7 @@ export default function MailApp() {
             <ArrowLeft size={16} />
             <span>Back</span>
           </button>
-          <span className="font-extrabold text-sm text-slate-900 dark:text-white truncate">
+          <span className={`font-extrabold text-sm ${isLight ? 'text-slate-900' : 'text-white'} truncate`}>
             New Message
           </span>
           {autoSaveStatus && (
@@ -1038,7 +1128,7 @@ export default function MailApp() {
               setIsComposing(false);
               if (isCompact) setCompactView('list');
             }}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white cursor-pointer"
+            className={`p-1.5 rounded-lg text-slate-400 ${isLight ? 'hover:text-slate-700' : 'hover:text-white'} cursor-pointer`}
           >
             <X size={16} />
           </button>
@@ -1049,14 +1139,14 @@ export default function MailApp() {
       <div className="p-3 sm:p-4 flex-1 flex flex-col gap-2.5 overflow-y-auto min-h-0">
         
         {/* Recipient To */}
-        <div className="flex items-center border-b pb-1.5 dark:border-white/10 gap-2">
+        <div className={`flex items-center border-b ${isLight ? '' : 'border-white/10'} pb-1.5 gap-2`}>
           <span className="w-12 text-xs font-bold text-slate-400 shrink-0">To:</span>
           <input
             type="email"
             placeholder="recipient@domain.com"
             value={composeTo}
             onChange={(e) => setComposeTo(e.target.value)}
-            className="w-full bg-transparent text-xs focus:outline-none font-semibold text-slate-900 dark:text-white"
+            className={`w-full bg-transparent text-xs focus:outline-none font-semibold ${isLight ? 'text-slate-900' : 'text-white'}`}
             autoFocus
           />
           <button
@@ -1068,7 +1158,7 @@ export default function MailApp() {
           </button>
           <button
             onClick={() => setShowCcBcc(!showCcBcc)}
-            className="text-[10px] font-bold px-2 py-0.5 rounded border text-slate-500 dark:text-white/60 border-slate-200 dark:border-white/10 cursor-pointer"
+            className={`text-[10px] font-bold px-2 py-0.5 rounded border ${isLight ? 'text-slate-500' : 'text-white/60'} ${isLight ? 'border-slate-200' : 'border-white/10'} cursor-pointer`}
           >
             Cc/Bcc
           </button>
@@ -1076,15 +1166,15 @@ export default function MailApp() {
 
         {/* Cc / Bcc Expandable */}
         {showCcBcc && (
-          <div className="flex flex-col gap-2 p-2 rounded-xl bg-slate-50 dark:bg-white/5 border dark:border-white/10 animate-in fade-in duration-150">
-            <div className="flex items-center border-b pb-1 dark:border-white/10 gap-2">
+          <div className={`flex flex-col gap-2 p-2 rounded-xl ${isLight ? 'bg-slate-50' : 'bg-white/5'} border ${isLight ? '' : 'border-white/10'} animate-in fade-in duration-150`}>
+            <div className={`flex items-center border-b ${isLight ? '' : 'border-white/10'} pb-1 gap-2`}>
               <span className="w-12 text-[11px] font-bold text-slate-400 shrink-0">Cc:</span>
               <input
                 type="text"
                 placeholder="Cc recipients..."
                 value={composeCc}
                 onChange={(e) => setComposeCc(e.target.value)}
-                className="w-full bg-transparent text-xs focus:outline-none text-slate-800 dark:text-white"
+                className={`w-full bg-transparent text-xs focus:outline-none ${isLight ? 'text-slate-800' : 'text-white'}`}
               />
               <button
                 onClick={() => { setContactTargetField('cc'); setIsContactsModalOpen(true); }}
@@ -1100,7 +1190,7 @@ export default function MailApp() {
                 placeholder="Bcc recipients..."
                 value={composeBcc}
                 onChange={(e) => setComposeBcc(e.target.value)}
-                className="w-full bg-transparent text-xs focus:outline-none text-slate-800 dark:text-white"
+                className={`w-full bg-transparent text-xs focus:outline-none ${isLight ? 'text-slate-800' : 'text-white'}`}
               />
               <button
                 onClick={() => { setContactTargetField('bcc'); setIsContactsModalOpen(true); }}
@@ -1113,14 +1203,14 @@ export default function MailApp() {
         )}
 
         {/* Subject */}
-        <div className="flex items-center border-b pb-1.5 dark:border-white/10 gap-2">
+        <div className={`flex items-center border-b ${isLight ? '' : 'border-white/10'} pb-1.5 gap-2`}>
           <span className="w-12 text-xs font-bold text-slate-400 shrink-0">Subject:</span>
           <input
             type="text"
             placeholder="Email subject..."
             value={composeSubject}
             onChange={(e) => setComposeSubject(e.target.value)}
-            className="w-full bg-transparent text-xs focus:outline-none font-bold text-slate-900 dark:text-white"
+            className={`w-full bg-transparent text-xs focus:outline-none font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}
           />
         </div>
 
@@ -1133,7 +1223,7 @@ export default function MailApp() {
             <select
               value={fontFamily}
               onChange={(e) => setFontFamily(e.target.value)}
-              className="p-1 text-[11px] rounded bg-transparent font-bold text-slate-700 dark:text-white focus:outline-none cursor-pointer"
+              className={`p-1 text-[11px] rounded bg-transparent font-bold ${isLight ? 'text-slate-700' : 'text-white'} focus:outline-none cursor-pointer`}
             >
               <option value="sans-serif">Sans-Serif</option>
               <option value="serif">Serif</option>
@@ -1141,40 +1231,64 @@ export default function MailApp() {
               <option value="cursive">Cursive</option>
             </select>
 
-            <div className="w-px h-4 bg-slate-300 dark:bg-white/20 mx-0.5" />
+            <div className={`w-px h-4 ${isLight ? 'bg-slate-300' : 'bg-white/20'} mx-0.5`} />
 
-            <button onClick={() => applyTextFormatting('**', '**')} className="p-1 rounded hover:bg-slate-200 dark:hover:bg-white/10 cursor-pointer" title="Bold">
+            <button
+              onClick={() => editor?.chain().focus().toggleBold().run()}
+              className={`p-1 rounded cursor-pointer ${editor?.isActive('bold') ? 'bg-blue-600 text-white' : isLight ? 'hover:bg-slate-200' : 'hover:bg-white/10'}`}
+              title="Bold"
+            >
               <Bold size={14} />
             </button>
-            <button onClick={() => applyTextFormatting('*', '*')} className="p-1 rounded hover:bg-slate-200 dark:hover:bg-white/10 cursor-pointer" title="Italic">
+            <button
+              onClick={() => editor?.chain().focus().toggleItalic().run()}
+              className={`p-1 rounded cursor-pointer ${editor?.isActive('italic') ? 'bg-blue-600 text-white' : isLight ? 'hover:bg-slate-200' : 'hover:bg-white/10'}`}
+              title="Italic"
+            >
               <Italic size={14} />
             </button>
-            <button onClick={() => applyTextFormatting('<u>', '</u>')} className="p-1 rounded hover:bg-slate-200 dark:hover:bg-white/10 cursor-pointer" title="Underline">
+            <button
+              onClick={() => editor?.chain().focus().toggleUnderline().run()}
+              className={`p-1 rounded cursor-pointer ${editor?.isActive('underline') ? 'bg-blue-600 text-white' : isLight ? 'hover:bg-slate-200' : 'hover:bg-white/10'}`}
+              title="Underline"
+            >
               <Underline size={14} />
             </button>
-            <button onClick={() => applyTextFormatting('~~', '~~')} className="p-1 rounded hover:bg-slate-200 dark:hover:bg-white/10 cursor-pointer" title="Strikethrough">
+            <button
+              onClick={() => editor?.chain().focus().toggleStrike().run()}
+              className={`p-1 rounded cursor-pointer ${editor?.isActive('strike') ? 'bg-blue-600 text-white' : isLight ? 'hover:bg-slate-200' : 'hover:bg-white/10'}`}
+              title="Strikethrough"
+            >
               <Strikethrough size={14} />
             </button>
 
-            <div className="w-px h-4 bg-slate-300 dark:bg-white/20 mx-0.5" />
+            <div className={`w-px h-4 ${isLight ? 'bg-slate-300' : 'bg-white/20'} mx-0.5`} />
 
-            <button onClick={() => applyTextFormatting('\n• ')} className="p-1 rounded hover:bg-slate-200 dark:hover:bg-white/10 cursor-pointer" title="Bulleted List">
+            <button
+              onClick={() => editor?.chain().focus().toggleBulletList().run()}
+              className={`p-1 rounded cursor-pointer ${editor?.isActive('bulletList') ? 'bg-blue-600 text-white' : isLight ? 'hover:bg-slate-200' : 'hover:bg-white/10'}`}
+              title="Bulleted List"
+            >
               <List size={14} />
             </button>
-            <button onClick={() => applyTextFormatting('\n1. ')} className="p-1 rounded hover:bg-slate-200 dark:hover:bg-white/10 cursor-pointer" title="Numbered List">
+            <button
+              onClick={() => editor?.chain().focus().toggleOrderedList().run()}
+              className={`p-1 rounded cursor-pointer ${editor?.isActive('orderedList') ? 'bg-blue-600 text-white' : isLight ? 'hover:bg-slate-200' : 'hover:bg-white/10'}`}
+              title="Numbered List"
+            >
               <ListOrdered size={14} />
             </button>
-            <button onClick={handleInsertTable} className="p-1 rounded hover:bg-slate-200 dark:hover:bg-white/10 cursor-pointer" title="Insert Table">
+            <button onClick={handleInsertTable} className={`p-1 rounded ${isLight ? 'hover:bg-slate-200' : 'hover:bg-white/10'} cursor-pointer`} title="Insert Table">
               <TableIcon size={14} />
             </button>
-            <button onClick={handleInsertHyperlink} className="p-1 rounded hover:bg-slate-200 dark:hover:bg-white/10 cursor-pointer" title="Insert Link">
+            <button onClick={handleInsertHyperlink} className={`p-1 rounded ${isLight ? 'hover:bg-slate-200' : 'hover:bg-white/10'} cursor-pointer`} title="Insert Link">
               <Link2 size={14} />
             </button>
-            <button onClick={handleInsertImage} className="p-1 rounded hover:bg-slate-200 dark:hover:bg-white/10 cursor-pointer" title="Insert Image">
+            <button onClick={handleInsertImage} className={`p-1 rounded ${isLight ? 'hover:bg-slate-200' : 'hover:bg-white/10'} cursor-pointer`} title="Insert Image">
               <ImageIcon size={14} />
             </button>
 
-            <div className="w-px h-4 bg-slate-300 dark:bg-white/20 mx-0.5" />
+            <div className={`w-px h-4 ${isLight ? 'bg-slate-300' : 'bg-white/20'} mx-0.5`} />
 
             {/* Attach from Device & Attach from Drive */}
             <button onClick={() => fileInputRef.current?.click()} className="p-1 text-blue-500 hover:bg-blue-500/10 rounded cursor-pointer flex items-center gap-1 text-[11px] font-bold" title="Upload Attachment">
@@ -1189,16 +1303,16 @@ export default function MailApp() {
 
           {/* AI Tone Options */}
           <div className="flex items-center gap-1 text-[10px]">
-            <button onClick={() => handleAiTonePolish('formal')} className="px-1.5 py-0.5 bg-purple-500/10 text-purple-600 dark:text-purple-300 font-bold rounded cursor-pointer">Formal</button>
-            <button onClick={() => handleAiTonePolish('short')} className="px-1.5 py-0.5 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300 font-bold rounded cursor-pointer">Short</button>
-            <button onClick={() => handleAiTonePolish('friendly')} className="px-1.5 py-0.5 bg-amber-500/10 text-amber-600 dark:text-amber-300 font-bold rounded cursor-pointer">Friendly</button>
+            <button onClick={() => handleAiTonePolish('formal')} className={`px-1.5 py-0.5 bg-purple-500/10 ${isLight ? 'text-purple-600' : 'text-purple-300'} font-bold rounded cursor-pointer`}>Formal</button>
+            <button onClick={() => handleAiTonePolish('short')} className={`px-1.5 py-0.5 bg-emerald-500/10 ${isLight ? 'text-emerald-600' : 'text-emerald-300'} font-bold rounded cursor-pointer`}>Short</button>
+            <button onClick={() => handleAiTonePolish('friendly')} className={`px-1.5 py-0.5 bg-amber-500/10 ${isLight ? 'text-amber-600' : 'text-amber-300'} font-bold rounded cursor-pointer`}>Friendly</button>
           </div>
         </div>
 
         {/* Attachments Chips */}
         {attachments.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 p-2 rounded-xl bg-slate-100 dark:bg-white/5 border dark:border-white/10">
-            <span className="text-xs font-bold text-slate-500 dark:text-white/60 w-full flex items-center gap-1">
+          <div className={`flex flex-wrap gap-1.5 p-2 rounded-xl ${isLight ? 'bg-slate-100' : 'bg-white/5'} border ${isLight ? '' : 'border-white/10'}`}>
+            <span className={`text-xs font-bold ${isLight ? 'text-slate-500' : 'text-white/60'} w-full flex items-center gap-1`}>
               <Paperclip size={13} />
               <span>Attachments ({attachments.length}):</span>
             </span>
@@ -1216,20 +1330,27 @@ export default function MailApp() {
           </div>
         )}
 
-        {/* Text Area Body */}
-        <textarea
-          ref={textareaRef}
-          placeholder="Write email message here... (or drag & drop files)"
-          value={composeBody}
-          onChange={(e) => setComposeBody(e.target.value)}
-          style={{ fontFamily: fontFamily }}
-          className={`flex-1 min-h-[180px] w-full p-3 rounded-xl border text-xs leading-relaxed focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none ${
+        {/* Rich Text Editor Body */}
+        <div
+          className={`relative flex-1 min-h-[180px] w-full rounded-xl border text-xs leading-relaxed focus-within:ring-2 focus-within:ring-blue-500 overflow-y-auto ${
             isLight ? 'bg-slate-50 border-slate-200 text-slate-800' : 'bg-[#18181b] border-white/10 text-white'
           }`}
-        />
+          style={{ fontFamily }}
+          onClick={() => editor?.chain().focus().run()}
+        >
+          {editor?.isEmpty && (
+            <span className={`absolute top-3 left-3 pointer-events-none select-none ${isLight ? 'text-slate-400' : 'text-white/30'}`}>
+              Write email message here... (or drag & drop files)
+            </span>
+          )}
+          <EditorContent
+            editor={editor}
+            className="h-full p-3 [&_.ProseMirror]:outline-none [&_.ProseMirror]:min-h-[160px] [&_.ProseMirror_ul]:list-disc [&_.ProseMirror_ul]:pl-5 [&_.ProseMirror_ol]:list-decimal [&_.ProseMirror_ol]:pl-5 [&_.ProseMirror_a]:text-blue-500 [&_.ProseMirror_a]:underline [&_.ProseMirror_table]:border-collapse [&_.ProseMirror_td]:border [&_.ProseMirror_td]:border-current/20 [&_.ProseMirror_td]:p-1 [&_.ProseMirror_th]:border [&_.ProseMirror_th]:border-current/20 [&_.ProseMirror_th]:p-1 [&_.ProseMirror_img]:max-w-full"
+          />
+        </div>
 
         {includeSignature && (
-          <div className="px-3 py-1.5 rounded-lg bg-slate-100/60 dark:bg-white/5 border border-dashed text-[10px] text-slate-500 dark:text-white/50">
+          <div className={`px-3 py-1.5 rounded-lg ${isLight ? 'bg-slate-100/60' : 'bg-white/5'} border border-dashed text-[10px] ${isLight ? 'text-slate-500' : 'text-white/50'}`}>
             <span className="font-bold text-blue-500 block">Auto Signature:</span>
             --{'\n'}Best regards, {currentUser?.fullName || 'Vishal Saini'} | Drive OSX Mail Studio
           </div>
@@ -1241,14 +1362,14 @@ export default function MailApp() {
         isLight ? 'bg-slate-50 border-slate-200' : 'bg-[#212025] border-white/10'
       }`}>
         <div className="flex items-center gap-2">
-          <button onClick={handleSaveDraft} className="px-3 py-1.5 text-xs font-semibold rounded-lg hover:bg-slate-200 dark:hover:bg-white/10 cursor-pointer flex items-center gap-1">
+          <button onClick={handleSaveDraft} className={`px-3 py-1.5 text-xs font-semibold rounded-lg ${isLight ? 'hover:bg-slate-200' : 'hover:bg-white/10'} cursor-pointer flex items-center gap-1`}>
             <Save size={15} />
             <span className="hidden sm:inline">Save Draft</span>
           </button>
         </div>
 
         <div className="flex items-center gap-2">
-          <button onClick={() => { setIsComposing(false); resetComposeForm(); if (isCompact) setCompactView('list'); }} className="px-3 py-1.5 border text-xs font-semibold rounded-lg hover:bg-slate-200 dark:hover:bg-white/10 cursor-pointer">
+          <button onClick={() => { setIsComposing(false); resetComposeForm(); if (isCompact) setCompactView('list'); }} className={`px-3 py-1.5 border text-xs font-semibold rounded-lg ${isLight ? 'hover:bg-slate-200' : 'hover:bg-white/10'} cursor-pointer`}>
             Discard
           </button>
           <button onClick={handleSendNewCompose} className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-2xs cursor-pointer">
@@ -1267,7 +1388,7 @@ export default function MailApp() {
         <div className="flex-1 flex flex-col min-h-0 overflow-y-auto p-3 sm:p-5 gap-4">
           
           {/* Reader Top Bar */}
-          <div className="flex items-center justify-between gap-2 pb-3 border-b dark:border-white/10">
+          <div className={`flex items-center justify-between gap-2 pb-3 border-b ${isLight ? '' : 'border-white/10'}`}>
             <button
               onClick={handleCloseEmail}
               className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-xs font-bold cursor-pointer ${
@@ -1280,53 +1401,53 @@ export default function MailApp() {
 
             {/* Quick Actions */}
             <div className="flex items-center gap-1 flex-wrap">
-              <button onClick={() => handleReply(selectedEmail)} className="p-1.5 rounded-lg border text-slate-600 dark:text-white/80 hover:bg-slate-100 dark:hover:bg-white/10 cursor-pointer" title="Reply">
+              <button onClick={() => handleReply(selectedEmail)} className={`p-1.5 rounded-lg border ${isLight ? 'text-slate-600' : 'text-white/80'} ${isLight ? 'hover:bg-slate-100' : 'hover:bg-white/10'} cursor-pointer`} title="Reply">
                 <Reply size={15} />
               </button>
-              <button onClick={() => handleReply(selectedEmail, true)} className="p-1.5 rounded-lg border text-slate-600 dark:text-white/80 hover:bg-slate-100 dark:hover:bg-white/10 cursor-pointer" title="Reply All">
+              <button onClick={() => handleReply(selectedEmail, true)} className={`p-1.5 rounded-lg border ${isLight ? 'text-slate-600' : 'text-white/80'} ${isLight ? 'hover:bg-slate-100' : 'hover:bg-white/10'} cursor-pointer`} title="Reply All">
                 <ReplyAll size={15} />
               </button>
-              <button onClick={() => handleForward(selectedEmail)} className="p-1.5 rounded-lg border text-slate-600 dark:text-white/80 hover:bg-slate-100 dark:hover:bg-white/10 cursor-pointer" title="Forward">
+              <button onClick={() => handleForward(selectedEmail)} className={`p-1.5 rounded-lg border ${isLight ? 'text-slate-600' : 'text-white/80'} ${isLight ? 'hover:bg-slate-100' : 'hover:bg-white/10'} cursor-pointer`} title="Forward">
                 <Forward size={15} />
               </button>
-              <button onClick={() => handleForwardAsAttachment(selectedEmail)} className="p-1.5 rounded-lg border text-slate-600 dark:text-white/80 hover:bg-slate-100 dark:hover:bg-white/10 cursor-pointer" title="Forward as Attachment">
+              <button onClick={() => handleForwardAsAttachment(selectedEmail)} className={`p-1.5 rounded-lg border ${isLight ? 'text-slate-600' : 'text-white/80'} ${isLight ? 'hover:bg-slate-100' : 'hover:bg-white/10'} cursor-pointer`} title="Forward as Attachment">
                 <FileCode size={15} />
               </button>
 
-              <div className="w-px h-4 bg-slate-300 dark:bg-white/10 mx-0.5" />
+              <div className={`w-px h-4 ${isLight ? 'bg-slate-300' : 'bg-white/10'} mx-0.5`} />
 
-              <button onClick={() => setIsCalendarModalOpen(true)} className="p-1.5 rounded-lg border text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-500/10 cursor-pointer" title="Convert to Calendar Event">
+              <button onClick={() => setIsCalendarModalOpen(true)} className={`p-1.5 rounded-lg border text-blue-600 ${isLight ? 'hover:bg-blue-50' : 'hover:bg-blue-500/10'} cursor-pointer`} title="Convert to Calendar Event">
                 <Calendar size={15} />
               </button>
-              <button onClick={() => setIsTaskModalOpen(true)} className="p-1.5 rounded-lg border text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 cursor-pointer" title="Convert to Task">
+              <button onClick={() => setIsTaskModalOpen(true)} className={`p-1.5 rounded-lg border text-emerald-600 ${isLight ? 'hover:bg-emerald-50' : 'hover:bg-emerald-500/10'} cursor-pointer`} title="Convert to Task">
                 <CheckSquare size={15} />
               </button>
-              <button onClick={() => handleShareEmail(selectedEmail)} className="p-1.5 rounded-lg border text-slate-600 dark:text-white/80 hover:bg-slate-100 dark:hover:bg-white/10 cursor-pointer" title="Share Email Summary">
+              <button onClick={() => handleShareEmail(selectedEmail)} className={`p-1.5 rounded-lg border ${isLight ? 'text-slate-600' : 'text-white/80'} ${isLight ? 'hover:bg-slate-100' : 'hover:bg-white/10'} cursor-pointer`} title="Share Email Summary">
                 <Share2 size={15} />
               </button>
 
-              <div className="w-px h-4 bg-slate-300 dark:bg-white/10 mx-0.5" />
+              <div className={`w-px h-4 ${isLight ? 'bg-slate-300' : 'bg-white/10'} mx-0.5`} />
 
-              <button onClick={() => handleMoveFolder(selectedEmail.id, 'spam')} className="p-1.5 rounded-lg border text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-500/10 cursor-pointer" title="Mark as Spam">
+              <button onClick={() => handleMoveFolder(selectedEmail.id, 'spam')} className={`p-1.5 rounded-lg border text-amber-500 ${isLight ? 'hover:bg-amber-50' : 'hover:bg-amber-500/10'} cursor-pointer`} title="Mark as Spam">
                 <ShieldAlert size={15} />
               </button>
-              <button onClick={() => handleBlockSender(selectedEmail.senderEmail)} className="p-1.5 rounded-lg border text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-500/10 cursor-pointer" title="Block Sender">
+              <button onClick={() => handleBlockSender(selectedEmail.senderEmail)} className={`p-1.5 rounded-lg border text-rose-500 ${isLight ? 'hover:bg-rose-50' : 'hover:bg-rose-500/10'} cursor-pointer`} title="Block Sender">
                 <Ban size={15} />
               </button>
-              <button onClick={() => handleMoveFolder(selectedEmail.id, 'trash')} className="p-1.5 rounded-lg border text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-500/10 cursor-pointer" title="Move to Trash">
+              <button onClick={() => handleMoveFolder(selectedEmail.id, 'trash')} className={`p-1.5 rounded-lg border text-rose-500 ${isLight ? 'hover:bg-rose-50' : 'hover:bg-rose-500/10'} cursor-pointer`} title="Move to Trash">
                 <Trash2 size={15} />
               </button>
             </div>
           </div>
 
           {/* Email Subject */}
-          <div className="flex flex-col gap-1 border-b pb-2 dark:border-white/10">
-            <h1 className="text-lg font-bold tracking-tight text-slate-900 dark:text-white break-words">
+          <div className={`flex flex-col gap-1 border-b ${isLight ? '' : 'border-white/10'} pb-2`}>
+            <h1 className={`text-lg font-bold tracking-tight ${isLight ? 'text-slate-900' : 'text-white'} break-words`}>
               {selectedEmail.subject}
             </h1>
             <div className="flex items-center gap-2 flex-wrap">
               {selectedEmail.labels?.map((lbl) => (
-                <span key={lbl} className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300">
+                <span key={lbl} className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full ${isLight ? 'bg-blue-100' : 'bg-blue-500/20'} ${isLight ? 'text-blue-700' : 'text-blue-300'}`}>
                   {lbl}
                 </span>
               ))}
@@ -1346,29 +1467,39 @@ export default function MailApp() {
               </div>
               <div className="flex flex-col min-w-0">
                 <div className="flex items-center gap-1.5 flex-wrap">
-                  <span className="font-bold text-xs text-slate-900 dark:text-white truncate">
+                  <span className={`font-bold text-xs ${isLight ? 'text-slate-900' : 'text-white'} truncate`}>
                     {selectedEmail.senderName}
                   </span>
                   <span className="text-[11px] text-slate-400 truncate">
                     &lt;{selectedEmail.senderEmail}&gt;
                   </span>
                 </div>
-                <span className="text-[11px] text-slate-500 dark:text-white/60 truncate">
+                <span className={`text-[11px] ${isLight ? 'text-slate-500' : 'text-white/60'} truncate`}>
                   To: {selectedEmail.recipientEmail}
                 </span>
               </div>
             </div>
           </div>
 
-          {/* Email Body */}
-          <div className="prose dark:prose-invert max-w-none text-xs leading-relaxed whitespace-pre-wrap text-slate-800 dark:text-slate-200 border-b pb-4 dark:border-white/10 break-words font-sans">
-            {selectedEmail.body}
-          </div>
+          {/* Email Body — rich HTML when the sender composed one, sanitized right
+              here since this is the point it actually enters the DOM (never trust
+              stored email HTML, CLAUDE.md §28). Falls back to the plain-text body
+              for messages that never had one (plain compose, inbound SMTP mail). */}
+          {selectedEmail.bodyHtml ? (
+            <div
+              className={`prose ${isLight ? '' : 'prose-invert'} max-w-none text-xs leading-relaxed ${isLight ? 'text-slate-800' : 'text-slate-200'} border-b ${isLight ? '' : 'border-white/10'} pb-4 break-words font-sans [&_a]:text-blue-500 [&_a]:underline [&_table]:border-collapse [&_td]:border [&_td]:border-current/20 [&_td]:p-1 [&_th]:border [&_th]:border-current/20 [&_th]:p-1 [&_img]:max-w-full`}
+              dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(selectedEmail.bodyHtml) }}
+            />
+          ) : (
+            <div className={`prose ${isLight ? '' : 'prose-invert'} max-w-none text-xs leading-relaxed whitespace-pre-wrap ${isLight ? 'text-slate-800' : 'text-slate-200'} border-b ${isLight ? '' : 'border-white/10'} pb-4 break-words font-sans`}>
+              {selectedEmail.body}
+            </div>
+          )}
 
           {/* Attachments list with preview modal launcher */}
           {selectedEmail.attachments && selectedEmail.attachments.length > 0 && (
-            <div className="flex flex-col gap-2 border-b pb-4 dark:border-white/10">
-              <span className="text-xs font-bold text-slate-500 dark:text-white/60 flex items-center gap-1.5">
+            <div className={`flex flex-col gap-2 border-b ${isLight ? '' : 'border-white/10'} pb-4`}>
+              <span className={`text-xs font-bold ${isLight ? 'text-slate-500' : 'text-white/60'} flex items-center gap-1.5`}>
                 <Paperclip size={14} />
                 <span>Attachments ({selectedEmail.attachments.length})</span>
               </span>
@@ -1396,7 +1527,7 @@ export default function MailApp() {
           <div className={`p-3 rounded-2xl border flex flex-col gap-2 ${
             isLight ? 'bg-slate-50 border-slate-200' : 'bg-[#212025] border-white/10'
           }`}>
-            <span className="text-xs font-bold text-slate-700 dark:text-white/80 flex items-center gap-1.5">
+            <span className={`text-xs font-bold ${isLight ? 'text-slate-700' : 'text-white/80'} flex items-center gap-1.5`}>
               <CornerUpLeft size={14} />
               <span>Quick Reply to {selectedEmail.senderName}</span>
             </span>
@@ -1515,7 +1646,9 @@ export default function MailApp() {
                 onClick={() => setFilterTab(tab)}
                 className={`px-2 py-0.5 rounded-md text-[11px] font-semibold capitalize transition-all cursor-pointer ${
                   filterTab === tab
-                    ? 'bg-white text-slate-900 shadow-2xs dark:bg-white/20 dark:text-white'
+                    ? isLight
+                      ? 'bg-white text-slate-900 shadow-2xs'
+                      : 'bg-white/20 text-white'
                     : isLight
                     ? 'text-slate-600 hover:text-slate-900'
                     : 'text-white/60 hover:text-white'
@@ -1564,7 +1697,7 @@ export default function MailApp() {
       </div>
 
       {/* Main Layout Container */}
-      <div className="flex-1 flex min-h-0 divide-x divide-slate-200/80 dark:divide-white/10 overflow-hidden relative">
+      <div className={`flex-1 flex min-h-0 divide-x ${isLight ? 'divide-slate-200/80' : 'divide-white/10'} overflow-hidden relative`}>
         
         {/* COMPACT MODE */}
         {isCompact ? (

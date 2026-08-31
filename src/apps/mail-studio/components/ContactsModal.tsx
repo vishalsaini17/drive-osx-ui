@@ -31,12 +31,12 @@ export const ContactsModal: React.FC<ContactsModalProps> = ({
             <User size={18} className="text-blue-500" />
             <span>Select Contact / Address Book</span>
           </div>
-          <button onClick={onClose} className="p-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white cursor-pointer">
+          <button onClick={onClose} className={`p-1 rounded-lg text-slate-400 ${isLight ? 'hover:text-slate-700' : 'hover:text-white'} cursor-pointer`}>
             <X size={16} />
           </button>
         </div>
 
-        <div className="p-3 overflow-y-auto divide-y divide-slate-100 dark:divide-white/5 min-h-[220px]">
+        <div className={`p-3 overflow-y-auto divide-y ${isLight ? 'divide-slate-100' : 'divide-white/5'} min-h-[220px]`}>
           {contacts.map((contact) => (
             <div
               key={contact.id}
@@ -67,7 +67,7 @@ export const ContactsModal: React.FC<ContactsModalProps> = ({
         <div className={`p-3 border-t flex justify-end ${
           isLight ? 'bg-slate-50 border-slate-200' : 'bg-[#232227] border-white/10'
         }`}>
-          <button onClick={onClose} className="px-3.5 py-1.5 rounded-lg border text-xs font-semibold hover:bg-slate-200 dark:hover:bg-white/10 cursor-pointer">
+          <button onClick={onClose} className={`px-3.5 py-1.5 rounded-lg border text-xs font-semibold ${isLight ? 'hover:bg-slate-200' : 'hover:bg-white/10'} cursor-pointer`}>
             Close
           </button>
         </div>

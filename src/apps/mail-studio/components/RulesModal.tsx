@@ -66,15 +66,15 @@ export const RulesModal: React.FC<RulesModalProps> = ({
             <ShieldAlert size={18} className="text-purple-500" />
             <span>Email Automation Rules & Filters</span>
           </div>
-          <button onClick={onClose} className="p-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white cursor-pointer">
+          <button onClick={onClose} className={`p-1 rounded-lg text-slate-400 ${isLight ? 'hover:text-slate-700' : 'hover:text-white'} cursor-pointer`}>
             <X size={16} />
           </button>
         </div>
 
         <div className="p-4 overflow-y-auto flex flex-col gap-4 min-h-0">
           {/* Add New Rule Form */}
-          <div className="p-3 rounded-xl bg-slate-100 dark:bg-white/5 border dark:border-white/10 flex flex-col gap-2.5">
-            <span className="text-xs font-bold text-purple-600 dark:text-purple-400 flex items-center gap-1">
+          <div className={`p-3 rounded-xl ${isLight ? 'bg-slate-100' : 'bg-white/5'} border ${isLight ? '' : 'border-white/10'} flex flex-col gap-2.5`}>
+            <span className={`text-xs font-bold ${isLight ? 'text-purple-600' : 'text-purple-400'} flex items-center gap-1`}>
               <Plus size={14} />
               <span>Create New Rule</span>
             </span>
@@ -160,7 +160,7 @@ export const RulesModal: React.FC<RulesModalProps> = ({
 
           {/* Existing Rules List */}
           <div className="flex flex-col gap-2">
-            <span className="text-xs font-bold text-slate-500 dark:text-white/60">Active Rules ({rules.length}):</span>
+            <span className={`text-xs font-bold ${isLight ? 'text-slate-500' : 'text-white/60'}`}>Active Rules ({rules.length}):</span>
             {rules.map((rule) => (
               <div
                 key={rule.id}
@@ -179,14 +179,14 @@ export const RulesModal: React.FC<RulesModalProps> = ({
                   <button
                     onClick={() => handleToggleRule(rule.id)}
                     className={`px-2 py-0.5 rounded text-[10px] font-extrabold cursor-pointer ${
-                      rule.enabled ? 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400' : 'bg-slate-200 text-slate-500'
+                      rule.enabled ? `bg-emerald-500/20 ${isLight ? 'text-emerald-600' : 'text-emerald-400'}` : 'bg-slate-200 text-slate-500'
                     }`}
                   >
                     {rule.enabled ? 'Active' : 'Disabled'}
                   </button>
                   <button
                     onClick={() => handleDeleteRule(rule.id)}
-                    className="p-1 rounded text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-500/10 cursor-pointer"
+                    className={`p-1 rounded text-rose-500 ${isLight ? 'hover:bg-rose-50' : 'hover:bg-rose-500/10'} cursor-pointer`}
                   >
                     <Trash2 size={14} />
                   </button>

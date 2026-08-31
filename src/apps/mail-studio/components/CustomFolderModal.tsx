@@ -57,14 +57,14 @@ export const CustomFolderModal: React.FC<CustomFolderModalProps> = ({
             <FolderPlus size={18} className="text-blue-500" />
             <span>Create Custom Mailbox Folder</span>
           </div>
-          <button onClick={onClose} className="p-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white cursor-pointer">
+          <button onClick={onClose} className={`p-1 rounded-lg text-slate-400 ${isLight ? 'hover:text-slate-700' : 'hover:text-white'} cursor-pointer`}>
             <X size={16} />
           </button>
         </div>
 
         <div className="p-5 flex flex-col gap-4">
           <div className="flex flex-col gap-1">
-            <label className="text-xs font-bold text-slate-500 dark:text-white/60">Folder Name</label>
+            <label className={`text-xs font-bold ${isLight ? 'text-slate-500' : 'text-white/60'}`}>Folder Name</label>
             <input
               type="text"
               placeholder="e.g. Invoices, Projects, Personal"
@@ -78,7 +78,7 @@ export const CustomFolderModal: React.FC<CustomFolderModalProps> = ({
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-bold text-slate-500 dark:text-white/60">Color Tag</label>
+            <label className={`text-xs font-bold ${isLight ? 'text-slate-500' : 'text-white/60'}`}>Color Tag</label>
             <div className="flex items-center gap-2">
               {COLORS.map((c) => (
                 <button
@@ -97,7 +97,7 @@ export const CustomFolderModal: React.FC<CustomFolderModalProps> = ({
         <div className={`p-3 border-t flex items-center justify-end gap-2 ${
           isLight ? 'bg-slate-50 border-slate-200' : 'bg-[#232227] border-white/10'
         }`}>
-          <button onClick={onClose} className="px-3.5 py-1.5 rounded-lg border text-xs font-semibold hover:bg-slate-200 dark:hover:bg-white/10 cursor-pointer">
+          <button onClick={onClose} className={`px-3.5 py-1.5 rounded-lg border text-xs font-semibold ${isLight ? 'hover:bg-slate-200' : 'hover:bg-white/10'} cursor-pointer`}>
             Cancel
           </button>
           <button

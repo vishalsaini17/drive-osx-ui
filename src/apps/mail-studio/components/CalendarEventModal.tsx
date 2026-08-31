@@ -52,14 +52,14 @@ export const CalendarEventModal: React.FC<CalendarEventModalProps> = ({
             <Calendar size={18} className="text-blue-500" />
             <span>Convert Email to Calendar Event</span>
           </div>
-          <button onClick={onClose} className="p-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white cursor-pointer">
+          <button onClick={onClose} className={`p-1 rounded-lg text-slate-400 ${isLight ? 'hover:text-slate-700' : 'hover:text-white'} cursor-pointer`}>
             <X size={16} />
           </button>
         </div>
 
         <div className="p-5 flex flex-col gap-3">
           <div className="flex flex-col gap-1">
-            <label className="text-xs font-bold text-slate-500 dark:text-white/60">Event Title</label>
+            <label className={`text-xs font-bold ${isLight ? 'text-slate-500' : 'text-white/60'}`}>Event Title</label>
             <input
               type="text"
               value={eventTitle}
@@ -72,7 +72,7 @@ export const CalendarEventModal: React.FC<CalendarEventModalProps> = ({
 
           <div className="grid grid-cols-2 gap-2">
             <div className="flex flex-col gap-1">
-              <label className="text-xs font-bold text-slate-500 dark:text-white/60">Date</label>
+              <label className={`text-xs font-bold ${isLight ? 'text-slate-500' : 'text-white/60'}`}>Date</label>
               <input
                 type="date"
                 value={eventDate}
@@ -83,7 +83,7 @@ export const CalendarEventModal: React.FC<CalendarEventModalProps> = ({
               />
             </div>
             <div className="flex flex-col gap-1">
-              <label className="text-xs font-bold text-slate-500 dark:text-white/60">Time</label>
+              <label className={`text-xs font-bold ${isLight ? 'text-slate-500' : 'text-white/60'}`}>Time</label>
               <input
                 type="time"
                 value={eventTime}
@@ -95,16 +95,16 @@ export const CalendarEventModal: React.FC<CalendarEventModalProps> = ({
             </div>
           </div>
 
-          <div className="p-2.5 rounded-xl bg-slate-100 dark:bg-white/5 border dark:border-white/10 text-xs flex flex-col gap-1">
-            <span className="font-bold text-slate-600 dark:text-white/70">Participants:</span>
-            <span className="text-slate-500 dark:text-white/50">{email.senderName} ({email.senderEmail})</span>
+          <div className={`p-2.5 rounded-xl ${isLight ? 'bg-slate-100' : 'bg-white/5'} border ${isLight ? '' : 'border-white/10'} text-xs flex flex-col gap-1`}>
+            <span className={`font-bold ${isLight ? 'text-slate-600' : 'text-white/70'}`}>Participants:</span>
+            <span className={`${isLight ? 'text-slate-500' : 'text-white/50'}`}>{email.senderName} ({email.senderEmail})</span>
           </div>
         </div>
 
         <div className={`p-3 border-t flex items-center justify-end gap-2 ${
           isLight ? 'bg-slate-50 border-slate-200' : 'bg-[#232227] border-white/10'
         }`}>
-          <button onClick={onClose} className="px-3.5 py-1.5 rounded-lg border text-xs font-semibold hover:bg-slate-200 dark:hover:bg-white/10 cursor-pointer">
+          <button onClick={onClose} className={`px-3.5 py-1.5 rounded-lg border text-xs font-semibold ${isLight ? 'hover:bg-slate-200' : 'hover:bg-white/10'} cursor-pointer`}>
             Cancel
           </button>
           <button

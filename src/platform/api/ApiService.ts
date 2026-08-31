@@ -304,6 +304,7 @@ class ApiServiceClass {
     to: string;
     subject: string;
     body?: string;
+    bodyHtml?: string;
     cc?: string;
     bcc?: string;
     priority?: string;
@@ -335,6 +336,51 @@ class ApiServiceClass {
       return data.count;
     } catch {
       return 0;
+    }
+  }
+
+  async markMailRead(emailId: string): Promise<Result> {
+    try {
+      await http.patch(`/mail/${emailId}/read`);
+      return { success: true, message: 'Marked as read' };
+    } catch (error) {
+      return toFailure('Mail', error, 'Could not update read status.');
+    }
+  }
+
+  async toggleMailStar(emailId: string): Promise<Result> {
+    try {
+      await http.patch(`/mail/${emailId}/star`);
+      return { success: true, message: 'Star toggled' };
+    } catch (error) {
+      return toFailure('Mail', error, 'Could not update star.');
+    }
+  }
+
+  async toggleMailPin(emailId: string): Promise<Result> {
+    try {
+      await http.patch(`/mail/${emailId}/pin`);
+      return { success: true, message: 'Pin toggled' };
+    } catch (error) {
+      return toFailure('Mail', error, 'Could not update pin.');
+    }
+  }
+
+  async moveMailToFolder(emailId: string, folder: string): Promise<Result> {
+    try {
+      await http.patch(`/mail/${emailId}/move`, { folder });
+      return { success: true, message: 'Message moved' };
+    } catch (error) {
+      return toFailure('Mail', error, 'Could not move the message.');
+    }
+  }
+
+  async deleteMail(emailId: string): Promise<Result> {
+    try {
+      await http.delete(`/mail/${emailId}`);
+      return { success: true, message: 'Message deleted' };
+    } catch (error) {
+      return toFailure('Mail', error, 'Could not delete the message.');
     }
   }
 

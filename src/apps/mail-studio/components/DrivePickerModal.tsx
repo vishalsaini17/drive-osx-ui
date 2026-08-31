@@ -35,14 +35,14 @@ export const DrivePickerModal: React.FC<DrivePickerModalProps> = ({
           </div>
           <button
             onClick={onClose}
-            className="p-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white cursor-pointer"
+            className={`p-1 rounded-lg text-slate-400 ${isLight ? 'hover:text-slate-700' : 'hover:text-white'} cursor-pointer`}
           >
             <X size={16} />
           </button>
         </div>
 
         {/* File List */}
-        <div className="p-3 flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-white/5 min-h-[200px]">
+        <div className={`p-3 flex-1 overflow-y-auto divide-y ${isLight ? 'divide-slate-100' : 'divide-white/5'} min-h-[200px]`}>
           {files.length === 0 ? (
             <div className="p-8 text-center text-xs text-slate-400 flex flex-col items-center gap-2">
               <HardDrive size={28} className="opacity-40" />
@@ -87,7 +87,7 @@ export const DrivePickerModal: React.FC<DrivePickerModalProps> = ({
         }`}>
           <button
             onClick={onClose}
-            className="px-3.5 py-1.5 rounded-lg border text-xs font-semibold hover:bg-slate-200 dark:hover:bg-white/10 cursor-pointer"
+            className={`px-3.5 py-1.5 rounded-lg border text-xs font-semibold ${isLight ? 'hover:bg-slate-200' : 'hover:bg-white/10'} cursor-pointer`}
           >
             Cancel
           </button>

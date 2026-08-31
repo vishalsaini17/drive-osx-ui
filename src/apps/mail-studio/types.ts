@@ -20,6 +20,8 @@ export interface Email {
   subject: string;
   preview: string;
   body: string;
+  /** Rich-text version of `body`; sanitized before it is ever put in the DOM. */
+  bodyHtml?: string | null;
   timestamp: string;
   dateISO: string;
   folder: FolderType;
