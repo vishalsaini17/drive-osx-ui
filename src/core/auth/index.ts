@@ -1,2 +1,0 @@
-// auth core module
-export {};

@@ -1,0 +1,3822 @@
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
+import {
+  Folder,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
+  Plus,
+  Trash2,
+  FolderPlus,
+  Search,
+  Grid,
+  List,
+  Copy,
+  Scissors,
+  Clipboard,
+  Edit3,
+  Info,
+  ChevronRight,
+  HardDrive,
+  RefreshCw,
+  X,
+  Image as ImageIcon,
+  FileText,
+  FileCode,
+  Check,
+  Upload,
+  FileUp,
+  Home,
+  Clock,
+  Star,
+  Download,
+  Video,
+  Music,
+  Pin,
+  PinOff,
+  User,
+  Users,
+  Share2,
+  RotateCcw,
+  Sparkles,
+  ExternalLink,
+  Filter,
+  ArrowUpDown,
+  CheckSquare,
+  Square,
+  FileArchive,
+  FileSpreadsheet,
+  FileType,
+  Presentation as PresentationIcon,
+  Layers,
+  FolderUp,
+  ChevronDown,
+  MoreHorizontal,
+  FolderX,
+  FolderOpen,
+  Loader2,
+  AlertCircle,
+  Settings as SettingsIcon
+} from 'lucide-react';
+import { FileItem } from '../../platform/types';
+import { useSystemStore } from '../../shell/state/systemStore';
+import { useAppTheme } from '../../platform/theme/useAppTheme';
+import { useContextMenuStore, ContextMenuItem } from '../../shell/context-menu/contextMenuStore';
+import { StorageService } from '../../platform/storage/StorageService';
+import { FileService, type FileItemResponse } from '../../platform/files/FileService';
+import { getAppForFile } from '../../platform/registry/EditorRegistry';
+import { getFileKind } from './utils/fileType';
+import WindowStatus from '../../shell/window-manager/WindowStatusContext';
+import { useAppMenu } from '../../platform/menus/AppMenuContext';
+import { separator } from '../../platform/menus/types';
+
+import ShareModal from './components/ShareModal';
+import MoveModal from './components/MoveModal';
+import FilePreviewModal from './components/FilePreviewModal';
+import PropertiesModal from './components/PropertiesModal';
+import OpenWithModal from './components/OpenWithModal';
+import AppSettingsModal from '../../shell/preferences/AppSettingsModal';
+
+/**
+ * Marks a drag as an internal File Explorer item drag rather than an OS/browser
+ * file drag. Set on every `dragstart` here and checked via `dataTransfer.types`
+ * (readable during `dragover`, unlike `getData`) so the canvas can tell the two
+ * apart before a drop even happens — including drags that started in a
+ * different File Explorer window, since `dataTransfer` is native to the
+ * browser drag gesture and isn't scoped to any one component instance.
+ */
+const INTERNAL_DRAG_TYPE = 'application/x-drive-osx-file-item';
+
+/**
+ * Sidebar destinations that aren't real backend folders — Trash, Recent,
+ * Starred, and each "Shared with me" entry are all client-side views derived
+ * by filtering the already-synced `files` array. `syncFilesFromBackend`
+ * expects an actual folder id (or null for root); passing one of these
+ * through to `GET /files/children/:id` gets rejected as an invalid folder id
+ * and only produces a spurious error toast, never any usable data.
+ */
+const VIRTUAL_FOLDER_IDS = new Set(['trash', 'recent', 'starred', 'shared-with-me']);
+
+function dragHasType(e: React.DragEvent, type: string): boolean {
+  return Array.from(e.dataTransfer.types || []).includes(type);
+}
+
+/** Maps a server file row onto the shape the grid/list views render. */
+function mapFileResponseToItem(f: FileItemResponse, parentId: string): FileItem {
+  return {
+    id: f.id || f._id,
+    name: f.name,
+    type: f.type,
+    content: f.content || '',
+    parentId,
+    createdAt: f.createdAt,
+    updatedAt: f.updatedAt,
+    size: f.size,
+    starred: f.starred || false,
+    category: f.mimeType?.split('/')[0] as FileItem['category'],
+    originalParentId: null,
+    isShared: f.isShared || false,
+    effectiveRole: f.effectiveRole,
+    isSystem: f.metadata?.system === true,
+  };
+}
+
+/** Extension → the same broad category the toolbar's type filter uses. */
+function fileCategoryLabel(item: FileItem): string {
+  if (item.type === 'folder') return 'Folders';
+  const ext = item.name.split('.').pop()?.toLowerCase();
+  if (ext === 'txt' || ext === 'pdf' || ext === 'doc' || ext === 'docx') return 'Documents';
+  if (ext === 'png' || ext === 'jpg' || ext === 'jpeg' || ext === 'webp' || ext === 'svg') return 'Images';
+  if (ext === 'mp3' || ext === 'wav' || ext === 'ogg' || ext === 'm4a') return 'Audio';
+  if (ext === 'mp4' || ext === 'webm' || ext === 'mov') return 'Video';
+  if (ext === 'js' || ext === 'ts' || ext === 'tsx' || ext === 'html' || ext === 'css' || ext === 'py' || ext === 'json') return 'Code';
+  if (ext === 'zip' || ext === 'tar' || ext === 'gz' || ext === 'rar') return 'Archives';
+  return 'Other';
+}
+
+/** Windows-Explorer-style recency buckets, most recent first. */
+const DATE_BUCKET_ORDER = ['Today', 'Yesterday', 'Earlier this week', 'Earlier this month', 'Earlier this year', 'Older', 'Unknown'];
+function dateBucketLabel(dateStr: string | undefined): string {
+  if (!dateStr) return 'Unknown';
+  const date = new Date(dateStr);
+  if (Number.isNaN(date.getTime())) return 'Unknown';
+
+  const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const today = startOfDay(new Date());
+  const target = startOfDay(date);
+  const dayDiff = Math.round((today.getTime() - target.getTime()) / 86_400_000);
+
+  if (dayDiff <= 0) return 'Today';
+  if (dayDiff === 1) return 'Yesterday';
+  if (dayDiff <= 7) return 'Earlier this week';
+  if (dayDiff <= 31) return 'Earlier this month';
+  if (target.getFullYear() === today.getFullYear()) return 'Earlier this year';
+  return 'Older';
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Windows-Explorer-style size buckets, largest first. */
+const SIZE_BUCKET_ORDER = ['Folders', 'Very Large (100 MB+)', 'Large (10-100 MB)', 'Medium (1-10 MB)', 'Small (under 1 MB)', 'Empty', 'Unknown'];
+function sizeBucketLabel(item: FileItem): string {
+  if (item.type === 'folder') return 'Folders';
+  if (typeof item.size !== 'number') return 'Unknown';
+  const mb = item.size / (1024 * 1024);
+  if (item.size === 0) return 'Empty';
+  if (mb >= 100) return 'Very Large (100 MB+)';
+  if (mb >= 10) return 'Large (10-100 MB)';
+  if (mb >= 1) return 'Medium (1-10 MB)';
+  return 'Small (under 1 MB)';
+}
+
+export default function FileManager({ windowId = 'fileManager' }: { windowId?: string }) {
+  // Central store integration
+  const files = useSystemStore((state) => state.files);
+  const setFiles = useSystemStore((state) => state.setFiles);
+  const syncFilesFromBackend = useSystemStore((state) => state.syncFilesFromBackend);
+  const syncTrashFromBackend = useSystemStore((state) => state.syncTrashFromBackend);
+  const addNotification = useSystemStore((state) => state.addNotification);
+  const deletedFiles = useSystemStore((state) => state.deletedFiles || []);
+  const handleDeleteFile = useSystemStore((state) => state.handleDeleteFile);
+  const handleRestoreFile = useSystemStore((state) => state.handleRestoreFile);
+  const handleEmptyTrash = useSystemStore((state) => state.handleEmptyTrash);
+  const openTextFileInEditor = useSystemStore((state) => state.openTextFileInEditor);
+  const openTextFileInNewEditorWindow = useSystemStore((state) => state.openTextFileInNewEditorWindow);
+  const consumeFilePickerRequest = useSystemStore((state) => state.consumeFilePickerRequest);
+  const resolveFilePicker = useSystemStore((state) => state.resolveFilePicker);
+  const handleCloseWindow = useSystemStore((state) => state.handleCloseWindow);
+  const toggleWindow = useSystemStore((state) => state.toggleWindow);
+  const settings = useSystemStore((state) => state.settings);
+  const setSettings = useSystemStore((state) => state.setSettings);
+  const currentUser = useSystemStore((state) => state.currentUser);
+  const urlFolderId = useSystemStore((state) => state.fileManagerCurrentFolderId);
+  const setUrlFolderId = useSystemStore((state) => state.setFileManagerCurrentFolderId);
+
+  const activeTheme = useAppTheme('fileManager').chromeTheme;
+
+  const fmPrefs = settings.appPreferences?.fileManager;
+  const prefView = fmPrefs?.defaultView?.toLowerCase() === 'list' ? 'list' : 'grid';
+  // "Confirm Before Trash Move" (Settings) only ever gates moving something to
+  // the Recycle Bin, which is reversible — permanently erasing an item from
+  // the Recycle Bin itself always confirms regardless of this preference,
+  // since that action can't be undone.
+  const confirmOnDeletePref = fmPrefs?.confirmOnDelete ?? true;
+  const confirmMoveToTrash = (message: string) => !confirmOnDeletePref || confirm(message);
+
+  // State Management
+  const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
+  const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
+  // Ctrl/Cmd-click is how a mouse user builds a multi-selection; there is no
+  // modifier key on touch. Once a long-press starts one, further plain taps
+  // toggle membership the same way a Ctrl-click would, until the selection
+  // empties again.
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const toggleFileSelected = useCallback((id: string) => {
+    setSelectedFileIds((prev) => {
+      const next = prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id];
+      if (next.length === 0) setIsSelectionMode(false);
+      return next;
+    });
+  }, []);
+  const clearFileSelection = useCallback(() => {
+    setSelectedFileIds([]);
+    setIsSelectionMode(false);
+  }, []);
+  const longPressTimerRef = useRef<number | null>(null);
+  const suppressNextClickRef = useRef(false);
+  const cancelLongPress = useCallback(() => {
+    if (longPressTimerRef.current !== null) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  }, []);
+  const startLongPressSelect = useCallback((e: React.PointerEvent, itemId: string) => {
+    if (e.pointerType !== 'touch') return;
+    cancelLongPress();
+    longPressTimerRef.current = window.setTimeout(() => {
+      longPressTimerRef.current = null;
+      suppressNextClickRef.current = true;
+      setIsSelectionMode(true);
+      toggleFileSelected(itemId);
+      navigator.vibrate?.(10);
+    }, 500);
+  }, [cancelLongPress, toggleFileSelected]);
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [typeFilter, setTypeFilter] = useState<'all' | 'documents' | 'images' | 'audio' | 'video' | 'code' | 'archives'>('all');
+  const [viewMode, setViewMode] = useState<'grid' | 'list'>(prefView);
+
+  // "Shared with me" only: narrowing by the role you were given.
+  const [sharedRoleFilter, setSharedRoleFilter] = useState<'all' | 'viewer' | 'commenter' | 'editor'>('all');
+  // Grouping — available in every folder. "Shared By" only makes sense in
+  // "Shared with me" (regular folders have no per-item owner to show), so
+  // it's hidden from the dropdown elsewhere; `effectiveGroupBy` below also
+  // guards against a stale 'owner' choice carried over from that tab.
+  const [groupBy, setGroupBy] = useState<
+    'none' | 'owner' | 'role' | 'name' | 'type' | 'size' | 'dateModified' | 'dateCreated'
+  >('none');
+
+  const DEFAULT_FOLDER_NAMES = ['Documents', 'Downloads', 'Projects', 'Pictures', 'Videos', 'Music'];
+  const [defaultFolderIdMap, setDefaultFolderIdMap] = useState<Record<string, string>>({});
+
+  // Modals state
+  const [activeShareItem, setActiveShareItem] = useState<FileItem | null>(null);
+  const [activeMoveItem, setActiveMoveItem] = useState<FileItem | null>(null);
+  const [activePreviewItem, setActivePreviewItem] = useState<FileItem | null>(null);
+  const [activePropertiesItem, setActivePropertiesItem] = useState<FileItem | null>(null);
+  const [activeOpenWithItem, setActiveOpenWithItem] = useState<FileItem | null>(null);
+  const [isAppSettingsOpen, setIsAppSettingsOpen] = useState(false);
+
+  // Set when this window was opened as a picker for another app (currently
+  // just the editor's Open File…/Open Folder…) via `requestFilePick` —
+  // consumed once, on mount, so it's the picker for this window's whole
+  // lifetime rather than something that could be re-triggered later.
+  const [pickerContext, setPickerContext] = useState<{ mode: 'file' | 'folder'; requesterWindowId: string } | null>(null);
+  const pickerConsumedRef = useRef(false);
+  useEffect(() => {
+    if (pickerConsumedRef.current) return;
+    pickerConsumedRef.current = true;
+    const request = consumeFilePickerRequest(windowId);
+    if (request) setPickerContext(request);
+    // Deliberately mount-only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Details pane
+  const [showDetailsPane, setShowDetailsPane] = useState<boolean>(false);
+
+  // Upload progress, shown in the window's status bar while a batch (from
+  // uploadFiles or uploadFolderFiles) is in flight.
+  const [uploadProgress, setUploadProgress] = useState<{
+    total: number;
+    completed: number;
+    currentFileName: string;
+    currentPercent: number;
+  } | null>(null);
+  const uploadOverallPercent = uploadProgress
+    ? Math.min(100, Math.round(((uploadProgress.completed + uploadProgress.currentPercent / 100) / uploadProgress.total) * 100))
+    : 0;
+
+  // Download progress, shown as a floating notification-style card anchored
+  // to the bottom-left of the window while a zip download (2+ items, or any
+  // folder) is in flight. `approxTotalBytes` comes from the server's
+  // uncompressed-size estimate for the CURRENT part only, so the percentage
+  // can overshoot slightly short of 100 right up until that part's response
+  // actually finishes. A small download can complete in well under a video
+  // frame, so `completed` holds the bar at 100% for a beat rather than
+  // clearing it the instant the request resolves — otherwise nothing would
+  // ever be visible to see. A selection over 1GiB downloads as several
+  // parts (`totalParts` > 1), each its own zip file.
+  const [downloadProgress, setDownloadProgress] = useState<{
+    itemCount: number;
+    loadedBytes: number;
+    approxTotalBytes: number;
+    partIndex: number;
+    totalParts: number;
+    completed?: boolean;
+  } | null>(null);
+  const downloadOverallPercent = !downloadProgress
+    ? 0
+    : downloadProgress.completed
+      ? 100
+      : downloadProgress.approxTotalBytes > 0
+        ? Math.min(99, Math.round((downloadProgress.loadedBytes / downloadProgress.approxTotalBytes) * 100))
+        : 0;
+
+  // Drag and drop state
+  const [isDragOverCanvas, setIsDragOverCanvas] = useState<boolean>(false);
+  const [draggedItemId, setDraggedItemId] = useState<string | null>(null);
+  // Which folder tile an internal drag is currently hovering, so it can show
+  // itself as the drop target the way a desktop file manager does.
+  const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (fmPrefs?.defaultView) {
+      setViewMode(fmPrefs.defaultView.toLowerCase() === 'list' ? 'list' : 'grid');
+    }
+  }, [fmPrefs?.defaultView]);
+
+  // Fetches the CURRENT folder's own direct children on every navigation,
+  // not just once at mount. `files` used to be filled exclusively by a
+  // one-time root-only fetch here, so anything nested — created, renamed, or
+  // moved from another app entirely (e.g. Code Editor's own Explorer tree)
+  // — was invisible unless this component happened to have optimistically
+  // spliced it in itself. `syncFilesFromBackend` fetches whichever folder id
+  // it's given and merges the result into the shared `files` array without
+  // discarding what's cached for every other folder, so this stays correct
+  // no matter which app last touched the tree.
+  useEffect(() => {
+    if (!currentUser) return;
+    if (currentFolderId && VIRTUAL_FOLDER_IDS.has(currentFolderId)) return;
+    void syncFilesFromBackend(currentFolderId);
+  }, [currentUser, currentFolderId, syncFilesFromBackend]);
+
+  // --- URL sync (/folder and /folder/:folderId) --------------------------
+  //
+  // `App.tsx` reflects whichever folder this component is showing in the
+  // browser URL, and seeds `fileManagerCurrentFolderId` from the URL on a
+  // direct load or a Back/Forward navigation. The two effects below keep
+  // `currentFolderId` (this component's own state, driving everything else
+  // in the file — history, breadcrumbs, uploads, etc.) and that shared store
+  // field in sync in both directions, without echoing a change either side
+  // just made back at the other. `lastSyncedFolderIdRef` is what makes that
+  // possible: it's the folder id both sides last agreed on, so each effect
+  // only acts on a value it hasn't already seen.
+  const lastSyncedFolderIdRef = useRef<string | null>(null);
+  const [folderNotFoundId, setFolderNotFoundId] = useState<string | null>(null);
+
+  // The browser URL is a single, tab-wide concept — it can only ever track
+  // one window. Only this app's primary window (the one every app is
+  // preallocated) owns it; an extra File Explorer window opened via "New
+  // Window" keeps its own independent `currentFolderId` and never reads or
+  // writes `fileManagerCurrentFolderId` at all. Without this gate, every open
+  // File Explorer window "adopted" whichever folder any one of them last
+  // wrote to the shared field, so navigating in one silently navigated all
+  // of them.
+  const isPrimaryWindow = windowId === 'fileManager';
+
+  // This component's own navigation (clicking a folder, breadcrumbs, the
+  // in-app Back/Forward buttons) → tell the shell so it can update the URL.
+  useEffect(() => {
+    if (!isPrimaryWindow) return;
+    if (currentFolderId === lastSyncedFolderIdRef.current) return;
+    lastSyncedFolderIdRef.current = currentFolderId;
+    setUrlFolderId(currentFolderId);
+  }, [isPrimaryWindow, currentFolderId, setUrlFolderId]);
+
+  // A URL the shell didn't get from us — a direct link, a reload, or the
+  // browser's actual Back/Forward buttons — → adopt that folder here. Real
+  // (non-virtual) ids are verified against the backend first, so a bad id in
+  // the URL lands on a clear "not found" state instead of silently opening
+  // the wrong folder or an empty grid.
+  useEffect(() => {
+    if (!isPrimaryWindow) return;
+    if (urlFolderId === lastSyncedFolderIdRef.current) return;
+
+    // The ref is only updated once we've actually committed to a folder
+    // (below), not here at the top. Marking it "handled" before the async
+    // check below resolves would mean StrictMode's dev-mode double-invoke —
+    // which runs this effect's cleanup, cancelling the in-flight check,
+    // before immediately running the effect again — leaves the ref already
+    // matching `urlFolderId` on that second pass, so it short-circuits and
+    // the folder never actually gets adopted. Every exit path below sets the
+    // ref itself, right where it stops being redone.
+    if (urlFolderId === null || VIRTUAL_FOLDER_IDS.has(urlFolderId)) {
+      lastSyncedFolderIdRef.current = urlFolderId;
+      setFolderNotFoundId(null);
+      navigateToFolder(urlFolderId);
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const file = await FileService.getFile(urlFolderId);
+        if (cancelled) return;
+        if (!file || file.type !== 'folder') {
+          lastSyncedFolderIdRef.current = urlFolderId;
+          setFolderNotFoundId(urlFolderId);
+          return;
+        }
+        lastSyncedFolderIdRef.current = urlFolderId;
+        setFolderNotFoundId(null);
+        navigateToFolder(urlFolderId);
+      } catch {
+        if (!cancelled) {
+          lastSyncedFolderIdRef.current = urlFolderId;
+          setFolderNotFoundId(urlFolderId);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPrimaryWindow, urlFolderId]);
+
+  // Derived from `files` itself (rather than a one-off local variable) so it
+  // stays correct as the shared file list changes, not just at mount.
+  //
+  // This used to also prune `pinnedFolderIds` down to whatever's currently in
+  // `files` — but `files` is only ever a partial cache of the folders this
+  // session has actually browsed into (see mergeFolderChildren above), never
+  // the full tree. A pinned folder the user hasn't happened to navigate into
+  // yet would get silently unpinned the moment any unrelated folder synced,
+  // then reappear on refresh once loadPinned() re-fetched the real list from
+  // the backend — which is already authoritative (files.repository.ts's
+  // listPinned() filters out deleted/inaccessible folders server-side), so
+  // there was never a need to re-validate it against this local cache.
+  useEffect(() => {
+    const folderMap: Record<string, string> = {};
+    files.forEach((f) => {
+      if (f.type === 'folder' && f.parentId === null && DEFAULT_FOLDER_NAMES.includes(f.name)) {
+        folderMap[f.name.toLowerCase()] = f.id;
+      }
+    });
+    setDefaultFolderIdMap(folderMap);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [files]);
+
+  // Pinned sidebar folders state
+  const [pinnedFolderIds, setPinnedFolderIds] = useState<string[]>([]);
+
+  // "Shared with me" virtual folder — items other people have shared with the
+  // current user, loaded on demand since it isn't part of the user's own tree.
+  const [sharedWithMeItems, setSharedWithMeItems] = useState<FileItem[]>([]);
+  const [sharedWithMeLoading, setSharedWithMeLoading] = useState(false);
+  const [sharedWithMeError, setSharedWithMeError] = useState<string | null>(null);
+
+  const loadSharedWithMe = async (signal: { cancelled: boolean }) => {
+    setSharedWithMeLoading(true);
+    setSharedWithMeError(null);
+    try {
+      const items = await FileService.listSharedWithMe();
+      if (signal.cancelled) return;
+      setSharedWithMeItems(
+        items.map((f: any) => ({
+          id: f._id ?? f.id,
+          name: f.name,
+          type: f.type,
+          content: f.content || '',
+          parentId: 'shared-with-me',
+          createdAt: f.createdAt,
+          updatedAt: f.updatedAt,
+          size: f.size,
+          starred: f.starred || false,
+          category: f.mimeType?.split('/')[0] as any,
+          originalParentId: f.parentId,
+          isShared: f.isShared || false,
+          sharedRole: f.sharedRole,
+          sharedAt: f.sharedAt,
+          ownerUsername: f.ownerUsername,
+          ownerName: f.ownerName,
+        })),
+      );
+    } catch (error) {
+      if (!signal.cancelled) {
+        const message = error instanceof Error ? error.message : 'Please try again.';
+        setSharedWithMeError(`Could not load items shared with you. ${message}`);
+      }
+    } finally {
+      if (!signal.cancelled) setSharedWithMeLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (currentFolderId !== 'shared-with-me' || !currentUser) return;
+    // Default to grouping by "Shared By" each time the tab is opened — that's
+    // the grouping that actually makes sense here (regular folders have no
+    // per-item owner), though the user can still switch it away for this visit.
+    setGroupBy('owner');
+    const signal = { cancelled: false };
+    void loadSharedWithMe(signal);
+    return () => {
+      signal.cancelled = true;
+    };
+  }, [currentFolderId, currentUser]);
+
+  // "Recent" and "Starred" virtual folders — server-ranked/filtered rather
+  // than derived from the client's `files` cache. That cache only holds
+  // folders actually opened this session (files are fetched lazily, per
+  // folder), so filtering it locally silently dropped every file in a folder
+  // the user hadn't visited yet, and "Recent" wasn't even ordered by recency.
+  const [recentItems, setRecentItems] = useState<FileItem[]>([]);
+  const [recentLoading, setRecentLoading] = useState(false);
+  const [recentError, setRecentError] = useState<string | null>(null);
+
+  const loadRecent = async (signal: { cancelled: boolean }) => {
+    setRecentLoading(true);
+    setRecentError(null);
+    try {
+      const items = await FileService.listRecent();
+      if (signal.cancelled) return;
+      setRecentItems(items.map((f) => mapFileResponseToItem(f, 'recent')));
+    } catch (error) {
+      if (!signal.cancelled) {
+        const message = error instanceof Error ? error.message : 'Please try again.';
+        setRecentError(`Could not load recent files. ${message}`);
+      }
+    } finally {
+      if (!signal.cancelled) setRecentLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (currentFolderId !== 'recent' || !currentUser) return;
+    const signal = { cancelled: false };
+    void loadRecent(signal);
+    return () => {
+      signal.cancelled = true;
+    };
+  }, [currentFolderId, currentUser]);
+
+  const [starredItems, setStarredItems] = useState<FileItem[]>([]);
+  const [starredLoading, setStarredLoading] = useState(false);
+  const [starredError, setStarredError] = useState<string | null>(null);
+
+  const loadStarred = async (signal: { cancelled: boolean }) => {
+    setStarredLoading(true);
+    setStarredError(null);
+    try {
+      const items = await FileService.listStarred();
+      if (signal.cancelled) return;
+      setStarredItems(items.map((f) => mapFileResponseToItem(f, 'starred')));
+    } catch (error) {
+      if (!signal.cancelled) {
+        const message = error instanceof Error ? error.message : 'Please try again.';
+        setStarredError(`Could not load starred files. ${message}`);
+      }
+    } finally {
+      if (!signal.cancelled) setStarredLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (currentFolderId !== 'starred' || !currentUser) return;
+    const signal = { cancelled: false };
+    void loadStarred(signal);
+    return () => {
+      signal.cancelled = true;
+    };
+  }, [currentFolderId, currentUser]);
+
+  /**
+   * Trash and "Shared with me" are backed by their own endpoints, not
+   * `/files/children/:id` — routing every virtual folder through
+   * `syncFilesFromBackend` the way a real folder id does makes the request
+   * 400 ("Invalid folder id") and silently fails, which is what the refresh
+   * button and the canvas's "Refresh" context-menu item were both doing.
+   */
+  const handleRefresh = () => {
+    setSearchQuery('');
+    setSelectedFileIds([]);
+    if (currentFolderId === 'trash') {
+      void syncTrashFromBackend();
+    } else if (currentFolderId === 'shared-with-me') {
+      void loadSharedWithMe({ cancelled: false });
+    } else if (currentFolderId === 'recent') {
+      void loadRecent({ cancelled: false });
+    } else if (currentFolderId === 'starred') {
+      void loadStarred({ cancelled: false });
+    } else if (!currentFolderId || !VIRTUAL_FOLDER_IDS.has(currentFolderId)) {
+      void syncFilesFromBackend(currentFolderId);
+    }
+  };
+
+  useEffect(() => {
+    if (!currentUser) return;
+    let cancelled = false;
+    const loadPinned = async () => {
+      try {
+        const pinned = await FileService.listPinned();
+        if (cancelled) return;
+        const ids = pinned.map((f: any) => f._id || f.id).filter(Boolean);
+        setPinnedFolderIds(ids);
+      } catch (error) {
+        console.warn('Failed to load pinned folders from backend:', error);
+      }
+    };
+    loadPinned();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser]);
+
+  const togglePinSidebarFolder = async (folderId: string) => {
+    try {
+      const result = await FileService.togglePin(folderId);
+      if (result && result._id) {
+        setPinnedFolderIds((prev) => {
+          const isPinned = prev.includes(folderId);
+          if (isPinned) {
+            return prev.filter((id) => id !== folderId);
+          }
+          return [...prev, folderId];
+        });
+      }
+    } catch (error) {
+      console.warn('Failed to toggle pin on backend:', error);
+    }
+  };
+
+  // Custom navigation history
+  const [history, setHistory] = useState<(string | null)[]>([null]);
+  const [historyIndex, setHistoryIndex] = useState<number>(0);
+
+  // Sorting
+  const [sortField, setSortField] = useState<'name' | 'type' | 'date' | 'dateModified' | 'size'>('name');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
+
+  // Mirrors the app's own "Default File Sorting" setting (Settings, driven
+  // by AppRegistry's `fileManager` schema) — same reactive pattern as
+  // `defaultView` above: applies on mount, and again if the preference
+  // itself changes while the window is open.
+  useEffect(() => {
+    const SORT_BY_PREF_MAP: Record<string, typeof sortField> = {
+      Name: 'name',
+      'Date Modified': 'dateModified',
+      Type: 'type',
+      Size: 'size',
+    };
+    const mapped = fmPrefs?.sortBy ? SORT_BY_PREF_MAP[fmPrefs.sortBy] : undefined;
+    if (mapped) setSortField(mapped);
+  }, [fmPrefs?.sortBy]);
+
+  // Address Bar path editing
+  const [isPathEditing, setIsPathEditing] = useState<boolean>(false);
+  const [pathInputText, setPathInputText] = useState<string>('');
+
+  // Clipboard operations (Cut / Copy / Paste)
+  const [clipboard, setClipboard] = useState<{ id: string; action: 'copy' | 'cut' } | null>(null);
+
+  // Inline rename state
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameText, setRenameText] = useState<string>('');
+
+  // Refs
+  const renameInputRef = useRef<HTMLInputElement>(null);
+  const pathInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const explorerAreaRef = useRef<HTMLDivElement>(null);
+  const leftToolbarRef = useRef<HTMLDivElement>(null);
+
+  const [containerWidth, setContainerWidth] = useState<number>(800);
+  const [explorerWidth, setExplorerWidth] = useState<number>(600);
+  const [leftToolbarWidth, setLeftToolbarWidth] = useState<number>(800);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setContainerWidth(entry.contentRect.width);
+      }
+    });
+    observer.observe(containerRef.current);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!explorerAreaRef.current) return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setExplorerWidth(entry.contentRect.width);
+      }
+    });
+    observer.observe(explorerAreaRef.current);
+    return () => observer.disconnect();
+  }, []);
+
+  // Tracks the actual space available to the left action-button group (New
+  // Folder / Cut / Copy / Paste / Rename / Delete / …) — not the whole
+  // window, since that also has to share the row with the search box and the
+  // right-hand filter/view controls. Flexbox reports this directly once the
+  // group is a `min-w-0 flex-1` sibling instead of something that wraps.
+  useEffect(() => {
+    if (!leftToolbarRef.current) return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setLeftToolbarWidth(entry.contentRect.width);
+      }
+    });
+    observer.observe(leftToolbarRef.current);
+    return () => observer.disconnect();
+  }, []);
+
+  const isCompactSidebar = containerWidth < 480;
+  const isCompactRibbon = containerWidth < 640;
+
+  useEffect(() => {
+    if (containerWidth < 600) {
+      setShowDetailsPane(false);
+    }
+  }, [containerWidth]);
+
+  // Selected item entities
+  const isTrashFolder = currentFolderId === 'trash';
+  const displaySource = isTrashFolder ? deletedFiles : files;
+  const selectedItem = displaySource.find((f) => f.id === selectedFileIds[0]) || null;
+  // A default folder (Documents, Pictures, Videos, Music) can't be deleted,
+  // renamed or moved — the server rejects all three regardless of who owns
+  // it (files.service.ts's `assertNotSystemFolder`). Disabling one item's
+  // worth of selection covers the common case; a mixed multi-select still
+  // disables the whole action rather than silently dropping the protected
+  // item from a batch delete.
+  const selectionHasSystemFolder = selectedFileIds.some(
+    (id) => displaySource.find((f) => f.id === id)?.isSystem,
+  );
+
+  // Auto-focus renaming input. Only the base name is selected, not the
+  // extension — replacing a selection that included ".pdf" was the easiest
+  // way to accidentally rename a file into a different, wrong type.
+  useEffect(() => {
+    if (!renamingId || !renameInputRef.current) return;
+    renameInputRef.current.focus();
+    const target = displaySource.find((f) => f.id === renamingId);
+    const dotIndex = renameText.lastIndexOf('.');
+    // A folder's dot isn't an extension, and a leading dot (dotfile) has none.
+    if (target?.type === 'file' && dotIndex > 0) {
+      renameInputRef.current.setSelectionRange(0, dotIndex);
+    } else {
+      renameInputRef.current.select();
+    }
+  }, [renamingId]);
+
+  // Keyboard navigation shortcuts (Ctrl+A, Del, F2)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (renamingId || isPathEditing) return;
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+        e.preventDefault();
+        setSelectedFileIds(sortedItems.map((f) => f.id));
+      } else if (e.key === 'Delete' && selectedFileIds.length > 0) {
+        if (isTrashFolder) {
+          if (confirm(`Permanently erase selected ${selectedFileIds.length} item(s)? This cannot be undone.`)) {
+            void permanentlyEraseTrashItems(selectedFileIds);
+            setSelectedFileIds([]);
+          }
+        } else {
+          const deletableIds = selectedFileIds.filter((id) => !files.find((f) => f.id === id)?.isSystem);
+          if (deletableIds.length > 0 && confirmMoveToTrash(`Move selected ${deletableIds.length} item(s) to Recycle Bin?`)) {
+            deletableIds.forEach((id) => {
+              const item = files.find((f) => f.id === id);
+              if (item) handleDeleteFile(item);
+            });
+            setSelectedFileIds([]);
+          }
+        }
+      } else if (e.key === 'F2' && selectedItem && !isTrashFolder && !selectedItem.isSystem) {
+        handleStartRename(selectedItem);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedFileIds, renamingId, isPathEditing, files, deletedFiles, isTrashFolder]);
+
+  // Navigate to folder and record history
+  const navigateToFolder = (folderId: string | null) => {
+    const newHistory = history.slice(0, historyIndex + 1);
+    setHistory([...newHistory, folderId]);
+    setHistoryIndex(newHistory.length);
+    setCurrentFolderId(folderId);
+    setSelectedFileIds([]);
+    setIsPathEditing(false);
+  };
+
+  const handleGoBack = () => {
+    if (historyIndex > 0) {
+      const nextIndex = historyIndex - 1;
+      setHistoryIndex(nextIndex);
+      setCurrentFolderId(history[nextIndex]);
+      setSelectedFileIds([]);
+      setIsPathEditing(false);
+    }
+  };
+
+  const handleGoForward = () => {
+    if (historyIndex < history.length - 1) {
+      const nextIndex = historyIndex + 1;
+      setHistoryIndex(nextIndex);
+      setCurrentFolderId(history[nextIndex]);
+      setSelectedFileIds([]);
+      setIsPathEditing(false);
+    }
+  };
+
+  const handleGoUp = () => {
+    if (currentFolderId === null || currentFolderId === 'trash') {
+      navigateToFolder(null);
+      return;
+    }
+    const currentFolder = files.find((f) => f.id === currentFolderId);
+    if (currentFolder) {
+      navigateToFolder(currentFolder.parentId);
+    } else {
+      navigateToFolder(null);
+    }
+  };
+
+  // Address Bar path submit
+  const handlePathSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsPathEditing(false);
+
+    const cleanInput = pathInputText.trim().toLowerCase();
+    if (!cleanInput || cleanInput === 'this pc' || cleanInput === '/' || cleanInput === 'my drive' || cleanInput === 'drive') {
+      navigateToFolder(null);
+      return;
+    }
+
+    if (cleanInput.includes('trash') || cleanInput.includes('recycle')) {
+      navigateToFolder('trash');
+      return;
+    }
+
+    const pathPart = cleanInput.startsWith('/') ? cleanInput.substring(1) : cleanInput;
+    const parts = pathPart.split('/').filter(Boolean);
+    const lastPart = parts[parts.length - 1];
+
+    if (!lastPart) {
+      navigateToFolder(null);
+      return;
+    }
+
+    const matchedFolder = files.find(
+      (f) => f.type === 'folder' && f.name.toLowerCase() === lastPart
+    );
+    if (matchedFolder) {
+      navigateToFolder(matchedFolder.id);
+    } else {
+      alert(`Could not find path: "${pathInputText}"`);
+    }
+  };
+
+  const startPathEditing = () => {
+    setIsPathEditing(true);
+    setPathInputText(getCurrentFolderPathString());
+    setTimeout(() => {
+      pathInputRef.current?.focus();
+      pathInputRef.current?.select();
+    }, 50);
+  };
+
+  const getFolderLabel = (folderId: string): string => {
+    const map: Record<string, string> = {
+      'recent': 'Recent',
+      'starred': 'Starred',
+      'trash': 'Trash / Recycle Bin',
+      'shared-with-me': 'Shared with me',
+    };
+    return map[folderId] || 'Folder';
+  };
+
+  const getFolderIcon = (folderId: string, name: string) => {
+    const lower = (folderId + ' ' + name).toLowerCase();
+    if (lower.includes('trash') || lower.includes('recycle')) return Trash2;
+    if (lower.includes('document')) return FileText;
+    if (lower.includes('download')) return Download;
+    if (lower.includes('project')) return Folder;
+    if (lower.includes('picture') || lower.includes('photo') || lower.includes('image')) return ImageIcon;
+    if (lower.includes('video') || lower.includes('movie')) return Video;
+    if (lower.includes('music') || lower.includes('audio') || lower.includes('song')) return Music;
+    return Folder;
+  };
+
+  const getCurrentFolderPathString = () => {
+    if (!currentFolderId) return '/';
+    const specialLabels: Record<string, string> = {
+      recent: 'Recent',
+      starred: 'Starred',
+      trash: 'Trash Bin',
+      'shared-with-me': 'Shared with me',
+    };
+    if (specialLabels[currentFolderId]) {
+      return `/${specialLabels[currentFolderId]}`;
+    }
+    const pathSegments: string[] = [];
+    let current = files.find((f) => f.id === currentFolderId);
+    while (current) {
+      pathSegments.unshift(current.name);
+      current = files.find((f) => f.id === current.parentId);
+    }
+    return pathSegments.length > 0 ? `/${pathSegments.join('/')}` : `/${getFolderLabel(currentFolderId)}`;
+  };
+
+  const getBreadcrumbs = () => {
+    const breadcrumbs: { name: string; id: string | null }[] = [{ name: '/', id: null }];
+    if (!currentFolderId) return breadcrumbs;
+
+    const specialLabels: Record<string, string> = {
+      recent: 'Recent',
+      starred: 'Starred',
+      trash: 'Trash Bin',
+      'shared-with-me': 'Shared with me',
+    };
+    if (specialLabels[currentFolderId]) {
+      return [...breadcrumbs, { name: specialLabels[currentFolderId], id: currentFolderId }];
+    }
+
+    const segments: { name: string; id: string }[] = [];
+    let current = files.find((f) => f.id === currentFolderId);
+    while (current) {
+      segments.unshift({ name: current.name, id: current.id });
+      current = files.find((f) => f.id === current.parentId);
+    }
+    return [...breadcrumbs, ...segments];
+  };
+
+  // Render Vector Icon for items
+  const renderFileIcon = (item: FileItem, size: 'large' | 'small' | 'xl' = 'large') => {
+    const kind = getFileKind(item);
+
+    const dim = size === 'xl' ? 'w-16 h-16' : size === 'large' ? 'w-10 h-10' : 'w-4 h-4';
+    const rounded = size === 'xl' ? 'rounded-xl' : size === 'large' ? 'rounded-lg' : 'rounded';
+
+    if (kind === 'image' && item.content && (item.content.startsWith('data:image/') || item.content.startsWith('http'))) {
+      return (
+        <img
+          src={item.content}
+          alt={item.name}
+          className={`${dim} ${rounded} object-cover border border-black/10 shadow-sm`}
+          referrerPolicy="no-referrer"
+        />
+      );
+    }
+
+    switch (kind) {
+      case 'folder':
+        return <Folder className={`${dim} text-amber-500 fill-amber-500/20`} />;
+      case 'image':
+        return <ImageIcon className={`${dim} text-sky-500`} />;
+      case 'code':
+        return <FileCode className={`${dim} text-purple-500`} />;
+      case 'audio':
+        return <Music className={`${dim} text-emerald-500`} />;
+      case 'video':
+        return <Video className={`${dim} text-indigo-500`} />;
+      case 'archive':
+        return <FileArchive className={`${dim} text-orange-500`} />;
+      case 'pdf':
+        return <FileType className={`${dim} text-red-500`} />;
+      case 'spreadsheet':
+        return <FileSpreadsheet className={`${dim} text-green-600`} />;
+      case 'presentation':
+        return <PresentationIcon className={`${dim} text-amber-600`} />;
+      case 'text':
+        return <FileText className={`${dim} text-slate-500`} />;
+      default:
+        return <FileText className={`${dim} text-blue-500`} />;
+    }
+  };
+
+  function triggerBrowserDownload(href: string, filename: string) {
+    const a = document.createElement('a');
+    a.href = href;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+
+  // A single real file downloads directly via a short-lived signed URL — no
+  // need to route it through the zip endpoint. A folder has no such URL (it
+  // isn't one object in storage), so it always goes through the zip path.
+  const handleDownloadFile = async (item: FileItem) => {
+    if (isTrashFolder) return;
+    if (item.type === 'folder') {
+      await handleDownloadSelectedItems([item.id]);
+      return;
+    }
+    try {
+      const url = await FileService.downloadUrl(item.id);
+      triggerBrowserDownload(url, item.name);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Please try again.';
+      alert(`Could not download "${item.name}": ${message}`);
+    }
+  };
+
+  // Toolbar Download — a single file downloads directly; two or more items,
+  // or any folder (which can only be downloaded as a zip in the first
+  // place), bundle server-side into one archive with a progress readout.
+  const handleDownloadSelectedItems = async (idsParam?: string[]) => {
+    if (isTrashFolder) return;
+    const ids = idsParam ?? selectedFileIds;
+    const items = ids.map((id) => displaySource.find((f) => f.id === id)).filter((i): i is FileItem => !!i);
+    if (items.length === 0) return;
+
+    const hasFolder = items.some((i) => i.type === 'folder');
+    if (!hasFolder && items.length <= 2) {
+      for (const item of items) await handleDownloadFile(item);
+      return;
+    }
+
+    let partIndex = 0;
+    let totalParts = 1;
+    let lastFilename = '';
+    const startedAt = Date.now();
+    setDownloadProgress({ itemCount: items.length, loadedBytes: 0, approxTotalBytes: 0, partIndex: 0, totalParts: 1 });
+    try {
+      do {
+        const { blob, filename, totalParts: tp } = await FileService.downloadZip(ids, partIndex, {
+          onProgress: (loadedBytes, approxTotalBytes) =>
+            setDownloadProgress({ itemCount: items.length, loadedBytes, approxTotalBytes, partIndex, totalParts: tp }),
+        });
+        totalParts = tp;
+        lastFilename = filename;
+        const objectUrl = URL.createObjectURL(blob);
+        triggerBrowserDownload(objectUrl, filename);
+        URL.revokeObjectURL(objectUrl);
+        partIndex += 1;
+      } while (partIndex < totalParts);
+
+      setDownloadProgress({
+        itemCount: items.length,
+        loadedBytes: 1,
+        approxTotalBytes: 1,
+        partIndex: totalParts - 1,
+        totalParts,
+        completed: true,
+      });
+      // Top up to a minimum visible duration rather than always adding a
+      // fixed delay — a genuinely slow zip shouldn't get padded further, but
+      // a fast one still needs to be on screen long enough to actually see.
+      const remainingMs = 500 - (Date.now() - startedAt);
+      if (remainingMs > 0) await new Promise((resolve) => setTimeout(resolve, remainingMs));
+      addNotification({
+        sender: 'File Explorer',
+        text:
+          totalParts > 1
+            ? `Downloaded ${items.length} item${items.length === 1 ? '' : 's'} as ${totalParts} zip files.`
+            : `Downloaded ${items.length} item${items.length === 1 ? '' : 's'} as "${lastFilename}".`,
+        type: 'success',
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Please try again.';
+      alert(`Could not download the selected items: ${message}`);
+    } finally {
+      setDownloadProgress(null);
+    }
+  };
+
+  // Toggle Star / Favorite
+  //
+  // Must round-trip through the backend, not just flip local state: this used
+  // to only update `files` in memory, so the star was never actually saved.
+  // The moment any real folder synced again — e.g. navigating away from
+  // Starred to any other folder — `syncFilesFromBackend` merged in that
+  // folder's fresh (still-unstarred) data from the server and silently wiped
+  // the star back off, which is exactly the "unstars itself when I navigate
+  // away" bug this fixes.
+  const handleToggleStar = async (item: FileItem) => {
+    try {
+      const result = await FileService.toggleStar(item.id);
+      setFiles((prev) => prev.map((f) => (f.id === item.id ? { ...f, starred: result.starred } : f)));
+      // The Starred view is a separate, server-fetched list (not filtered
+      // from `files`), so unstarring an item from within that view has to
+      // drop it from this list too — otherwise it would sit there, still
+      // showing, until the next full reload.
+      setStarredItems((prev) =>
+        result.starred ? prev : prev.filter((f) => f.id !== item.id)
+      );
+      setRecentItems((prev) => prev.map((f) => (f.id === item.id ? { ...f, starred: result.starred } : f)));
+    } catch (error) {
+      console.error('Failed to toggle star:', error);
+      alert(`Could not update the starred state of "${item.name}". Please try again.`);
+    }
+  };
+
+  // Upload trigger & execution
+  const handleUploadClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  // A data URL for images, text otherwise — used only for the local list's
+  // thumbnail/preview. The durable copy lives in object storage on the
+  // backend, which never returns inline content for an uploaded file.
+  //
+  // Both branches are capped: reading a large upload's *entire* contents into
+  // a JS string just for a placeholder preview (a 50MB text file becomes a
+  // ~100MB UTF-16 string, held in component state for the rest of the
+  // session) was enough to crash the tab on large uploads even though the
+  // upload itself — a streamed XHR, not buffered as a JS string — succeeded
+  // on the server. A truncated text preview mirrors the backend's own
+  // contentText cap (files.service.ts slices to 100_000 chars); a large image
+  // just skips the inline thumbnail rather than materializing a giant data URL.
+  const MAX_TEXT_PREVIEW_BYTES = 100_000;
+  const MAX_IMAGE_PREVIEW_BYTES = 5 * 1024 * 1024;
+  const readFilePreview = (file: File): Promise<string> =>
+    new Promise((resolve) => {
+      const isImage = file.type.startsWith('image/');
+      if (isImage && file.size > MAX_IMAGE_PREVIEW_BYTES) {
+        resolve('');
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = (event) => resolve((event.target?.result as string) || '');
+      reader.onerror = () => resolve('');
+      if (isImage) {
+        reader.readAsDataURL(file);
+      } else {
+        reader.readAsText(file.slice(0, MAX_TEXT_PREVIEW_BYTES));
+      }
+    });
+
+  // Snapshot of every name already in use per parent, seeded from current
+  // state and grown as this upload reserves names — so two files in the same
+  // batch, or a file colliding with something already in the folder, both
+  // get an "(1)" suffix instead of silently overwriting on the server.
+  const initKnownNames = (): Map<string, Set<string>> => {
+    const map = new Map<string, Set<string>>();
+    for (const f of files) {
+      const key = f.parentId ?? '__root__';
+      if (!map.has(key)) map.set(key, new Set());
+      map.get(key)!.add(f.name);
+    }
+    return map;
+  };
+
+  const reserveName = (knownNames: Map<string, Set<string>>, parentId: string | null, desiredName: string): string => {
+    const key = parentId ?? '__root__';
+    let used = knownNames.get(key);
+    if (!used) {
+      used = new Set();
+      knownNames.set(key, used);
+    }
+    let name = desiredName;
+    let count = 1;
+    while (used.has(name)) {
+      const dotIndex = desiredName.lastIndexOf('.');
+      name =
+        dotIndex !== -1
+          ? `${desiredName.substring(0, dotIndex)} (${count++})${desiredName.substring(dotIndex)}`
+          : `${desiredName} (${count++})`;
+    }
+    used.add(name);
+    return name;
+  };
+
+  /**
+   * Uploads each file to the backend and adds the resulting record to local
+   * state. Must go through FileService: a file that only lives in local
+   * React state disappears the next time this folder (or Recents) re-syncs
+   * from the server, which has no record of it — that was the bug here.
+   */
+  const uploadFiles = async (filesToUpload: File[], parentId: string | null) => {
+    const knownNames = initKnownNames();
+    setUploadProgress({ total: filesToUpload.length, completed: 0, currentFileName: '', currentPercent: 0 });
+
+    for (const file of filesToUpload) {
+      const fileName = reserveName(knownNames, parentId, file.name);
+      const uploadFile = fileName === file.name ? file : new File([file], fileName, { type: file.type });
+      setUploadProgress((prev) => (prev ? { ...prev, currentFileName: fileName, currentPercent: 0 } : prev));
+
+      try {
+        const localPreview = await readFilePreview(uploadFile);
+        const created = await FileService.upload(uploadFile, {
+          parentId: parentId ?? undefined,
+          onProgress: (percent) => setUploadProgress((prev) => (prev ? { ...prev, currentPercent: percent } : prev)),
+        });
+        const uploadedFile: FileItem = {
+          id: created.id || created._id,
+          name: created.name,
+          type: 'file',
+          content: created.content || localPreview,
+          parentId: created.parentId,
+          createdAt: created.createdAt,
+          size: created.size,
+        };
+        setFiles((prev) => [...prev, uploadedFile]);
+      } catch (error) {
+        console.error(`Failed to upload "${fileName}":`, error);
+        alert(`Failed to upload "${fileName}". Please try again.`);
+      } finally {
+        setUploadProgress((prev) => (prev ? { ...prev, completed: prev.completed + 1 } : prev));
+      }
+    }
+
+    setUploadProgress(null);
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const filesSelected = e.target.files;
+    if (!filesSelected || filesSelected.length === 0) return;
+    const selected = Array.from(filesSelected);
+    e.target.value = '';
+    void uploadFiles(selected, isTrashFolder ? null : currentFolderId);
+  };
+
+  const handleUploadFolderClick = () => {
+    folderInputRef.current?.click();
+  };
+
+  // Offers "Upload File" / "Upload Folder" from a single button, reusing the
+  // global context menu as an anchored dropdown rather than a right-click.
+  const handleUploadMenuClick = (e: React.MouseEvent) => {
+    openContextMenu(
+      e,
+      [
+        {
+          id: 'upload-file',
+          label: 'Upload File',
+          icon: <FileUp size={15} className="text-emerald-400" />,
+          onClick: handleUploadClick,
+        },
+        {
+          id: 'upload-folder',
+          label: 'Upload Folder',
+          icon: <FolderUp size={15} className="text-emerald-400" />,
+          onClick: handleUploadFolderClick,
+        },
+      ],
+      'Upload'
+    );
+  };
+
+  const handleFolderUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const filesSelected = e.target.files;
+    if (!filesSelected || filesSelected.length === 0) return;
+    const selected = Array.from(filesSelected) as Array<File & { webkitRelativePath: string }>;
+    e.target.value = '';
+    void uploadFolderFiles(selected, isTrashFolder ? null : currentFolderId);
+  };
+
+  // Folder upload: the browser hands back every file inside the chosen
+  // folder(s) flattened, each carrying `webkitRelativePath` (e.g.
+  // "MyFolder/sub/notes.txt"). The directory structure it implies is rebuilt
+  // by creating one real (backend-persisted) folder per unique path segment,
+  // then uploading each file into the folder its path resolves to.
+  const uploadFolderFiles = async (
+    filesToUpload: Array<File & { webkitRelativePath: string }>,
+    rootParentId: string | null
+  ) => {
+    const knownNames = initKnownNames();
+    const folderIdByPath = new Map<string, string | null>();
+    setUploadProgress({ total: filesToUpload.length, completed: 0, currentFileName: '', currentPercent: 0 });
+
+    const ensureFolderPath = async (relativePath: string): Promise<string | null> => {
+      const segments = relativePath.split('/');
+      segments.pop(); // drop the filename itself, keep only folder segments
+      let parentId = rootParentId;
+      let pathSoFar = '';
+      for (const segment of segments) {
+        pathSoFar = pathSoFar ? `${pathSoFar}/${segment}` : segment;
+        let folderId = folderIdByPath.get(pathSoFar);
+        if (folderId === undefined) {
+          const folderName = reserveName(knownNames, parentId, segment);
+          const created = await FileService.createFile({ name: folderName, type: 'folder', parentId });
+          folderId = created.id || created._id;
+          setFiles((prev) => [
+            ...prev,
+            { id: folderId as string, name: created.name, type: 'folder', parentId: created.parentId, createdAt: created.createdAt },
+          ]);
+          folderIdByPath.set(pathSoFar, folderId);
+        }
+        parentId = folderId;
+      }
+      return parentId;
+    };
+
+    for (const file of filesToUpload) {
+      setUploadProgress((prev) => (prev ? { ...prev, currentFileName: file.name, currentPercent: 0 } : prev));
+      try {
+        const targetFolderId = await ensureFolderPath(file.webkitRelativePath || file.name);
+        const fileName = reserveName(knownNames, targetFolderId, file.name);
+        const uploadFile = fileName === file.name ? file : new File([file], fileName, { type: file.type });
+        const localPreview = await readFilePreview(uploadFile);
+        const created = await FileService.upload(uploadFile, {
+          parentId: targetFolderId ?? undefined,
+          onProgress: (percent) => setUploadProgress((prev) => (prev ? { ...prev, currentPercent: percent } : prev)),
+        });
+        const uploadedFile: FileItem = {
+          id: created.id || created._id,
+          name: created.name,
+          type: 'file',
+          content: created.content || localPreview,
+          parentId: created.parentId,
+          createdAt: created.createdAt,
+          size: created.size,
+        };
+        setFiles((prev) => [...prev, uploadedFile]);
+      } catch (error) {
+        console.error(`Failed to upload "${file.name}":`, error);
+        alert(`Failed to upload "${file.name}". Please try again.`);
+      } finally {
+        setUploadProgress((prev) => (prev ? { ...prev, completed: prev.completed + 1 } : prev));
+      }
+    }
+
+    setUploadProgress(null);
+  };
+
+  // Drag & Drop external file upload onto explorer area.
+  // Gated on `Files` being among the drag's types, which is what the browser
+  // reports for a real OS/desktop drag — an internal item drag (this window or
+  // another File Explorer window) carries INTERNAL_DRAG_TYPE instead, so it
+  // never lights up the upload overlay.
+  const handleCanvasDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (dragHasType(e, 'Files')) {
+      setIsDragOverCanvas(true);
+    }
+  };
+
+  const handleCanvasDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOverCanvas(false);
+  };
+
+  const handleCanvasDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOverCanvas(false);
+
+    // An internal item dropped on empty canvas space is a move into whatever
+    // folder this window currently has open, not an upload.
+    if (dragHasType(e, INTERNAL_DRAG_TYPE)) {
+      const itemId = e.dataTransfer.getData(INTERNAL_DRAG_TYPE) || draggedItemId;
+      if (itemId && !isTrashFolder) {
+        void moveItemToFolder(itemId, currentFolderId);
+      } else {
+        setDraggedItemId(null);
+      }
+      return;
+    }
+
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      void uploadFiles(Array.from(e.dataTransfer.files), isTrashFolder ? null : currentFolderId);
+    }
+  };
+
+  // Drag internal item to move into target folder or sidebar.
+  // Both the custom type (used to detect an internal drag before drop) and
+  // `text/plain` (harmless, kept for anything reading the drag outside this
+  // component) carry the item id, since either window involved is just a
+  // handler attached somewhere in the same document as far as native
+  // drag-and-drop is concerned.
+  const handleItemDragStart = (e: React.DragEvent, item: FileItem) => {
+    setDraggedItemId(item.id);
+    e.dataTransfer.setData(INTERNAL_DRAG_TYPE, item.id);
+    e.dataTransfer.setData('text/plain', item.id);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleItemDragEnd = () => {
+    setDraggedItemId(null);
+    setDragOverFolderId(null);
+  };
+
+  /**
+   * Moves one item into `targetFolderId`, used by every drop target (canvas,
+   * folder tiles/rows, sidebar places and pinned folders) so they all share one
+   * validation + persistence path.
+   */
+  const moveItemToFolder = async (itemId: string, targetFolderId: string | null) => {
+    const sourceItem = files.find((f) => f.id === itemId);
+    if (!sourceItem || sourceItem.id === targetFolderId || sourceItem.parentId === targetFolderId) {
+      setDraggedItemId(null);
+      return;
+    }
+    if (sourceItem.isSystem) {
+      setDraggedItemId(null);
+      alert(`"${sourceItem.name}" is a default folder and cannot be moved.`);
+      return;
+    }
+
+    // Prevent moving folder inside itself
+    if (sourceItem.type === 'folder' && targetFolderId !== null) {
+      let current = files.find((f) => f.id === targetFolderId);
+      while (current) {
+        if (current.id === sourceItem.id) {
+          alert('Cannot move a folder inside itself.');
+          setDraggedItemId(null);
+          return;
+        }
+        current = files.find((f) => f.id === current?.parentId);
+      }
+    }
+
+    const updated = files.map((f) =>
+      f.id === itemId ? { ...f, parentId: targetFolderId } : f
+    );
+    setFiles(updated);
+    setDraggedItemId(null);
+
+    if (currentUser) {
+      try {
+        await FileService.moveFile(itemId, targetFolderId);
+      } catch (error) {
+        console.warn('Failed to move file on backend:', error);
+        setFiles(files);
+      }
+    }
+  };
+
+  const handleFolderDrop = async (e: React.DragEvent, targetFolderId: string | null) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    // Read the id from the drag itself rather than local `draggedItemId` state:
+    // when the drag started in a different File Explorer window, this
+    // component's own state was never set, but `dataTransfer` is populated by
+    // the browser and is readable here regardless of which window the drag
+    // began in.
+    const itemId = e.dataTransfer.getData(INTERNAL_DRAG_TYPE) || draggedItemId;
+    setDragOverFolderId(null);
+    if (!itemId) return;
+    await moveItemToFolder(itemId, targetFolderId);
+  };
+
+  // Marks a folder tile as the active drop target while an internal item drags
+  // over it. Only for internal drags — an external OS file dragged over a
+  // folder tile isn't a supported "upload straight into this folder" gesture,
+  // so it shouldn't light the tile up.
+  const handleFolderDragEnter = (e: React.DragEvent, folderId: string) => {
+    if (!dragHasType(e, INTERNAL_DRAG_TYPE)) return;
+    e.preventDefault();
+    setDragOverFolderId(folderId);
+  };
+
+  const handleFolderDragLeave = (folderId: string) => {
+    setDragOverFolderId((current) => (current === folderId ? null : current));
+  };
+
+  // Size and Type string formatters
+  const getItemSizeString = (item: FileItem): string => {
+    if (item.type === 'folder') {
+      const childrenCount = files.filter((f) => f.parentId === item.id).length;
+      return `${childrenCount} item${childrenCount === 1 ? '' : 's'}`;
+    }
+    // `size` is the server-reported byte count and must win whenever it's
+    // known — `item.content` is only ever a possibly-truncated local preview
+    // (see readFilePreview) or entirely absent (folder listings never
+    // include content), so deriving "size" from its length silently produces
+    // the wrong number for anything but a small file the client happened to
+    // read in full.
+    if (typeof item.size === 'number') {
+      if (item.size < 1024) return `${item.size} B`;
+      if (item.size < 1024 * 1024) return `${(item.size / 1024).toFixed(1)} KB`;
+      return `${(item.size / (1024 * 1024)).toFixed(1)} MB`;
+    }
+    if (item.content) {
+      const bytes = item.content.length;
+      if (bytes < 1024) return `${bytes} B`;
+      return `${(bytes / 1024).toFixed(1)} KB`;
+    }
+    return '0 B';
+  };
+
+  const getItemTypeString = (item: FileItem): string => {
+    if (item.type === 'folder') return 'File Folder';
+    const ext = item.name.split('.').pop()?.toLowerCase();
+    if (ext === 'txt') return 'Text Document';
+    if (ext === 'png' || ext === 'jpg' || ext === 'jpeg') return 'Image File';
+    if (ext === 'js' || ext === 'ts' || ext === 'tsx' || ext === 'html' || ext === 'css') return 'Code Document';
+    if (ext === 'mp3' || ext === 'wav') return 'Audio File';
+    if (ext === 'mp4' || ext === 'webm') return 'Video File';
+    return 'System File';
+  };
+
+  // Create folder — not available inside Trash; there's nowhere for it to go.
+  const handleCreateFolder = async () => {
+    if (isTrashFolder) return;
+    const name = prompt('Enter name of new folder:', 'New Folder');
+    if (!name) return;
+
+    let folderName = name;
+    let count = 1;
+    while (files.some((f) => f.parentId === currentFolderId && f.name === folderName)) {
+      folderName = `${name} (${count++})`;
+    }
+
+    try {
+      const created = await FileService.createFile({
+        name: folderName,
+        type: 'folder',
+        parentId: currentFolderId,
+      });
+
+      const newFolder: FileItem = {
+        id: created._id,
+        name: created.name,
+        type: 'folder',
+        parentId: created.parentId,
+        createdAt: created.createdAt,
+      };
+
+      setFiles((prev) => [...prev, newFolder]);
+    } catch (error) {
+      console.error('Failed to create folder:', error);
+      alert('Failed to create folder. Please try again.');
+    }
+  };
+
+  // Create file — not available inside Trash; there's nowhere for it to go.
+  const handleCreateFile = async () => {
+    if (isTrashFolder) return;
+    const name = prompt('Enter name of new text file:', 'notes.txt');
+    if (!name) return;
+
+    const cleanName = name.endsWith('.txt') ? name : `${name}.txt`;
+    let fileName = cleanName;
+    let count = 1;
+    while (files.some((f) => f.parentId === currentFolderId && f.name === fileName)) {
+      const base = cleanName.substring(0, cleanName.lastIndexOf('.'));
+      fileName = `${base} (${count++}).txt`;
+    }
+
+    try {
+      const created = await FileService.createFile({
+        name: fileName,
+        type: 'file',
+        parentId: currentFolderId,
+        content: 'This is a newly created text document.',
+        mimeType: 'text/plain',
+      });
+
+      const newFile: FileItem = {
+        id: created._id,
+        name: created.name,
+        type: 'file',
+        content: created.content || '',
+        parentId: created.parentId,
+        createdAt: created.createdAt,
+      };
+
+      setFiles((prev) => [...prev, newFile]);
+    } catch (error) {
+      console.error('Failed to create file:', error);
+      alert('Failed to create file. Please try again.');
+    }
+  };
+
+  // Clipboard commands — trashed items are not eligible: they have no
+  // "here" to be copied or moved to until they're restored.
+  const handleCopy = (item: FileItem) => {
+    if (isTrashFolder) return;
+    setClipboard({ id: item.id, action: 'copy' });
+    addNotification({ sender: 'File Explorer', text: `Copied "${item.name}". Paste to place it.`, type: 'info' });
+    useContextMenuStore.getState().closeContextMenu();
+  };
+
+  const handleCut = (item: FileItem) => {
+    if (isTrashFolder || item.isSystem) return;
+    setClipboard({ id: item.id, action: 'cut' });
+    addNotification({ sender: 'File Explorer', text: `Cut "${item.name}". Paste to move it.`, type: 'info' });
+    useContextMenuStore.getState().closeContextMenu();
+  };
+
+  // Paste logic
+  const handlePaste = async () => {
+    if (!clipboard || isTrashFolder) return;
+    const sourceItem = files.find((f) => f.id === clipboard.id);
+    if (!sourceItem) {
+      setClipboard(null);
+      return;
+    }
+
+    if (clipboard.action === 'cut') {
+      try {
+        const updated = await FileService.moveFile(sourceItem.id, currentFolderId);
+        setFiles((prev) => prev.map((f) => (f.id === sourceItem.id ? { ...f, parentId: updated.parentId } : f)));
+        addNotification({ sender: 'File Explorer', text: `Moved "${sourceItem.name}" here.`, type: 'success' });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Please try again.';
+        addNotification({ sender: 'File Explorer', text: `Could not move "${sourceItem.name}": ${message}`, type: 'error' });
+      }
+      setClipboard(null);
+    } else {
+      if (sourceItem.type === 'file') {
+        const baseName = sourceItem.name.substring(0, sourceItem.name.lastIndexOf('.'));
+        const ext = sourceItem.name.substring(sourceItem.name.lastIndexOf('.'));
+        let newName = `${baseName} - Copy${ext}`;
+        let count = 1;
+        while (files.some((f) => f.parentId === currentFolderId && f.name === newName)) {
+          newName = `${baseName} - Copy (${count++})${ext}`;
+        }
+
+        const newFile: FileItem = {
+          ...sourceItem,
+          id: `file-${Date.now()}`,
+          name: newName,
+          parentId: currentFolderId,
+          createdAt: new Date().toLocaleDateString(),
+        };
+        setFiles((prev) => [...prev, newFile]);
+      } else {
+        const itemsToInsert = duplicateFolderRecursive(sourceItem, currentFolderId);
+        setFiles((prev) => [...prev, ...itemsToInsert]);
+      }
+      addNotification({ sender: 'File Explorer', text: `Pasted a copy of "${sourceItem.name}" here.`, type: 'success' });
+    }
+    useContextMenuStore.getState().closeContextMenu();
+  };
+
+  // Instant Duplicate — persisted server-side (real copy in object storage +
+  // a new DB row), so the result survives a refresh and can be deleted/moved
+  // like any other item.
+  const handleDuplicate = async (item: FileItem) => {
+    if (isTrashFolder) return;
+    try {
+      await FileService.duplicateFile(item.id);
+      await syncFilesFromBackend(currentFolderId);
+      addNotification({ sender: 'File Explorer', text: `Duplicated "${item.name}".`, type: 'success' });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Please try again.';
+      addNotification({ sender: 'File Explorer', text: `Could not duplicate "${item.name}": ${message}`, type: 'error' });
+    }
+    useContextMenuStore.getState().closeContextMenu();
+  };
+
+  const duplicateFolderRecursive = (folderToCopy: FileItem, targetParentId: string | null): FileItem[] => {
+    let baseName = `${folderToCopy.name} - Copy`;
+    let count = 1;
+    while (files.some((f) => f.parentId === targetParentId && f.name === baseName)) {
+      baseName = `${folderToCopy.name} - Copy (${count++})`;
+    }
+
+    const newFolderId = `folder-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`;
+    const newFolder: FileItem = {
+      ...folderToCopy,
+      id: newFolderId,
+      name: baseName,
+      parentId: targetParentId,
+      createdAt: new Date().toLocaleDateString(),
+    };
+
+    const accumulated: FileItem[] = [newFolder];
+
+    const copyChildrenOf = (oldParentId: string, newParentId: string) => {
+      const children = files.filter((f) => f.parentId === oldParentId);
+      children.forEach((child) => {
+        const newChildId = `${child.type}-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`;
+        const newChild: FileItem = {
+          ...child,
+          id: newChildId,
+          parentId: newParentId,
+          createdAt: new Date().toLocaleDateString(),
+        };
+        accumulated.push(newChild);
+        if (child.type === 'folder') {
+          copyChildrenOf(child.id, newChildId);
+        }
+      });
+    };
+
+    copyChildrenOf(folderToCopy.id, newFolderId);
+    return accumulated;
+  };
+
+  // Rename — trashed items can't be renamed; restore first. Default folders
+  // (Documents, Pictures, …) can never be renamed — the server rejects it.
+  const handleStartRename = (item: FileItem) => {
+    if (isTrashFolder || item.isSystem) return;
+    setRenamingId(item.id);
+    setRenameText(item.name);
+    useContextMenuStore.getState().closeContextMenu();
+  };
+
+  const handleSaveRename = async () => {
+    if (!renamingId) return;
+    const cleanName = renameText.trim();
+    const target = files.find((f) => f.id === renamingId);
+    if (!cleanName || !target) {
+      setRenamingId(null);
+      return;
+    }
+    if (cleanName === target.name) {
+      setRenamingId(null);
+      return;
+    }
+
+    // Catch the common case immediately instead of round-tripping to the
+    // server first — matches the backend's own check (case-insensitive,
+    // scoped to the same folder, not type-specific: a file and a folder
+    // can't share a name any more than two files can).
+    const conflict = files.find(
+      (f) => f.id !== renamingId && (f.parentId ?? null) === (target.parentId ?? null) && f.name.toLowerCase() === cleanName.toLowerCase()
+    );
+    if (conflict) {
+      alert(`"${cleanName}" already exists in this folder. Please choose a different name.`);
+      setRenamingId(null);
+      return;
+    }
+
+    const previousName = target.name;
+    setFiles((prev) => prev.map((f) => (f.id === renamingId ? { ...f, name: cleanName } : f)));
+    setRenamingId(null);
+
+    if (!currentUser) return;
+    try {
+      await FileService.updateFile(renamingId, { name: cleanName });
+    } catch (error) {
+      // The optimistic rename above must not silently stick around if the
+      // server rejected it — e.g. a conflict with a file another client
+      // created that wasn't visible in this local list yet.
+      setFiles((prev) => prev.map((f) => (f.id === renamingId ? { ...f, name: previousName } : f)));
+      const message = error instanceof Error ? error.message : 'Please try again.';
+      alert(`Could not rename to "${cleanName}": ${message}`);
+    }
+  };
+
+  // Delete / Trash
+  //
+  // Permanently erasing a trashed item must go through the server — it's the
+  // system of record for the trash. An item that only disappears from local
+  // state would reappear the next time `syncTrashFromBackend` runs, silently
+  // "undeleting" something the user was told was gone for good. Items the
+  // server fails to erase are kept in the local trash (not hidden) so the
+  // user can see they're still there and retry.
+  const permanentlyEraseTrashItems = async (ids: string[]) => {
+    const results = await Promise.allSettled(ids.map((id) => FileService.permanentDeleteFile(id)));
+    const failedIds = new Set(
+      results.flatMap((result, index) => (result.status === 'rejected' ? [ids[index]] : [])),
+    );
+    const remaining = deletedFiles.filter((f) => failedIds.has(f.id));
+    StorageService.set('webos-trash', JSON.stringify(remaining));
+    useSystemStore.setState({ deletedFiles: remaining });
+    if (failedIds.size > 0) {
+      addNotification({
+        sender: 'File Explorer',
+        text: `${ids.length - failedIds.size} of ${ids.length} item(s) were erased. ${failedIds.size} could not be deleted and are still in Trash.`,
+        type: 'error',
+      });
+    }
+  };
+
+  const handleDeleteItem = async (item: FileItem) => {
+    if (isTrashFolder) {
+      if (!confirm(`Permanently erase "${item.name}"? This cannot be undone.`)) return;
+      await permanentlyEraseTrashItems([item.id]);
+    } else {
+      if (item.isSystem) {
+        alert(`"${item.name}" is a default folder and cannot be deleted.`);
+        return;
+      }
+      if (!confirmMoveToTrash(`Move "${item.name}" to the Recycle Bin?`)) return;
+      await handleDeleteFile({ ...item, originalParentId: item.parentId });
+    }
+    setSelectedFileIds((prev) => prev.filter((id) => id !== item.id));
+    useContextMenuStore.getState().closeContextMenu();
+  };
+
+  // Toolbar Delete — acts on the whole selection, not just the first item.
+  const handleDeleteSelectedItems = async () => {
+    const items = selectedFileIds
+      .map((id) => displaySource.find((f) => f.id === id))
+      .filter((item): item is FileItem => !!item);
+    if (items.length === 0) return;
+    if (items.length === 1) {
+      await handleDeleteItem(items[0]);
+      return;
+    }
+
+    if (isTrashFolder) {
+      if (!confirm(`Permanently erase ${items.length} items? This cannot be undone.`)) return;
+      await permanentlyEraseTrashItems(selectedFileIds);
+    } else {
+      const deletable = items.filter((item) => !item.isSystem);
+      const skipped = items.length - deletable.length;
+      if (deletable.length === 0) return;
+      if (!confirmMoveToTrash(`Move ${deletable.length} item(s) to the Recycle Bin?`)) return;
+      await Promise.all(deletable.map((item) => handleDeleteFile({ ...item, originalParentId: item.parentId })));
+      if (skipped > 0) {
+        addNotification({
+          sender: 'File Explorer',
+          text: `${skipped} default folder(s) were not deleted — default folders can't be removed.`,
+          type: 'warning',
+        });
+      }
+    }
+    setSelectedFileIds([]);
+  };
+
+  // Left toolbar overflow ---------------------------------------------------
+  // Below a certain width the action buttons (New Folder, Cut, Copy, Paste,
+  // Rename, Delete, …) no longer fit on one line. Rather than wrapping onto a
+  // second row, trailing buttons that don't fit collapse into a "More
+  // actions" overflow menu — the row itself stays a single line at every
+  // width. `estimateActionWidth` is a deliberately rough per-character
+  // estimate (there's no cheap way to get exact rendered widths without an
+  // extra measurement pass) but only needs to be in the right ballpark: being
+  // a little conservative just moves the cutoff a few px earlier than
+  // strictly necessary, never causes actual clipping.
+  interface LeftToolbarAction {
+    id: string;
+    label: string;
+    icon: React.ReactNode;
+    menuIcon: React.ReactNode;
+    onClick: (e: React.MouseEvent) => void;
+    disabled?: boolean;
+    danger?: boolean;
+    dividerBefore?: boolean;
+    wide?: boolean;
+    hasChevron?: boolean;
+    submenu?: ContextMenuItem[];
+    /** Tooltip text — only set where it differs from the visible label. */
+    title?: string;
+    /** Extra classes beyond the shared button style (icon/text color). */
+    colorClass?: string;
+  }
+
+  const leftToolbarActions: LeftToolbarAction[] = [
+    {
+      id: 'new-folder',
+      label: 'New Folder',
+      icon: <FolderPlus className="w-3.5 h-3.5 text-amber-500 shrink-0" />,
+      menuIcon: <FolderPlus size={15} className="text-amber-500" />,
+      onClick: handleCreateFolder,
+      disabled: isTrashFolder,
+      wide: true,
+      title: 'New Folder',
+    },
+    {
+      id: 'new-text',
+      label: 'New Text',
+      icon: <Plus className="w-3.5 h-3.5 text-blue-500 shrink-0" />,
+      menuIcon: <Plus size={15} className="text-blue-500" />,
+      onClick: handleCreateFile,
+      disabled: isTrashFolder,
+      wide: true,
+      title: 'New Text File',
+    },
+    {
+      id: 'upload',
+      label: 'Upload',
+      icon: <Upload className="w-3.5 h-3.5 shrink-0" />,
+      menuIcon: <Upload size={15} className="text-emerald-500" />,
+      onClick: handleUploadMenuClick,
+      disabled: isTrashFolder,
+      dividerBefore: true,
+      wide: true,
+      hasChevron: true,
+      title: 'Upload a file or folder',
+      colorClass: 'text-emerald-600 hover:text-emerald-700',
+      submenu: [
+        { id: 'upload-file', label: 'Upload File', icon: <FileUp size={15} className="text-emerald-400" />, onClick: handleUploadClick },
+        { id: 'upload-folder', label: 'Upload Folder', icon: <FolderUp size={15} className="text-emerald-400" />, onClick: handleUploadFolderClick },
+      ],
+    },
+    {
+      id: 'cut',
+      label: 'Cut',
+      icon: <Scissors className="w-3.5 h-3.5 shrink-0" />,
+      menuIcon: <Scissors size={15} className="text-slate-400" />,
+      onClick: () => selectedItem && handleCut(selectedItem),
+      disabled: !selectedItem || isTrashFolder || selectionHasSystemFolder,
+      dividerBefore: true,
+    },
+    {
+      id: 'copy',
+      label: 'Copy',
+      icon: <Copy className="w-3.5 h-3.5 shrink-0" />,
+      menuIcon: <Copy size={15} className="text-slate-400" />,
+      onClick: () => selectedItem && handleCopy(selectedItem),
+      disabled: !selectedItem || isTrashFolder,
+    },
+    {
+      id: 'paste',
+      label: 'Paste',
+      icon: <Clipboard className="w-3.5 h-3.5 shrink-0" />,
+      menuIcon: <Clipboard size={15} className="text-slate-400" />,
+      onClick: handlePaste,
+      disabled: !clipboard || isTrashFolder,
+    },
+    {
+      id: 'duplicate',
+      label: 'Duplicate',
+      icon: <Copy className="w-3.5 h-3.5 text-purple-500 shrink-0" />,
+      menuIcon: <Copy size={15} className="text-purple-500" />,
+      onClick: () => selectedItem && handleDuplicate(selectedItem),
+      disabled: !selectedItem || isTrashFolder,
+      title: 'Duplicate selection',
+    },
+    {
+      id: 'rename',
+      label: 'Rename',
+      icon: <Edit3 className="w-3.5 h-3.5 text-sky-500 shrink-0" />,
+      menuIcon: <Edit3 size={15} className="text-sky-500" />,
+      onClick: () => selectedItem && handleStartRename(selectedItem),
+      disabled: !selectedItem || isTrashFolder || selectionHasSystemFolder,
+      dividerBefore: true,
+    },
+    {
+      id: 'delete',
+      label: isTrashFolder ? 'Delete Permanently' : 'Delete',
+      icon: <Trash2 className="w-3.5 h-3.5 shrink-0" />,
+      menuIcon: <Trash2 size={15} className="text-rose-500" />,
+      onClick: () => void handleDeleteSelectedItems(),
+      disabled: selectedFileIds.length === 0 || selectionHasSystemFolder,
+      danger: true,
+      colorClass: 'text-rose-500',
+      title: isTrashFolder ? 'Permanently erase the selected item(s) — this cannot be undone' : undefined,
+    },
+    {
+      id: 'download',
+      label: 'Download',
+      icon: <Download className="w-3.5 h-3.5 shrink-0" />,
+      menuIcon: <Download size={15} className="text-emerald-500" />,
+      onClick: () => void handleDownloadSelectedItems(),
+      disabled: selectedFileIds.length === 0 || isTrashFolder,
+      colorClass: 'text-emerald-600',
+    },
+    {
+      id: 'restore',
+      label: 'Restore Item',
+      icon: <RotateCcw className="w-3.5 h-3.5 shrink-0" />,
+      menuIcon: <RotateCcw size={15} className="text-emerald-500" />,
+      onClick: () => void handleRestoreSelectedItems(),
+      disabled: !isTrashFolder || selectedFileIds.length === 0,
+      dividerBefore: true,
+      colorClass: 'text-emerald-600',
+    },
+    {
+      id: 'empty-trash',
+      label: 'Empty Trash',
+      icon: <Trash2 className="w-3.5 h-3.5 shrink-0" />,
+      menuIcon: <Trash2 size={15} className="text-rose-500" />,
+      onClick: () => void handleEmptyTrash(),
+      disabled: !isTrashFolder || deletedFiles.length === 0,
+      danger: true,
+      colorClass: 'text-rose-500',
+    },
+  ];
+
+  // Only actions that can actually be performed right now are shown — a
+  // disabled/greyed-out button gives no information a missing button
+  // doesn't also give, and it costs toolbar space. Everything downstream
+  // (width measurement, the visible/overflow split, the "More Actions" menu)
+  // operates on this filtered list, not the full one.
+  const visibleToolbarActions = leftToolbarActions.filter((action) => !action.disabled);
+
+  // Real measured widths, not guessed ones: a per-character estimate turned
+  // out to be off by enough (accumulated over 9 buttons) to trigger the
+  // overflow menu even at widths where everything actually fits. A button
+  // folded into "More Actions" is unmounted, not hidden with `display:
+  // none` — so the "show everything, measure, then trim" cycle below has to
+  // re-run (re-mounting every visible action first) any time what's visible
+  // changes, not just once.
+  const leftButtonRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const [leftMeasuredWidths, setLeftMeasuredWidths] = useState<number[] | null>(null);
+
+  // Which actions are actually shown can change on its own (selecting an
+  // item, filling the clipboard, …) independently of a resize or a label
+  // mode flip — previously-measured widths are indexed by position in
+  // `visibleToolbarActions`, so a change in *which* actions are visible
+  // invalidates them just as much as a width or label change does.
+  const visibleActionsKey = visibleToolbarActions.map((action) => action.id).join('|');
+
+  // Label visibility (isCompactRibbon) changes every button's own width, so
+  // previously-measured widths go stale — clear them to force a fresh
+  // "show everything" measuring pass below.
+  useEffect(() => {
+    setLeftMeasuredWidths(null);
+  }, [isCompactRibbon, visibleActionsKey]);
+
+  useLayoutEffect(() => {
+    if (leftMeasuredWidths !== null) return;
+    const widths = leftButtonRefs.current.slice(0, visibleToolbarActions.length).map((el) => el?.offsetWidth ?? 0);
+    if (widths.length < visibleToolbarActions.length || widths.some((w) => w === 0)) return; // not all buttons mounted yet
+    setLeftMeasuredWidths(widths);
+  });
+
+  const leftToolbarVisibleCount = useMemo(() => {
+    const total = visibleToolbarActions.length;
+    // Still measuring (or about to): render every button so the layout
+    // effect above has something to measure.
+    if (!leftMeasuredWidths) return total;
+
+    const ROW_GAP = 6; // gap-1.5 on the toolbar row
+    const DIVIDER_W = 5; // the 1px separators (w-[1px] + mx-0.5 margin each side)
+    const OVERFLOW_BTN_W = 32;
+
+    const widthUpTo = (count: number): number => {
+      let running = 0;
+      for (let i = 0; i < count; i++) {
+        let addition = leftMeasuredWidths[i] ?? 0;
+        if (i > 0) addition += ROW_GAP;
+        if (i > 0 && visibleToolbarActions[i].dividerBefore) addition += DIVIDER_W + ROW_GAP;
+        running += addition;
+      }
+      return running;
+    };
+
+    if (widthUpTo(total) <= leftToolbarWidth) return total;
+
+    const overflowReserve = ROW_GAP + DIVIDER_W + ROW_GAP + OVERFLOW_BTN_W;
+    let count = total;
+    while (count > 0 && widthUpTo(count) + overflowReserve > leftToolbarWidth) {
+      count -= 1;
+    }
+    return count;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leftMeasuredWidths, leftToolbarWidth, visibleActionsKey]);
+
+  const handleLeftToolbarOverflowClick = (e: React.MouseEvent) => {
+    const hidden = visibleToolbarActions.slice(leftToolbarVisibleCount);
+    openContextMenu(
+      e,
+      hidden.map((action) => ({
+        id: action.id,
+        label: action.label,
+        icon: action.menuIcon,
+        disabled: action.disabled,
+        danger: action.danger,
+        // The context menu invokes this with no arguments; forward the
+        // click that opened "More Actions" itself so an action like Upload
+        // (which anchors its own follow-up menu off the event) still has
+        // one to work with.
+        onClick: () => action.onClick(e),
+        submenu: action.submenu,
+      })),
+      'More Actions'
+    );
+  };
+
+  const SORT_FIELD_OPTIONS: Array<{ field: typeof sortField; label: string }> = [
+    { field: 'name', label: 'Name' },
+    { field: 'type', label: 'Type' },
+    { field: 'dateModified', label: 'Date Modified' },
+    { field: 'date', label: currentFolderId === 'shared-with-me' ? 'Date Shared' : 'Date Created' },
+    { field: 'size', label: 'Size' },
+  ];
+  const activeSortFieldLabel = SORT_FIELD_OPTIONS.find((o) => o.field === sortField)?.label ?? 'Name';
+
+  // A single icon opens one menu covering both what to sort by and which
+  // direction — the toolbar previously spent two separate controls (a field
+  // dropdown and a standalone Asc/Desc button) on what is really one choice.
+  const handleSortMenuClick = (e: React.MouseEvent) => {
+    openContextMenu(
+      e,
+      [
+        ...SORT_FIELD_OPTIONS.map(({ field, label }) => ({
+          id: `sort-${field}`,
+          label,
+          checked: sortField === field,
+          onClick: () => setSortField(field),
+        })),
+        { divider: true },
+        {
+          id: 'sort-asc',
+          label: 'Ascending',
+          checked: sortOrder === 'asc',
+          onClick: () => setSortOrder('asc'),
+        },
+        {
+          id: 'sort-desc',
+          label: 'Descending',
+          checked: sortOrder === 'desc',
+          onClick: () => setSortOrder('desc'),
+        },
+      ],
+      'Sort'
+    );
+  };
+
+  const GROUP_BY_OPTIONS: Array<{ value: typeof groupBy; label: string }> = [
+    { value: 'none', label: 'No Grouping' },
+    ...(currentFolderId === 'shared-with-me'
+      ? [
+          { value: 'owner' as const, label: 'Shared By' },
+          { value: 'role' as const, label: 'Your Role' },
+        ]
+      : []),
+    { value: 'name', label: 'Name' },
+    { value: 'type', label: 'Type' },
+    { value: 'size', label: 'Size' },
+    { value: 'dateModified', label: 'Date Modified' },
+    { value: 'dateCreated', label: 'Date Created' },
+  ];
+  const activeGroupByLabel = GROUP_BY_OPTIONS.find((o) => o.value === groupBy)?.label ?? 'No Grouping';
+
+  const handleGroupMenuClick = (e: React.MouseEvent) => {
+    openContextMenu(
+      e,
+      GROUP_BY_OPTIONS.map(({ value, label }) => ({
+        id: `group-${value}`,
+        label,
+        checked: groupBy === value,
+        onClick: () => setGroupBy(value),
+      })),
+      'Group By'
+    );
+  };
+
+  // Restore item from Trash
+  const handleRestoreItem = (item: FileItem) => {
+    handleRestoreFile(item);
+    setSelectedFileIds((prev) => prev.filter((id) => id !== item.id));
+    useContextMenuStore.getState().closeContextMenu();
+  };
+
+  // Toolbar Restore — acts on the whole selection, mirroring handleDeleteSelectedItems.
+  const handleRestoreSelectedItems = async () => {
+    const items = selectedFileIds
+      .map((id) => deletedFiles.find((f) => f.id === id))
+      .filter((item): item is FileItem => !!item);
+    if (items.length === 0) return;
+    await Promise.all(items.map((item) => handleRestoreFile(item)));
+    setSelectedFileIds([]);
+  };
+
+  // Sidebar location clicks
+  const handleSidebarClick = (locId: string | null) => {
+    if (!locId || locId === 'drive' || locId === 'home') {
+      navigateToFolder(null);
+      return;
+    }
+
+    if (locId.startsWith('folder-')) {
+      const actualId = defaultFolderIdMap[locId.replace('folder-', '')] || locId;
+      const existing = files.find((f) => f.id === actualId);
+      if (!existing) {
+        const name = getFolderLabel(locId);
+        const newFolder: FileItem = {
+          id: actualId,
+          name,
+          type: 'folder',
+          parentId: null,
+          createdAt: new Date().toLocaleDateString(),
+        };
+        setFiles([...files, newFolder]);
+      }
+      navigateToFolder(actualId);
+      return;
+    }
+
+    navigateToFolder(locId);
+  };
+
+  const handleSidebarItemContextMenu = (e: React.MouseEvent, folderId: string, folderName: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const isPinned = pinnedFolderIds.includes(folderId);
+
+    const items: ContextMenuItem[] = [
+      {
+        id: 'open-sidebar-folder',
+        label: `Open ${folderName}`,
+        icon: <Folder size={15} className="text-amber-400" />,
+        onClick: () => navigateToFolder(folderId),
+      },
+      { divider: true },
+      {
+        id: 'toggle-pin',
+        label: isPinned ? 'Unpin from Sidebar' : 'Pin to Sidebar',
+        icon: isPinned ? <PinOff size={15} className="text-amber-400" /> : <Pin size={15} className="text-purple-400" />,
+        onClick: () => togglePinSidebarFolder(folderId),
+      },
+    ];
+
+    openContextMenu(e, items, folderName);
+  };
+
+  // Double Click execution
+  const handleItemDoubleClick = (item: FileItem) => {
+    // In file-picker mode, a folder still just navigates (browsing to find
+    // the file), but a file double-click hands it straight back to whichever
+    // window asked for it instead of opening it in an app here.
+    if (pickerContext?.mode === 'file' && item.type === 'file') {
+      resolveFilePicker(windowId, pickerContext.requesterWindowId, {
+        mode: 'file',
+        file: { id: item.id, name: item.name, parentId: item.parentId },
+      });
+      return;
+    }
+    if (item.type === 'folder') {
+      navigateToFolder(item.id);
+    } else {
+      const appId = getAppForFile(item.name, item.category === 'documents' ? 'text/plain' : 'application/octet-stream');
+      if (appId) {
+        handleOpenWithApp(appId, item);
+      } else {
+        setActivePreviewItem(item);
+      }
+    }
+  };
+
+  const openContextMenu = useContextMenuStore((state) => state.openContextMenu);
+
+  // Context Menu Handler
+  const handleContextMenu = (e: React.MouseEvent, item: FileItem | null) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (item) {
+      if (!selectedFileIds.includes(item.id)) {
+        setSelectedFileIds([item.id]);
+      }
+
+      if (isTrashFolder) {
+        const trashItems: ContextMenuItem[] = [
+          {
+            id: 'restore-trash-item',
+            label: 'Restore to Original Location',
+            icon: <RotateCcw size={15} className="text-emerald-400" />,
+            onClick: () => handleRestoreItem(item),
+          },
+          {
+            id: 'delete-permanently',
+            label: 'Delete Permanently',
+            icon: <Trash2 size={15} className="text-red-400" />,
+            danger: true,
+            onClick: () => handleDeleteItem(item),
+          },
+        ];
+        openContextMenu(e, trashItems, item.name);
+        return;
+      }
+
+      const isPinned = pinnedFolderIds.includes(item.id);
+      // Undefined effectiveRole means the backend didn't attach one (e.g. an
+      // owned item outside a listChildren response) — default to permissive;
+      // the server enforces the real rule regardless, this only hides buttons
+      // that would fail anyway.
+      const canWrite = !item.effectiveRole || item.effectiveRole === 'owner' || item.effectiveRole === 'editor';
+      const canShare = !item.effectiveRole || item.effectiveRole === 'owner';
+
+      const fileItems: ContextMenuItem[] = [
+        {
+          id: 'open',
+          label: 'Open',
+          icon: item.type === 'folder' ? <Folder size={15} className="text-amber-400" /> : <FileText size={15} className="text-blue-400" />,
+          onClick: () => handleItemDoubleClick(item),
+        },
+        ...(item.type === 'folder'
+          ? []
+          : [
+              {
+                id: 'open-with',
+                label: 'Open With...',
+                icon: <ExternalLink size={15} className="text-purple-400" />,
+                onClick: () => setActiveOpenWithItem(item),
+              } as ContextMenuItem,
+            ]),
+        {
+          id: 'preview',
+          label: 'Preview',
+          icon: <ImageIcon size={15} className="text-sky-400" />,
+          onClick: () => setActivePreviewItem(item),
+        },
+        {
+          id: 'download',
+          label: 'Download',
+          icon: <Download size={15} className="text-emerald-400" />,
+          onClick: () => handleDownloadFile(item),
+        },
+        {
+          id: 'share',
+          label: 'Share...',
+          icon: <Share2 size={15} className="text-indigo-400" />,
+          disabled: !canShare,
+          onClick: () => setActiveShareItem(item),
+        },
+      ];
+
+      if (item.type === 'folder') {
+        fileItems.push({
+          id: 'pin-sidebar',
+          label: isPinned ? 'Unpin from Sidebar' : 'Pin to Sidebar',
+          icon: isPinned ? <PinOff size={15} className="text-amber-400" /> : <Pin size={15} className="text-purple-400" />,
+          onClick: () => togglePinSidebarFolder(item.id),
+        });
+      }
+
+      fileItems.push(
+        { divider: true },
+        {
+          id: 'toggle-star',
+          label: item.starred ? 'Remove from Starred' : 'Add to Starred',
+          icon: <Star size={15} className={item.starred ? 'text-amber-400 fill-amber-400' : 'text-slate-400'} />,
+          onClick: () => handleToggleStar(item),
+        },
+        {
+          id: 'duplicate',
+          label: 'Duplicate',
+          icon: <Copy size={15} className="text-slate-400" />,
+          onClick: () => handleDuplicate(item),
+        },
+        {
+          id: 'move-to',
+          label: 'Move To...',
+          icon: <Scissors size={15} className="text-slate-400" />,
+          disabled: !canWrite || item.isSystem,
+          onClick: () => setActiveMoveItem(item),
+        },
+        {
+          id: 'cut',
+          label: 'Cut',
+          icon: <Scissors size={15} className="text-slate-400" />,
+          shortcut: 'Ctrl+X',
+          disabled: item.isSystem,
+          onClick: () => handleCut(item),
+        },
+        {
+          id: 'copy',
+          label: 'Copy',
+          icon: <Copy size={15} className="text-slate-400" />,
+          shortcut: 'Ctrl+C',
+          onClick: () => handleCopy(item),
+        },
+        {
+          id: 'rename',
+          label: 'Rename',
+          icon: <Edit3 size={15} className="text-slate-400" />,
+          shortcut: 'F2',
+          disabled: !canWrite || item.isSystem,
+          onClick: () => handleStartRename(item),
+        },
+        {
+          id: 'delete',
+          label: 'Move to Trash',
+          icon: <Trash2 size={15} className="text-red-400" />,
+          danger: true,
+          shortcut: 'Del',
+          disabled: !canWrite || item.isSystem,
+          onClick: () => handleDeleteItem(item),
+        },
+        { divider: true },
+        {
+          id: 'properties',
+          label: 'Properties',
+          icon: <Info size={15} className="text-slate-300" />,
+          onClick: () => setActivePropertiesItem(item),
+        }
+      );
+
+      openContextMenu(e, fileItems, item.name);
+    } else {
+      setSelectedFileIds([]);
+
+      // Shared by both the Trash and the regular background menu below, so
+      // View/Sort/Group are reachable from a right-click no matter which
+      // folder is open — the same choices already exposed as icon buttons in
+      // the toolbar (`handleSortMenuClick`/`handleGroupMenuClick`).
+      const viewSortGroupItems: ContextMenuItem[] = [
+        {
+          id: 'view-mode',
+          label: 'View',
+          icon: viewMode === 'grid' ? <Grid size={15} className="text-slate-400" /> : <List size={15} className="text-slate-400" />,
+          submenu: [
+            {
+              id: 'view-grid',
+              label: 'Grid',
+              icon: <Grid size={15} className="text-slate-400" />,
+              checked: viewMode === 'grid',
+              onClick: () => setViewMode('grid'),
+            },
+            {
+              id: 'view-list',
+              label: 'List',
+              icon: <List size={15} className="text-slate-400" />,
+              checked: viewMode === 'list',
+              onClick: () => setViewMode('list'),
+            },
+          ],
+        },
+        {
+          id: 'sort-by',
+          label: 'Sort By',
+          icon: <ArrowUpDown size={15} className="text-slate-400" />,
+          submenu: [
+            ...SORT_FIELD_OPTIONS.map(({ field, label }) => ({
+              id: `ctx-sort-${field}`,
+              label,
+              checked: sortField === field,
+              onClick: () => setSortField(field),
+            })),
+            { divider: true },
+            {
+              id: 'ctx-sort-asc',
+              label: 'Ascending',
+              checked: sortOrder === 'asc',
+              onClick: () => setSortOrder('asc'),
+            },
+            {
+              id: 'ctx-sort-desc',
+              label: 'Descending',
+              checked: sortOrder === 'desc',
+              onClick: () => setSortOrder('desc'),
+            },
+          ],
+        },
+        {
+          id: 'group-by',
+          label: 'Group By',
+          icon: <Layers size={15} className="text-slate-400" />,
+          submenu: GROUP_BY_OPTIONS.map(({ value, label }) => ({
+            id: `ctx-group-${value}`,
+            label,
+            checked: groupBy === value,
+            onClick: () => setGroupBy(value),
+          })),
+        },
+      ];
+
+      if (isTrashFolder) {
+        openContextMenu(
+          e,
+          [
+            ...viewSortGroupItems,
+            { divider: true },
+            {
+              id: 'empty-trash',
+              label: 'Empty Recycle Bin',
+              icon: <Trash2 size={15} className="text-red-400" />,
+              danger: true,
+              onClick: handleEmptyTrash,
+            },
+          ],
+          'Trash Bin Actions'
+        );
+        return;
+      }
+
+      const folderItems: ContextMenuItem[] = [
+        {
+          id: 'new-folder',
+          label: 'New Folder',
+          icon: <FolderPlus size={15} className="text-amber-400" />,
+          onClick: handleCreateFolder,
+        },
+        {
+          id: 'new-file',
+          label: 'New Text File',
+          icon: <Plus size={15} className="text-blue-400" />,
+          onClick: handleCreateFile,
+        },
+        {
+          id: 'upload',
+          label: 'Upload',
+          icon: <Upload size={15} className="text-emerald-400" />,
+          submenu: [
+            {
+              id: 'upload-file',
+              label: 'Upload File',
+              icon: <FileUp size={15} className="text-emerald-400" />,
+              onClick: handleUploadClick,
+            },
+            {
+              id: 'upload-folder',
+              label: 'Upload Folder',
+              icon: <FolderUp size={15} className="text-emerald-400" />,
+              onClick: handleUploadFolderClick,
+            },
+          ],
+        },
+        { divider: true },
+        ...viewSortGroupItems,
+        { divider: true },
+        {
+          id: 'paste',
+          label: 'Paste Here',
+          icon: <Clipboard size={15} className="text-slate-400" />,
+          shortcut: 'Ctrl+V',
+          disabled: !clipboard,
+          onClick: handlePaste,
+        },
+        {
+          id: 'select-all',
+          label: 'Select All',
+          icon: <CheckSquare size={15} className="text-purple-400" />,
+          shortcut: 'Ctrl+A',
+          onClick: () => setSelectedFileIds(sortedItems.map((f) => f.id)),
+        },
+        {
+          id: 'refresh',
+          label: 'Refresh',
+          icon: <RefreshCw size={15} className="text-slate-400" />,
+          shortcut: 'F5',
+          onClick: handleRefresh,
+        },
+      ];
+      openContextMenu(e, folderItems, 'Folder Actions');
+    }
+  };
+
+  // Open Selected App via OpenWith Modal. `forceNewWindow` distinguishes an
+  // explicit "Open With…" pick (always a fresh editor window, never one that
+  // already has something else open) from the plain "Open"/double-click path
+  // (reuses whichever editor window is already open, same as before).
+  const handleOpenWithApp = async (appKey: string, item: FileItem, forceNewWindow = false) => {
+    // 'text-editor' is OpenWithModal's own manual-pick key; 'editor' is the
+    // real AppRegistry id that double-click (via getAppForFile/EDITOR_REGISTRY)
+    // actually passes here — without this second check double-clicking a
+    // text/code file silently did nothing, since neither branch below matched it.
+    if (appKey === 'text-editor' || appKey === 'editor') {
+      // `item.content` comes from the folder listing, which never includes
+      // content (FileService.listChildren doesn't pass includeContent=true —
+      // it would be wasteful to fetch every file's bytes just to render a
+      // grid of names and icons). Any resync of this folder therefore blanks
+      // it back to ''. Fetch the real content here so a file saved from the
+      // editor still shows its text the next time it's opened from Explorer.
+      const full = await FileService.getFile(item.id);
+      const content = full?.content ?? item.content ?? '';
+      if (forceNewWindow) {
+        openTextFileInNewEditorWindow(item.id, item.name, content, currentFolderId);
+      } else {
+        openTextFileInEditor(item.id, item.name, content, currentFolderId);
+      }
+    } else if (appKey === 'image-viewer' || appKey === 'audio-player' || appKey === 'video-player' || appKey === 'code-viewer') {
+      setActivePreviewItem(item);
+    } else if (appKey === 'properties') {
+      setActivePropertiesItem(item);
+    }
+  };
+
+  // Read Current directory items
+  let currentItems: FileItem[] = [];
+  if (isTrashFolder) {
+    currentItems = deletedFiles;
+  } else if (currentFolderId === 'recent') {
+    currentItems = recentItems;
+  } else if (currentFolderId === 'starred') {
+    currentItems = starredItems;
+  } else if (currentFolderId === 'shared-with-me') {
+    currentItems = sharedWithMeItems;
+  } else {
+    currentItems = files.filter((f) => f.parentId === currentFolderId);
+  }
+
+  currentItems = currentItems.filter(
+    (f) => f.id !== 'volume-511gb' && f.id !== 'data-disk' && !f.name.includes('511 GB') && !f.name.includes('Data Disk')
+  );
+
+  // Apply Type Filter
+  if (typeFilter !== 'all') {
+    currentItems = currentItems.filter((item) => {
+      if (item.type === 'folder') return true;
+      const ext = item.name.split('.').pop()?.toLowerCase();
+      if (typeFilter === 'documents') return ext === 'txt' || ext === 'pdf' || ext === 'doc' || ext === 'docx';
+      if (typeFilter === 'images') return ext === 'png' || ext === 'jpg' || ext === 'jpeg' || ext === 'webp' || ext === 'svg';
+      if (typeFilter === 'audio') return ext === 'mp3' || ext === 'wav' || ext === 'ogg' || ext === 'm4a';
+      if (typeFilter === 'video') return ext === 'mp4' || ext === 'webm' || ext === 'mov';
+      if (typeFilter === 'code') return ext === 'js' || ext === 'ts' || ext === 'tsx' || ext === 'html' || ext === 'css' || ext === 'py' || ext === 'json';
+      if (typeFilter === 'archives') return ext === 'zip' || ext === 'tar' || ext === 'gz' || ext === 'rar';
+      return true;
+    });
+  }
+
+  // "Shared with me" only: narrow to a specific access level.
+  if (currentFolderId === 'shared-with-me' && sharedRoleFilter !== 'all') {
+    currentItems = currentItems.filter((item) => item.sharedRole === sharedRoleFilter);
+  }
+
+  // Apply Search Query
+  const filteredItems = currentItems.filter((f) =>
+    f.name.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  // Sorting calculation
+  const sortedItems = [...filteredItems].sort((a, b) => {
+    if (a.type !== b.type) {
+      return a.type === 'folder' ? -1 : 1;
+    }
+
+    let valA: any = a.name.toLowerCase();
+    let valB: any = b.name.toLowerCase();
+
+    if (sortField === 'type') {
+      valA = getItemTypeString(a);
+      valB = getItemTypeString(b);
+    } else if (sortField === 'date') {
+      // In "Shared with me", "date" means when it was shared with you, not
+      // when the owner originally created it — that's what someone sorting
+      // this view by date is actually asking for.
+      valA = a.sharedAt ?? a.createdAt;
+      valB = b.sharedAt ?? b.createdAt;
+    } else if (sortField === 'dateModified') {
+      valA = a.updatedAt ?? a.createdAt;
+      valB = b.updatedAt ?? b.createdAt;
+    } else if (sortField === 'size') {
+      if (a.type === 'folder') {
+        valA = files.filter((f) => f.parentId === a.id).length;
+        valB = files.filter((f) => f.parentId === b.id).length;
+      } else {
+        valA = typeof a.size === 'number' ? a.size : a.content ? a.content.length : 0;
+        valB = typeof b.size === 'number' ? b.size : b.content ? b.content.length : 0;
+      }
+    }
+
+    if (valA < valB) return sortOrder === 'asc' ? -1 : 1;
+    if (valA > valB) return sortOrder === 'asc' ? 1 : -1;
+    return 0;
+  });
+
+  // Grouping. Interspersing full-width header rows into the same flat list
+  // the grid/list views already render keeps every existing per-item
+  // drag/select/context-menu behavior untouched — grouping only changes what
+  // gets inserted between items, not how an item itself renders. `key`
+  // decides which bucket an item falls into and (for date/size) its display
+  // order; `label` is what the header actually shows, which can carry more
+  // than the key (e.g. the owner's @handle alongside their name).
+  type DisplayEntry = { kind: 'header'; key: string; label: string } | { kind: 'item'; item: FileItem };
+  const SHARED_ROLE_LABELS: Record<string, string> = { owner: 'Owner', editor: 'Editor', commenter: 'Commenter', viewer: 'Viewer' };
+  // "Shared By" only has data on "Shared with me" items (`ownerName`/
+  // `ownerUsername` are only populated there) — if the choice was made on
+  // that tab and the user then switches to a regular folder, fall back to no
+  // grouping rather than dumping every item into one "Unknown" bucket.
+  const effectiveGroupBy = groupBy === 'owner' && currentFolderId !== 'shared-with-me' ? 'none' : groupBy;
+  const groupOf = (item: FileItem): { key: string; label: string } => {
+    if (effectiveGroupBy === 'owner') {
+      const name = item.ownerName || 'Unknown';
+      return { key: name, label: item.ownerUsername ? `${name} (@${item.ownerUsername})` : name };
+    }
+    if (effectiveGroupBy === 'role') {
+      const label = SHARED_ROLE_LABELS[item.sharedRole ?? ''] || 'Viewer';
+      return { key: label, label };
+    }
+    if (effectiveGroupBy === 'name') {
+      const first = item.name.trim().charAt(0).toUpperCase();
+      const label = /[A-Z]/.test(first) ? first : '#';
+      return { key: label, label };
+    }
+    if (effectiveGroupBy === 'type') {
+      const label = fileCategoryLabel(item);
+      return { key: label, label };
+    }
+    if (effectiveGroupBy === 'size') {
+      const label = sizeBucketLabel(item);
+      return { key: label, label };
+    }
+    if (effectiveGroupBy === 'dateModified') {
+      const label = dateBucketLabel(item.updatedAt ?? item.createdAt);
+      return { key: label, label };
+    }
+    if (effectiveGroupBy === 'dateCreated') {
+      const label = dateBucketLabel(item.createdAt);
+      return { key: label, label };
+    }
+    return { key: '', label: '' };
+  };
+  let displayEntries: DisplayEntry[];
+  if (effectiveGroupBy !== 'none') {
+    const order: string[] = [];
+    const groups = new Map<string, { label: string; items: FileItem[] }>();
+    for (const item of sortedItems) {
+      const { key, label } = groupOf(item);
+      if (!groups.has(key)) {
+        groups.set(key, { label, items: [] });
+        order.push(key);
+      }
+      groups.get(key)!.items.push(item);
+    }
+    const chronologicalOrder = effectiveGroupBy === 'dateModified' || effectiveGroupBy === 'dateCreated' ? DATE_BUCKET_ORDER : effectiveGroupBy === 'size' ? SIZE_BUCKET_ORDER : null;
+    order.sort((a, b) =>
+      chronologicalOrder ? chronologicalOrder.indexOf(a) - chronologicalOrder.indexOf(b) : a.localeCompare(b),
+    );
+    displayEntries = order.flatMap((key) => {
+      const group = groups.get(key)!;
+      return [
+        { kind: 'header' as const, key: `group-${key}`, label: `${group.label} · ${group.items.length}` },
+        ...group.items.map((item) => ({ kind: 'item' as const, item })),
+      ];
+    });
+  } else {
+    displayEntries = sortedItems.map((item) => ({ kind: 'item' as const, item }));
+  }
+
+  // Theme styles
+  const themeStyles = {
+    'classic-light': {
+      container: 'text-[#1F1F1F] bg-[#FAF8FC]',
+      sidebar: 'bg-[#ECECEC] border-r border-[#D6D6D6]',
+      sidebarBtn: 'text-[#2C2C2C] hover:bg-[#DDD]/60 hover:text-black font-normal',
+      sidebarBtnActive: 'bg-[#DCDCDC] text-black font-medium',
+      toolbar: 'bg-[#FAF8FC] border-b border-[#E2D9EB] select-none shrink-0',
+      addressBar: 'bg-white border border-[#DDD3E8] rounded-md text-xs text-[#211625] shadow-inner',
+      gridCard: 'bg-white border-[#E5DBEE] hover:bg-[#FDFBFE] hover:shadow-sm text-[#211625]',
+      gridCardSelected: 'bg-[#F1E8F9] border-[#C2A3DF] text-[#6324A3] shadow-inner',
+      listHeader: 'bg-[#FAF8FC] border-b border-[#E2D9EB] text-[#55475A] font-bold text-xs',
+      listRow: 'border-b border-[#EDE8F3] hover:bg-[#F3EEF8]',
+      listRowSelected: 'bg-[#FAF8FC] hover:bg-[#FAF8FC] border-l-4 border-l-purple-500',
+      rightPane: 'bg-[#F4EDFA] border-l border-[#E2D9EB] text-[#211625]',
+      rightPaneHeader: 'border-b border-[#E2D9EB] bg-[#FAF8FC]',
+    },
+    'modern-dark': {
+      container: 'text-white bg-zinc-950/90',
+      sidebar: 'bg-zinc-900/50 border-r border-white/5',
+      sidebarBtn: 'text-white/70 hover:bg-white/5 hover:text-white',
+      sidebarBtnActive: 'bg-white/10 text-[#EC4899] font-semibold border-l-2 border-l-[#EC4899]',
+      toolbar: 'bg-zinc-900/60 border-b border-white/5 select-none shrink-0',
+      addressBar: 'bg-zinc-950 border border-white/10 rounded-md text-xs text-white shadow-inner',
+      gridCard: 'bg-white/5 border-white/5 hover:bg-white/10 hover:shadow-lg text-white',
+      gridCardSelected: 'bg-[#EC4899]/10 border-[#EC4899]/40 text-[#EC4899] shadow-inner',
+      listHeader: 'bg-zinc-900 border-b border-white/10 text-white/60 font-bold text-xs',
+      listRow: 'border-b border-white/5 hover:bg-white/5',
+      listRowSelected: 'bg-zinc-900 hover:bg-zinc-900 border-l-4 border-l-[#EC4899]',
+      rightPane: 'bg-zinc-900/70 border-l border-white/5 text-white',
+      rightPaneHeader: 'border-b border-white/5 bg-zinc-950',
+    },
+    'retro-terminal': {
+      container: 'text-[#22c55e] bg-black font-mono',
+      sidebar: 'bg-black border-r border-[#22c55e]/20',
+      sidebarBtn: 'text-[#22c55e]/80 hover:bg-[#22c55e]/10 hover:text-white',
+      sidebarBtnActive: 'bg-[#22c55e]/20 text-[#22c55e] font-semibold border-l-2 border-l-[#22c55e]',
+      toolbar: 'bg-black border-b border-[#22c55e]/20 select-none shrink-0',
+      addressBar: 'bg-black border border-[#22c55e]/40 rounded-md text-xs text-[#22c55e] shadow-inner',
+      gridCard: 'bg-black border-[#22c55e]/20 hover:bg-[#22c55e]/5 text-[#22c55e]',
+      gridCardSelected: 'bg-[#22c55e]/20 border-[#22c55e] text-[#22c55e] shadow-inner',
+      listHeader: 'bg-black border-b border-[#22c55e]/40 text-[#22c55e]/70 font-bold text-xs',
+      listRow: 'border-b border-[#22c55e]/10 hover:bg-[#22c55e]/5',
+      listRowSelected: 'bg-[#22c55e]/10 hover:bg-[#22c55e]/15 border-l-4 border-l-[#22c55e]',
+      rightPane: 'bg-black border-l border-[#22c55e]/20 text-[#22c55e]',
+      rightPaneHeader: 'border-b border-[#22c55e]/20 bg-black',
+    },
+  };
+
+  const ts = themeStyles[activeTheme] || themeStyles['classic-light'];
+
+
+  // Menus mirror the toolbar and context menus, so every command is also
+  // reachable from the menu bar.
+  useAppMenu(windowId, [
+    {
+      id: 'file',
+      label: 'File',
+      items: [
+        { id: 'new-folder', label: 'New Folder', shortcut: 'Ctrl+Shift+N', disabled: isTrashFolder, onSelect: handleCreateFolder },
+        { id: 'upload', label: 'Upload Files…', disabled: isTrashFolder, onSelect: handleUploadClick },
+        separator(),
+        { id: 'rename', label: 'Rename', shortcut: 'F2', disabled: !selectedItem || isTrashFolder || selectionHasSystemFolder, onSelect: () => selectedItem && handleStartRename(selectedItem) },
+        { id: 'download', label: 'Download', disabled: !selectedItem || isTrashFolder, onSelect: () => void handleDownloadSelectedItems() },
+        separator(),
+        { id: 'delete', label: isTrashFolder ? 'Delete Permanently' : 'Move to Trash', shortcut: 'Delete', danger: true, disabled: !selectedItem || selectionHasSystemFolder, onSelect: () => selectedItem && handleDeleteItem(selectedItem) },
+        { id: 'empty-trash', label: 'Empty Recycle Bin', danger: true, disabled: deletedFiles.length === 0, onSelect: () => handleEmptyTrash() },
+      ],
+    },
+    {
+      id: 'edit',
+      label: 'Edit',
+      items: [
+        { id: 'cut', label: 'Cut', shortcut: 'Ctrl+X', disabled: !selectedItem || isTrashFolder || selectionHasSystemFolder, onSelect: () => selectedItem && handleCut(selectedItem) },
+        { id: 'copy', label: 'Copy', shortcut: 'Ctrl+C', disabled: !selectedItem || isTrashFolder, onSelect: () => selectedItem && handleCopy(selectedItem) },
+        { id: 'paste', label: 'Paste', shortcut: 'Ctrl+V', disabled: !clipboard || isTrashFolder, onSelect: handlePaste },
+        separator(),
+        { id: 'select-all', label: 'Select All', shortcut: 'Ctrl+A', onSelect: () => setSelectedFileIds(sortedItems.map((item) => item.id)) },
+        { id: 'select-none', label: 'Deselect All', disabled: selectedFileIds.length === 0, onSelect: () => setSelectedFileIds([]) },
+        separator(),
+        { id: 'star', label: 'Toggle Star', disabled: !selectedItem || isTrashFolder, onSelect: () => selectedItem && handleToggleStar(selectedItem) },
+      ],
+    },
+    {
+      id: 'view',
+      label: 'View',
+      items: [
+        { id: 'view-grid', label: 'Grid', selected: viewMode === 'grid', onSelect: () => setViewMode('grid') },
+        { id: 'view-list', label: 'List', selected: viewMode === 'list', onSelect: () => setViewMode('list') },
+        separator(),
+        {
+          kind: 'submenu', id: 'sort-by', label: 'Sort By',
+          items: ([
+            ['name', 'Name'], ['type', 'Type'], ['dateModified', 'Date Modified'], ['date', 'Date Created'], ['size', 'Size'],
+          ] as const).map(([field, label]) => ({
+            id: `sort-${field}`, label, selected: sortField === field,
+            onSelect: () => setSortField(field),
+          })),
+        },
+        {
+          kind: 'submenu', id: 'sort-order', label: 'Sort Order',
+          items: [
+            { id: 'sort-asc', label: 'Ascending', selected: sortOrder === 'asc', onSelect: () => setSortOrder('asc') },
+            { id: 'sort-desc', label: 'Descending', selected: sortOrder === 'desc', onSelect: () => setSortOrder('desc') },
+          ],
+        },
+        separator(),
+        { id: 'details-pane', label: 'Details Pane', checked: showDetailsPane, onSelect: () => setShowDetailsPane((prev) => !prev) },
+        separator(),
+        {
+          kind: 'submenu', id: 'filter-type', label: 'Filter',
+          items: ([
+            ['all', 'All Items'], ['documents', 'Documents'], ['images', 'Images'],
+            ['audio', 'Audio'], ['video', 'Video'], ['code', 'Code'], ['archives', 'Archives'],
+          ] as const).map(([value, label]) => ({
+            id: `filter-${value}`, label, selected: typeFilter === value,
+            onSelect: () => setTypeFilter(value),
+          })),
+        },
+      ],
+    },
+    {
+      id: 'go',
+      label: 'Go',
+      items: [
+        { id: 'back', label: 'Back', shortcut: 'Alt+←', disabled: historyIndex <= 0, onSelect: handleGoBack },
+        { id: 'forward', label: 'Forward', shortcut: 'Alt+→', disabled: historyIndex >= history.length - 1, onSelect: handleGoForward },
+        { id: 'up', label: 'Up One Level', shortcut: 'Alt+↑', disabled: currentFolderId === null, onSelect: handleGoUp },
+        separator(),
+        { id: 'go-home', label: 'This PC', onSelect: () => handleSidebarClick(null) },
+        { id: 'go-trash', label: 'Recycle Bin', onSelect: () => handleSidebarClick('trash') },
+        separator(),
+        { id: 'clear-search', label: 'Clear Search', disabled: !searchQuery, onSelect: () => setSearchQuery('') },
+      ],
+    },
+  ]);
+
+  return (
+    <div ref={containerRef} data-name="file-explorer-root" className={`relative h-full flex flex-col text-sm select-none ${ts.container}`}>
+      {/* ==================== 1. TOP NAV & TOOLBAR RIBBON ==================== */}
+      <div data-name="file-explorer-toolbar" className={`${ts.toolbar} flex flex-col shrink-0`}>
+        {/* Navigation Row */}
+        <div data-name="file-explorer-nav-row" className="flex items-center gap-1.5 p-2 px-3">
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              onClick={handleGoBack}
+              disabled={historyIndex === 0}
+              className="p-1.5 rounded-md hover:bg-black/5 disabled:opacity-35 cursor-pointer"
+              title="Go Back"
+            >
+              <ArrowLeft className="w-4 h-4" />
+            </button>
+            <button
+              onClick={handleGoForward}
+              disabled={historyIndex === history.length - 1}
+              className="p-1.5 rounded-md hover:bg-black/5 disabled:opacity-35 cursor-pointer"
+              title="Go Forward"
+            >
+              <ArrowRight className="w-4 h-4" />
+            </button>
+            <button
+              onClick={handleGoUp}
+              disabled={currentFolderId === null}
+              className="p-1.5 rounded-md hover:bg-black/5 disabled:opacity-35 cursor-pointer"
+              title="Go Up"
+            >
+              <ArrowUp className="w-4 h-4" />
+            </button>
+            <button
+              onClick={handleRefresh}
+              className="p-1.5 rounded-md hover:bg-black/5 cursor-pointer"
+              title="Refresh Folder"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          {/* Address Bar */}
+          <div data-name="file-explorer-address-bar" className="flex-1 min-w-[120px] relative">
+            {isPathEditing ? (
+              <form onSubmit={handlePathSubmit} className="w-full h-8">
+                <input
+                  ref={pathInputRef}
+                  type="text"
+                  value={pathInputText}
+                  onChange={(e) => setPathInputText(e.target.value)}
+                  onBlur={() => setTimeout(() => setIsPathEditing(false), 200)}
+                  className={`w-full h-full px-3 outline-none focus:ring-1 focus:ring-purple-500/50 ${ts.addressBar}`}
+                />
+              </form>
+            ) : (
+              <div
+                onClick={startPathEditing}
+                className={`w-full h-8 flex items-center px-2 cursor-text overflow-hidden ${ts.addressBar}`}
+              >
+                <div className="flex items-center gap-1 text-[11px] font-medium truncate">
+                  {getBreadcrumbs().map((bc, idx) => (
+                    <React.Fragment key={idx}>
+                      {idx > 0 && <ChevronRight className="w-3 h-3 opacity-40 shrink-0" />}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          navigateToFolder(bc.id);
+                        }}
+                        className="hover:underline hover:text-purple-600 cursor-pointer px-1 shrink-0"
+                      >
+                        {bc.name}
+                      </button>
+                    </React.Fragment>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Search Box */}
+          <div data-name="file-explorer-search-box" className={`${containerWidth < 500 ? 'w-28' : 'w-48'} relative transition-all shrink-0`}>
+            <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 opacity-50 text-gray-500" />
+            <input
+              type="text"
+              placeholder={containerWidth < 500 ? "Search..." : "Search current folder..."}
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full h-8 pl-8 pr-3 outline-none text-xs rounded-md bg-black/5 hover:bg-black/10 focus:bg-white focus:ring-1 focus:ring-purple-500/50 border border-transparent focus:border-purple-300 placeholder:opacity-60 text-current"
+            />
+          </div>
+        </div>
+
+        {/* Toolbar Action Ribbon */}
+        <div data-name="file-explorer-action-ribbon" className="flex items-center justify-between border-t border-black/5 bg-black/5 py-1 px-3 flex-wrap gap-1">
+          {/* `flex-nowrap` + `min-w-0 flex-1`: the group never wraps onto a
+              second line — instead leftToolbarVisibleCount, computed against
+              this container's actual measured width, decides how many
+              buttons render inline before the rest fold into the "More
+              Actions" overflow menu below. */}
+          <div ref={leftToolbarRef} data-name="file-explorer-toolbar-actions" className="flex items-center gap-1.5 flex-nowrap min-w-0 flex-1 overflow-hidden">
+            {visibleToolbarActions.slice(0, leftToolbarVisibleCount).map((action, idx) => (
+              <React.Fragment key={action.id}>
+                {idx > 0 && action.dividerBefore && (
+                  <span className="h-4 w-[1px] bg-black/10 mx-0.5 shrink-0" />
+                )}
+                <button
+                  ref={(el) => { leftButtonRefs.current[idx] = el; }}
+                  onClick={action.onClick}
+                  title={action.title}
+                  className={`flex items-center gap-1.5 ${action.wide ? 'px-2.5' : 'px-2'} py-1 text-[11px] font-semibold rounded hover:bg-white/35 cursor-pointer shrink-0 ${action.colorClass ?? ''}`}
+                >
+                  {action.icon}
+                  {!isCompactRibbon && <span>{action.label}</span>}
+                  {action.hasChevron && <ChevronDown className="w-3 h-3 shrink-0" />}
+                </button>
+              </React.Fragment>
+            ))}
+
+            {leftToolbarVisibleCount < visibleToolbarActions.length && (
+              <>
+                <span className="h-4 w-[1px] bg-black/10 mx-0.5 shrink-0" />
+                <button
+                  onClick={handleLeftToolbarOverflowClick}
+                  className="flex items-center gap-1 px-2 py-1.5 rounded hover:bg-white/35 cursor-pointer shrink-0"
+                  title="More Actions"
+                >
+                  <MoreHorizontal className="w-4 h-4" />
+                </button>
+              </>
+            )}
+          </div>
+
+          {/* VIEW MODE, SORT & GROUP TOGGLES */}
+          <div data-name="file-explorer-view-controls" className="flex items-center gap-1 shrink-0">
+            {currentFolderId === 'shared-with-me' && (
+              <select
+                value={sharedRoleFilter}
+                onChange={(e) => setSharedRoleFilter(e.target.value as any)}
+                className="h-7 px-2 text-[11px] font-semibold rounded bg-white/40 dark:bg-black/40 border border-black/10 focus:outline-none cursor-pointer"
+                title="Filter by your access level"
+              >
+                <option value="all">Role: All</option>
+                <option value="viewer">Viewer</option>
+                <option value="commenter">Commenter</option>
+                <option value="editor">Editor</option>
+              </select>
+            )}
+
+            <button
+              onClick={handleSortMenuClick}
+              className="p-1.5 rounded hover:bg-white/35 cursor-pointer"
+              title={`Sort: ${activeSortFieldLabel} (${sortOrder === 'asc' ? 'Ascending' : 'Descending'})`}
+            >
+              <ArrowUpDown className="w-4 h-4" />
+            </button>
+            <button
+              onClick={handleGroupMenuClick}
+              className="p-1.5 rounded hover:bg-white/35 cursor-pointer"
+              title={`Group: ${activeGroupByLabel}`}
+            >
+              <Layers className="w-4 h-4" />
+            </button>
+
+            <span className="h-4 w-[1px] bg-black/10 mx-0.5" />
+
+            <button
+              onClick={() => setViewMode('grid')}
+              className={`p-1.5 rounded transition-colors cursor-pointer ${
+                viewMode === 'grid' ? 'bg-white/60 shadow-xs' : 'hover:bg-white/35'
+              }`}
+              title="Grid View"
+            >
+              <Grid className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => setViewMode('list')}
+              className={`p-1.5 rounded transition-colors cursor-pointer ${
+                viewMode === 'list' ? 'bg-white/60 shadow-xs' : 'hover:bg-white/35'
+              }`}
+              title="List View"
+            >
+              <List className="w-4 h-4" />
+            </button>
+            <span className="h-4 w-[1px] bg-black/10 mx-0.5" />
+            <button
+              onClick={() => setShowDetailsPane(!showDetailsPane)}
+              className={`p-1.5 rounded transition-colors cursor-pointer ${
+                showDetailsPane ? 'bg-white/60 text-purple-600' : 'hover:bg-white/35'
+              }`}
+              title="Toggle Details Pane"
+            >
+              <Info className="w-4 h-4" />
+            </button>
+            <span className="h-4 w-[1px] bg-black/10 mx-0.5" />
+            <button
+              onClick={() => setIsAppSettingsOpen(true)}
+              className="p-1.5 rounded hover:bg-white/35 cursor-pointer"
+              title="File Explorer Settings"
+            >
+              <SettingsIcon className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+
+      </div>
+
+      {/* ==================== 1B. FILE-PICKER BANNER (only when this window was opened as a picker) ==================== */}
+      {pickerContext && (
+        <div
+          data-name="file-explorer-picker-banner"
+          className="flex items-center justify-between gap-3 px-3 py-2 border-b border-purple-500/20 bg-purple-500/10 shrink-0"
+        >
+          <div className="flex items-center gap-2 text-xs font-medium text-purple-700">
+            {pickerContext.mode === 'folder' ? <FolderOpen className="w-4 h-4" /> : <FileText className="w-4 h-4" />}
+            {pickerContext.mode === 'folder' ? 'Choose a folder, then Select it.' : 'Choose a file to open — double-click, or select it and click Open.'}
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => handleCloseWindow(windowId)}
+              className="px-3 py-1.5 rounded-lg text-xs font-medium bg-black/5 hover:bg-black/10 cursor-pointer"
+            >
+              Cancel
+            </button>
+            {pickerContext.mode === 'folder' ? (
+              <button
+                disabled={currentFolderId !== null && VIRTUAL_FOLDER_IDS.has(currentFolderId)}
+                onClick={() =>
+                  resolveFilePicker(windowId, pickerContext.requesterWindowId, {
+                    mode: 'folder',
+                    folder: { id: currentFolderId, name: getBreadcrumbs()[getBreadcrumbs().length - 1]?.name ?? 'Home' },
+                  })
+                }
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-purple-600 hover:bg-purple-500 text-white disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+              >
+                Select "{getBreadcrumbs()[getBreadcrumbs().length - 1]?.name ?? 'Home'}"
+              </button>
+            ) : (
+              <button
+                disabled={selectedItem?.type !== 'file'}
+                onClick={() =>
+                  selectedItem &&
+                  resolveFilePicker(windowId, pickerContext.requesterWindowId, {
+                    mode: 'file',
+                    file: { id: selectedItem.id, name: selectedItem.name, parentId: selectedItem.parentId },
+                  })
+                }
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-purple-600 hover:bg-purple-500 text-white disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+              >
+                Open
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ==================== 2. MAIN LAYOUT: SIDEBAR, STAGE, DETAILS ==================== */}
+      <div data-name="file-explorer-main-layout" className="flex-1 flex overflow-hidden relative" onContextMenu={(e) => handleContextMenu(e, null)}>
+        {/* LEFT NAVIGATION TREE SIDEBAR */}
+        <div data-name="file-explorer-sidebar" className={`transition-all duration-150 ${isCompactSidebar ? 'w-12 p-1' : 'w-52 p-2.5'} flex flex-col gap-0.5 shrink-0 overflow-y-auto select-none ${ts.sidebar}`}>
+          {/* CORE PLACES */}
+          {[
+            { id: 'home', label: 'Home', icon: Home, targetFolderId: null },
+            { id: 'recent', label: 'Recent', icon: Clock, targetFolderId: 'recent' },
+            { id: 'starred', label: 'Starred', icon: Star, targetFolderId: 'starred' },
+            { id: 'shared-with-me', label: 'Shared with me', icon: Users, targetFolderId: 'shared-with-me' },
+            { id: 'trash', label: 'Trash Bin', icon: Trash2, targetFolderId: 'trash' },
+          ].map((item) => {
+            const isActive =
+              (item.id === 'home' && currentFolderId === null) ||
+              currentFolderId === item.targetFolderId;
+            const IconComponent = item.icon;
+
+            return (
+              <button
+                key={item.id}
+                onClick={() => handleSidebarClick(item.targetFolderId)}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => handleFolderDrop(e, item.targetFolderId)}
+                className={`w-full text-left px-3 py-2 rounded-xl transition-colors flex items-center gap-3 text-[13.5px] cursor-pointer ${
+                  isActive ? ts.sidebarBtnActive : ts.sidebarBtn
+                } ${isCompactSidebar ? 'justify-center px-0 py-2.5' : ''}`}
+                title={isCompactSidebar ? item.label : undefined}
+              >
+                <IconComponent className="w-[18px] h-[18px] shrink-0 stroke-[1.8]" />
+                {!isCompactSidebar && <span className="truncate">{item.label}</span>}
+              </button>
+            );
+          })}
+
+          <div className="my-2 mx-1 border-t border-neutral-300/80 dark:border-white/10" />
+
+          {/* PINNED FOLDERS */}
+          {!isCompactSidebar && (
+            <div className="px-3 py-1 text-[11px] font-semibold text-neutral-400 uppercase tracking-wider flex items-center justify-between">
+              <span>Pinned</span>
+              <Pin className="w-3.5 h-3.5 text-neutral-400" />
+            </div>
+          )}
+
+          {pinnedFolderIds.map((folderId) => {
+            const folderItem = files.find((f) => f.id === folderId);
+            const folderName = folderItem ? folderItem.name : getFolderLabel(folderId);
+            const IconComponent = getFolderIcon(folderId, folderName);
+            const isActive = currentFolderId === folderId;
+
+            return (
+              <button
+                key={folderId}
+                onClick={() => handleSidebarClick(folderId)}
+                onContextMenu={(e) => handleSidebarItemContextMenu(e, folderId, folderName)}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => handleFolderDrop(e, folderId)}
+                className={`w-full text-left px-3 py-2 rounded-xl transition-colors flex items-center gap-3 text-[13.5px] cursor-pointer group ${
+                  isActive ? ts.sidebarBtnActive : ts.sidebarBtn
+                } ${isCompactSidebar ? 'justify-center px-0 py-2.5' : ''}`}
+                title={isCompactSidebar ? folderName : undefined}
+              >
+                <IconComponent className="w-[18px] h-[18px] shrink-0 stroke-[1.8]" />
+                {!isCompactSidebar && <span className="truncate flex-1">{folderName}</span>}
+              </button>
+            );
+          })}
+
+        </div>
+
+        {/* MIDDLE EXPLORER CANVAS AREA */}
+        <div
+          ref={explorerAreaRef}
+          data-name="file-explorer-canvas"
+          onDragOver={handleCanvasDragOver}
+          onDragLeave={handleCanvasDragLeave}
+          onDrop={handleCanvasDrop}
+          onClick={() => clearFileSelection()}
+          className={`flex-1 flex flex-col overflow-hidden relative transition-all ${
+            isDragOverCanvas ? 'ring-4 ring-purple-500/50 bg-purple-500/5' : ''
+          }`}
+        >
+          {isDragOverCanvas && (
+            <div className="absolute inset-0 z-[100] bg-purple-600/20 backdrop-blur-xs flex flex-col items-center justify-center text-purple-600 dark:text-purple-300 font-bold border-2 border-dashed border-purple-500 rounded-2xl m-4">
+              <Upload className="w-12 h-12 mb-2 animate-bounce" />
+              <span>Drop files here to upload to current folder</span>
+            </div>
+          )}
+
+          {folderNotFoundId ? (
+            <div className="flex-1 flex flex-col items-center justify-center opacity-60 text-xs select-none p-4 text-center gap-1">
+              <FolderX className="w-12 h-12 stroke-[1.2] mb-2 text-current" />
+              <span className="font-semibold text-sm">Folder not found</span>
+              <span className="max-w-xs opacity-70">
+                This folder doesn't exist, was deleted, or you don't have access to it.
+              </span>
+              <button
+                onClick={() => navigateToFolder(null)}
+                className="mt-3 px-4 py-2 bg-purple-600 text-white font-bold rounded-xl text-xs hover:bg-purple-500 transition-colors cursor-pointer"
+              >
+                Go to Home
+              </button>
+            </div>
+          ) : currentFolderId === 'shared-with-me' && sharedWithMeLoading ? (
+            <div className="flex-1 flex flex-col items-center justify-center opacity-60 text-xs select-none p-4 text-center gap-2">
+              <Loader2 className="w-8 h-8 animate-spin text-current" />
+              <span>Loading what's been shared with you...</span>
+            </div>
+          ) : currentFolderId === 'recent' && recentLoading ? (
+            <div className="flex-1 flex flex-col items-center justify-center opacity-60 text-xs select-none p-4 text-center gap-2">
+              <Loader2 className="w-8 h-8 animate-spin text-current" />
+              <span>Loading recent files...</span>
+            </div>
+          ) : currentFolderId === 'starred' && starredLoading ? (
+            <div className="flex-1 flex flex-col items-center justify-center opacity-60 text-xs select-none p-4 text-center gap-2">
+              <Loader2 className="w-8 h-8 animate-spin text-current" />
+              <span>Loading starred files...</span>
+            </div>
+          ) : currentFolderId === 'shared-with-me' && sharedWithMeError ? (
+            <div className="flex-1 flex flex-col items-center justify-center opacity-70 text-xs select-none p-4 text-center gap-1">
+              <AlertCircle className="w-10 h-10 mb-1 text-rose-500" />
+              <span className="font-semibold text-sm text-rose-500">{sharedWithMeError}</span>
+            </div>
+          ) : currentFolderId === 'recent' && recentError ? (
+            <div className="flex-1 flex flex-col items-center justify-center opacity-70 text-xs select-none p-4 text-center gap-1">
+              <AlertCircle className="w-10 h-10 mb-1 text-rose-500" />
+              <span className="font-semibold text-sm text-rose-500">{recentError}</span>
+            </div>
+          ) : currentFolderId === 'starred' && starredError ? (
+            <div className="flex-1 flex flex-col items-center justify-center opacity-70 text-xs select-none p-4 text-center gap-1">
+              <AlertCircle className="w-10 h-10 mb-1 text-rose-500" />
+              <span className="font-semibold text-sm text-rose-500">{starredError}</span>
+            </div>
+          ) : sortedItems.length === 0 && currentFolderId === 'shared-with-me' ? (
+            <div className="flex-1 flex flex-col items-center justify-center opacity-40 text-xs select-none p-4 text-center">
+              <Users className="w-12 h-12 stroke-[1.2] mb-3 text-current" />
+              <span>Nothing has been shared with you yet.</span>
+            </div>
+          ) : sortedItems.length === 0 && currentFolderId === 'recent' ? (
+            <div className="flex-1 flex flex-col items-center justify-center opacity-40 text-xs select-none p-4 text-center">
+              <Clock className="w-12 h-12 stroke-[1.2] mb-3 text-current" />
+              <span>No recent files yet.</span>
+            </div>
+          ) : sortedItems.length === 0 && currentFolderId === 'starred' ? (
+            <div className="flex-1 flex flex-col items-center justify-center opacity-40 text-xs select-none p-4 text-center">
+              <Star className="w-12 h-12 stroke-[1.2] mb-3 text-current" />
+              <span>No starred files yet.</span>
+            </div>
+          ) : sortedItems.length === 0 ? (
+            <div className="flex-1 flex flex-col items-center justify-center opacity-40 text-xs select-none p-4 text-center">
+              <Folder className="w-12 h-12 stroke-[1.2] mb-3 text-current" />
+              <span>This folder is empty.</span>
+              {searchQuery && <span className="mt-1">Try clearing your search or filter options.</span>}
+              <button
+                onClick={handleUploadClick}
+                className="mt-3 px-4 py-2 bg-purple-600 text-white font-bold rounded-xl text-xs hover:bg-purple-500 transition-colors cursor-pointer"
+              >
+                Upload Files
+              </button>
+            </div>
+          ) : viewMode === 'grid' ? (
+            /* GRID VIEW */
+            <div
+              data-name="file-explorer-grid-view"
+              className="flex-1 p-4 overflow-y-auto custom-scrollbar select-none grid gap-3.5 content-start"
+              style={{
+                gridTemplateColumns: 'repeat(auto-fill, minmax(88px, 120px))',
+              }}
+            >
+              {displayEntries.map((entry) => {
+                if (entry.kind === 'header') {
+                  return (
+                    <div
+                      key={entry.key}
+                      className="col-span-full pt-2 pb-1 px-1 text-[11px] font-bold uppercase tracking-wider opacity-60 first:pt-0"
+                    >
+                      {entry.label}
+                    </div>
+                  );
+                }
+                const item = entry.item;
+                const isSelected = selectedFileIds.includes(item.id);
+                const isBeingRenamed = renamingId === item.id;
+                const isClipboardCut = clipboard && clipboard.id === item.id && clipboard.action === 'cut';
+                const isDropTarget = item.type === 'folder' && dragOverFolderId === item.id;
+
+                return (
+                  <div
+                    key={item.id}
+                    draggable={!isTrashFolder && !item.isSystem}
+                    onDragStart={(e) => handleItemDragStart(e, item)}
+                    onDragEnd={handleItemDragEnd}
+                    onDragEnter={(e) => item.type === 'folder' && handleFolderDragEnter(e, item.id)}
+                    onDragLeave={() => item.type === 'folder' && handleFolderDragLeave(item.id)}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => item.type === 'folder' && handleFolderDrop(e, item.id)}
+                    onPointerDown={(e) => startLongPressSelect(e, item.id)}
+                    onPointerUp={cancelLongPress}
+                    onPointerLeave={cancelLongPress}
+                    onPointerCancel={cancelLongPress}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (suppressNextClickRef.current) {
+                        suppressNextClickRef.current = false;
+                        return;
+                      }
+                      if (e.ctrlKey || e.metaKey || isSelectionMode) {
+                        toggleFileSelected(item.id);
+                      } else {
+                        setSelectedFileIds([item.id]);
+                      }
+                    }}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      if (isSelectionMode) {
+                        toggleFileSelected(item.id);
+                        return;
+                      }
+                      handleItemDoubleClick(item);
+                    }}
+                    onContextMenu={(e) => handleContextMenu(e, item)}
+                    className={`p-3.5 rounded-xl border flex flex-col items-center justify-center text-center cursor-pointer group transition-all relative ${
+                      isSelected ? ts.gridCardSelected : ts.gridCard
+                    } ${isClipboardCut ? 'opacity-40 border-dashed border-purple-500/50' : ''} ${
+                      isDropTarget ? 'ring-2 ring-purple-500 bg-purple-500/10' : ''
+                    }`}
+                  >
+                    {/* Star badge */}
+                    {item.starred && (
+                      <Star className="w-3.5 h-3.5 text-amber-500 fill-amber-500 absolute top-2 right-2" />
+                    )}
+
+                    {/* Shared badge */}
+                    {item.isShared && (
+                      <span className="absolute top-2 left-2" title="Shared with others">
+                        <Users className="w-3.5 h-3.5 text-blue-500" />
+                      </span>
+                    )}
+
+                    <div className="mb-2.5 group-hover:scale-105 transition-transform select-none">
+                      {renderFileIcon(item, 'large')}
+                    </div>
+
+                    {isBeingRenamed ? (
+                      <input
+                        ref={renameInputRef}
+                        type="text"
+                        value={renameText}
+                        onChange={(e) => setRenameText(e.target.value)}
+                        onBlur={handleSaveRename}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleSaveRename();
+                          if (e.key === 'Escape') setRenamingId(null);
+                        }}
+                        className="w-full text-center text-xs p-0.5 rounded bg-white text-black font-semibold border border-purple-500 focus:outline-none"
+                      />
+                    ) : (
+                      <div className="text-xs font-semibold w-full truncate px-1" title={item.name}>
+                        {item.name}
+                      </div>
+                    )}
+
+                    <div className="text-[9px] opacity-60 mt-1 uppercase font-medium select-none">
+                      {item.type === 'folder' ? 'Folder' : getItemSizeString(item)}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            /* DETAILS LIST VIEW */
+            <div data-name="file-explorer-list-view" className="flex-1 flex flex-col overflow-y-auto select-none custom-scrollbar">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className={`${ts.listHeader} sticky top-0 z-10`}>
+                    <th
+                      className="p-3 pl-4 cursor-pointer hover:bg-black/5"
+                      onClick={() => {
+                        setSortOrder(sortField === 'name' && sortOrder === 'asc' ? 'desc' : 'asc');
+                        setSortField('name');
+                      }}
+                    >
+                      <span className="flex items-center gap-1">
+                        Name {sortField === 'name' && (sortOrder === 'asc' ? '▴' : '▾')}
+                      </span>
+                    </th>
+                    {containerWidth >= 380 && (
+                      <th
+                        className="p-3 cursor-pointer hover:bg-black/5"
+                        onClick={() => {
+                          setSortOrder(sortField === 'type' && sortOrder === 'asc' ? 'desc' : 'asc');
+                          setSortField('type');
+                        }}
+                      >
+                        <span className="flex items-center gap-1">
+                          Type {sortField === 'type' && (sortOrder === 'asc' ? '▴' : '▾')}
+                        </span>
+                      </th>
+                    )}
+                    {containerWidth >= 500 && (
+                      <th
+                        className="p-3 cursor-pointer hover:bg-black/5"
+                        onClick={() => {
+                          setSortOrder(sortField === 'date' && sortOrder === 'asc' ? 'desc' : 'asc');
+                          setSortField('date');
+                        }}
+                      >
+                        <span className="flex items-center gap-1">
+                          Date {sortField === 'date' && (sortOrder === 'asc' ? '▴' : '▾')}
+                        </span>
+                      </th>
+                    )}
+                    {containerWidth >= 500 && (
+                      <th
+                        className="p-3 cursor-pointer hover:bg-black/5"
+                        onClick={() => {
+                          setSortOrder(sortField === 'size' && sortOrder === 'asc' ? 'desc' : 'asc');
+                          setSortField('size');
+                        }}
+                      >
+                        <span className="flex items-center gap-1">
+                          Size {sortField === 'size' && (sortOrder === 'asc' ? '▴' : '▾')}
+                        </span>
+                      </th>
+                    )}
+                  </tr>
+                </thead>
+                <tbody>
+                  {displayEntries.map((entry) => {
+                    if (entry.kind === 'header') {
+                      const columnCount = 1 + (containerWidth >= 380 ? 1 : 0) + (containerWidth >= 500 ? 2 : 0);
+                      return (
+                        <tr key={entry.key}>
+                          <td colSpan={columnCount} className="pt-3 pb-1 px-4 text-[11px] font-bold uppercase tracking-wider opacity-60">
+                            {entry.label}
+                          </td>
+                        </tr>
+                      );
+                    }
+                    const item = entry.item;
+                    const isSelected = selectedFileIds.includes(item.id);
+                    const isBeingRenamed = renamingId === item.id;
+                const isClipboardCut = clipboard && clipboard.id === item.id && clipboard.action === 'cut';
+                    const isDropTarget = item.type === 'folder' && dragOverFolderId === item.id;
+
+                    return (
+                      <tr
+                        key={item.id}
+                        draggable={!isTrashFolder && !item.isSystem}
+                        onDragStart={(e) => handleItemDragStart(e, item)}
+                        onDragEnd={handleItemDragEnd}
+                        onDragEnter={(e) => item.type === 'folder' && handleFolderDragEnter(e, item.id)}
+                        onDragLeave={() => item.type === 'folder' && handleFolderDragLeave(item.id)}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={(e) => item.type === 'folder' && handleFolderDrop(e, item.id)}
+                        onPointerDown={(e) => startLongPressSelect(e, item.id)}
+                        onPointerUp={cancelLongPress}
+                        onPointerLeave={cancelLongPress}
+                        onPointerCancel={cancelLongPress}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (suppressNextClickRef.current) {
+                            suppressNextClickRef.current = false;
+                            return;
+                          }
+                          if (e.ctrlKey || e.metaKey || isSelectionMode) {
+                            toggleFileSelected(item.id);
+                          } else {
+                            setSelectedFileIds([item.id]);
+                          }
+                        }}
+                        onDoubleClick={(e) => {
+                          e.stopPropagation();
+                          if (isSelectionMode) {
+                            toggleFileSelected(item.id);
+                            return;
+                          }
+                          handleItemDoubleClick(item);
+                        }}
+                        onContextMenu={(e) => handleContextMenu(e, item)}
+                        className={`text-xs ${ts.listRow} ${
+                          isSelected ? ts.listRowSelected + ' ' + ts.gridCardSelected : ''
+                        } ${isClipboardCut ? 'opacity-40 bg-purple-500/5' : ''} ${
+                          isDropTarget ? 'ring-2 ring-inset ring-purple-500 bg-purple-500/10' : ''
+                        }`}
+                      >
+                        <td className="p-2.5 pl-4 flex items-center gap-2 font-medium">
+                          {renderFileIcon(item, 'small')}
+                          {isBeingRenamed ? (
+                            <input
+                              ref={renameInputRef}
+                              type="text"
+                              value={renameText}
+                              onChange={(e) => setRenameText(e.target.value)}
+                              onBlur={handleSaveRename}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') handleSaveRename();
+                                if (e.key === 'Escape') setRenamingId(null);
+                              }}
+                              className="text-xs px-1 rounded bg-white text-black border border-purple-500 focus:outline-none font-semibold w-full max-w-[150px]"
+                            />
+                          ) : (
+                            <span className="truncate w-full block max-w-[200px]" title={item.name}>
+                              {item.name}
+                            </span>
+                          )}
+                          {item.starred && <Star className="w-3 h-3 text-amber-500 fill-amber-500 shrink-0" />}
+                          {item.isShared && (
+                            <span title="Shared with others">
+                              <Users className="w-3 h-3 text-blue-500 shrink-0" />
+                            </span>
+                          )}
+                        </td>
+                        {containerWidth >= 380 && <td className="p-2.5">{getItemTypeString(item)}</td>}
+                        {containerWidth >= 500 && <td className="p-2.5">{item.createdAt}</td>}
+                        {containerWidth >= 500 && <td className="p-2.5">{item.type === 'folder' ? '--' : getItemSizeString(item)}</td>}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        {/* RIGHT SIDE DETAILS PROPERTIES PANEL */}
+        {showDetailsPane && (
+          <div data-name="file-explorer-details-pane" className={`w-64 flex flex-col shrink-0 overflow-y-auto select-none ${ts.rightPane}`}>
+            <div className={`p-4 ${ts.rightPaneHeader} flex items-center justify-between`}>
+              <span className="text-xs font-extrabold uppercase tracking-wider text-current/60 flex items-center gap-1.5">
+                <Info className="w-3.5 h-3.5 text-purple-500" />
+                Properties Pane
+              </span>
+              <button
+                onClick={() => setShowDetailsPane(false)}
+                className="p-1 hover:bg-black/5 rounded-full cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            {selectedItem ? (
+              <div className="p-4 flex flex-col items-center text-center gap-4">
+                <div className="filter drop-shadow-md py-2 select-none flex items-center justify-center">
+                  {renderFileIcon(selectedItem, 'xl')}
+                </div>
+
+                <div className="w-full">
+                  <h4 className="font-bold text-sm truncate px-2 text-current w-full" title={selectedItem.name}>
+                    {selectedItem.name}
+                  </h4>
+                  <p className="text-[10px] uppercase font-bold text-purple-600 mt-1">
+                    {getItemTypeString(selectedItem)}
+                  </p>
+                </div>
+
+                <div className="w-full border-t border-black/5 pt-3 text-xs text-left flex flex-col gap-2 bg-black/5 p-3 rounded-xl">
+                  <div>
+                    <span className="opacity-60 block text-[10px] uppercase tracking-wide">Path:</span>
+                    <span className="font-medium break-all text-[11px]">{getCurrentFolderPathString()}</span>
+                  </div>
+                  <div>
+                    <span className="opacity-60 block text-[10px] uppercase tracking-wide">Size on disk:</span>
+                    <span className="font-semibold text-xs text-current">{getItemSizeString(selectedItem)}</span>
+                  </div>
+                  <div>
+                    <span className="opacity-60 block text-[10px] uppercase tracking-wide">Created:</span>
+                    <span className="font-medium">{selectedItem.createdAt}</span>
+                  </div>
+                </div>
+
+                <div className="w-full flex flex-col gap-2 mt-1">
+                  {isTrashFolder ? (
+                    <>
+                      <button
+                        onClick={() => handleRestoreItem(selectedItem)}
+                        className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg text-xs transition-colors flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        Restore Item
+                      </button>
+                      <button
+                        onClick={() => void handleDeleteItem(selectedItem)}
+                        className="w-full py-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 font-bold rounded-lg text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        Delete Permanently
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => handleItemDoubleClick(selectedItem)}
+                        className="w-full py-2 bg-purple-600 hover:bg-purple-500 text-white font-bold rounded-lg text-xs transition-colors flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
+                      >
+                        Open / Preview
+                      </button>
+                      <button
+                        onClick={() => setActiveShareItem(selectedItem)}
+                        className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-lg text-xs transition-colors flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
+                      >
+                        <Share2 className="w-3.5 h-3.5" />
+                        Share Item
+                      </button>
+                      <button
+                        onClick={() => handleDownloadFile(selectedItem)}
+                        className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg text-xs transition-colors flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        Download
+                      </button>
+                      <button
+                        onClick={() => void handleDeleteItem(selectedItem)}
+                        className="w-full py-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 font-bold rounded-lg text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        Move to Trash
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="flex-1 flex flex-col items-center justify-center text-center p-4 opacity-40 text-xs">
+                <Info className="w-7 h-7 mb-2 stroke-[1.2]" />
+                Select a file or folder to view properties.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ==================== 3. WINDOW STATUS BAR CONTENT ==================== */}
+      <WindowStatus
+        left={
+          <div data-name="status-bar-items-count" className="flex items-center gap-1.5 shrink-0">
+            <span>{currentItems.length} item{currentItems.length === 1 ? '' : 's'}</span>
+            {searchQuery && (
+              <span data-name="status-bar-filtered-count" className="opacity-60 bg-black/5 px-1.5 py-0.5 rounded text-[10px]">
+                Filtered: {sortedItems.length}
+              </span>
+            )}
+          </div>
+        }
+        center={
+          <div data-name="status-bar-selection-info" className="truncate text-center flex items-center justify-center gap-2">
+            {selectedFileIds.length > 0 ? (
+              <>
+                <span className="text-purple-600 font-bold">
+                  {selectedFileIds.length} item{selectedFileIds.length === 1 ? '' : 's'} selected
+                </span>
+                {isSelectionMode && (
+                  // Selection mode is entered by long-press, which has no
+                  // modifier-key equivalent to exit it either — this button is
+                  // the touch-reachable way out, alongside tapping empty space.
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); clearFileSelection(); }}
+                    className="shrink-0 px-2 py-0.5 rounded-full text-[10px] font-bold cursor-pointer bg-black/10 hover:bg-black/20 dark:bg-white/10 dark:hover:bg-white/20"
+                  >
+                    Clear
+                  </button>
+                )}
+              </>
+            ) : (
+              <span className="opacity-50">Select an item to view properties</span>
+            )}
+          </div>
+        }
+        right={
+          uploadProgress ? (
+            <div data-name="status-bar-upload-progress" className="flex items-center gap-2 shrink-0">
+              <span className="truncate max-w-[220px]">
+                Uploading {Math.min(uploadProgress.completed + 1, uploadProgress.total)} of {uploadProgress.total}
+                {uploadProgress.currentFileName ? ` — ${uploadProgress.currentFileName}` : ''}
+              </span>
+              <div className="w-24 h-1.5 rounded-full bg-black/10 overflow-hidden">
+                <div className="h-full bg-blue-500 transition-[width] duration-150" style={{ width: `${uploadOverallPercent}%` }} />
+              </div>
+              <span className="tabular-nums w-9 text-right">{uploadOverallPercent}%</span>
+            </div>
+          ) : undefined
+        }
+      />
+
+      {/* Zip-creation progress — a floating notification-style card anchored
+          to the window's bottom-right (Google Drive puts its equivalent
+          "Creating zip..." indicator the same place). What it tracks is how
+          much of the archive the server has built, not a network transfer:
+          entries are streamed into the archive and out to the browser in
+          lockstep, so bytes-received is the same signal as bytes-zipped —
+          there's no separate "now downloading the finished zip" phase. */}
+      {downloadProgress && (
+        <div data-name="file-explorer-download-progress" className="absolute bottom-4 right-4 z-[500] w-80 rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-zinc-900 shadow-2xl p-3.5 flex items-start gap-3">
+          <div
+            className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+              downloadProgress.completed
+                ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                : 'bg-blue-500/15 text-blue-600 dark:text-blue-400'
+            }`}
+          >
+            {downloadProgress.completed ? <Check className="w-5 h-5" /> : <FileArchive className="w-5 h-5" />}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-xs font-bold truncate text-zinc-900 dark:text-zinc-100">
+              {downloadProgress.completed
+                ? `Downloaded ${downloadProgress.itemCount} item${downloadProgress.itemCount === 1 ? '' : 's'}`
+                : downloadProgress.totalParts > 1
+                  ? `Creating zip ${downloadProgress.partIndex + 1} of ${downloadProgress.totalParts}...`
+                  : `Compressing ${downloadProgress.itemCount} item${downloadProgress.itemCount === 1 ? '' : 's'} into a zip...`}
+            </div>
+            <div className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate mt-0.5">
+              {downloadProgress.completed
+                ? 'Saved to your downloads'
+                : downloadProgress.approxTotalBytes > 0
+                  ? `${formatBytes(downloadProgress.loadedBytes)} of ~${formatBytes(downloadProgress.approxTotalBytes)} zipped`
+                  : `${formatBytes(downloadProgress.loadedBytes)} zipped`}
+            </div>
+            <div className="w-full h-1.5 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden mt-2">
+              <div
+                className="h-full bg-emerald-500 transition-[width] duration-150"
+                style={{ width: `${downloadOverallPercent}%` }}
+              />
+            </div>
+          </div>
+          <span className="text-[11px] font-bold tabular-nums shrink-0 text-zinc-900 dark:text-zinc-100">
+            {downloadOverallPercent}%
+          </span>
+        </div>
+      )}
+
+      {/* Hidden File Input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        onChange={handleFileUpload}
+        className="hidden"
+        multiple
+      />
+
+      {/* Hidden Folder Input — webkitdirectory limits the native picker to
+          directories; the browser still hands back every file inside it.
+          Set via the DOM directly since it isn't part of React's JSX typings
+          for <input>. */}
+      <input
+        ref={(el) => {
+          folderInputRef.current = el;
+          el?.setAttribute('webkitdirectory', '');
+          el?.setAttribute('directory', '');
+        }}
+        type="file"
+        onChange={handleFolderUpload}
+        className="hidden"
+        multiple
+      />
+
+      {/* Modals */}
+      <ShareModal
+        fileItem={activeShareItem}
+        isOpen={!!activeShareItem}
+        onClose={() => setActiveShareItem(null)}
+        onSharedChanged={(fileId, isShared) => {
+          setFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, isShared } : f)));
+          setActiveShareItem((prev) => (prev && prev.id === fileId ? { ...prev, isShared } : prev));
+        }}
+      />
+
+      <MoveModal
+        itemToMove={activeMoveItem}
+        allFiles={files}
+        isOpen={!!activeMoveItem}
+        onClose={() => setActiveMoveItem(null)}
+        onConfirmMove={async (targetFolderId) => {
+          if (!activeMoveItem) return;
+          const updated = files.map((f) =>
+            f.id === activeMoveItem.id ? { ...f, parentId: targetFolderId } : f
+          );
+          setFiles(updated);
+          setActiveMoveItem(null);
+
+          if (currentUser) {
+            try {
+              await FileService.moveFile(activeMoveItem.id, targetFolderId);
+            } catch (error) {
+              console.warn('Failed to move file on backend:', error);
+            }
+          }
+        }}
+      />
+
+      <FilePreviewModal
+        item={activePreviewItem}
+        isOpen={!!activePreviewItem}
+        onClose={() => setActivePreviewItem(null)}
+        onDownload={handleDownloadFile}
+        onShare={(item) => setActiveShareItem(item)}
+      />
+
+      <PropertiesModal
+        item={activePropertiesItem}
+        isOpen={!!activePropertiesItem}
+        onClose={() => setActivePropertiesItem(null)}
+        onToggleStar={handleToggleStar}
+        onShare={(item) => setActiveShareItem(item)}
+        onDownload={handleDownloadFile}
+        onDelete={handleDeleteItem}
+        folderPathString={getCurrentFolderPathString()}
+      />
+
+      <OpenWithModal
+        item={activeOpenWithItem}
+        isOpen={!!activeOpenWithItem}
+        onClose={() => setActiveOpenWithItem(null)}
+        onSelectApp={(appKey, item) => void handleOpenWithApp(appKey, item, true)}
+      />
+
+      <AppSettingsModal
+        isOpen={isAppSettingsOpen}
+        onClose={() => setIsAppSettingsOpen(false)}
+        appId="fileManager"
+        appTitle="File Explorer"
+      />
+    </div>
+  );
+}

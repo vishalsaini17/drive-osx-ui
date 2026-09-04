@@ -1,25 +1,33 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
-import Wallpaper from './components/Wallpaper';
-import Dock from './components/Dock';
-import AppWindow from './components/AppWindow';
-import GlobalContextMenu from './components/GlobalContextMenu';
-import { useContextMenuStore, ContextMenuItem } from './services/contextMenuStore';
-import { StorageService } from './services/StorageService';
+import Wallpaper from './shell/desktop/Wallpaper';
+import { wallpaperTone } from './platform/theme/wallpapers';
+import Dock from './shell/taskbar/Dock';
+import AppWindow from './shell/window-manager/AppWindow';
+import { AppMenuProvider } from './platform/menus/AppMenuContext';
+import GlobalContextMenu from './shell/context-menu/GlobalContextMenu';
+import { useContextMenuStore, ContextMenuItem } from './shell/context-menu/contextMenuStore';
+import { useLongPressContextMenu } from './shell/context-menu/useLongPressContextMenu';
+import { StorageService } from './platform/storage/StorageService';
 import { FolderPlus, FileText, Terminal as TerminalIcon, Image, RefreshCw, Settings as SettingsIcon, LogOut, ExternalLink, Info, Pin, Monitor } from 'lucide-react';
 
 // Import ApplicationRenderer
-import ApplicationRenderer from './applications';
+import ApplicationRenderer from './apps';
 
-import LoginScreen from './components/LoginScreen';
-import ForgotPasswordScreen from './components/ForgotPasswordScreen';
-import ResetPasswordScreen from './components/ResetPasswordScreen';
+import LoginScreen from './shell/auth/LoginScreen';
+import ForgotPasswordScreen from './shell/auth/ForgotPasswordScreen';
+import ResetPasswordScreen from './shell/auth/ResetPasswordScreen';
+import ShareLinkPage from './shell/auth/ShareLinkPage';
 
-import SystemToastNotifier from './components/SystemToastNotifier';
+import SystemToastNotifier from './shell/notifications/SystemToastNotifier';
+import SyncStatusIndicator from './shell/notifications/SyncStatusIndicator';
+import { onSessionEvent } from './platform/api/http';
+import { usePresenceHeartbeat } from './platform/contacts/usePresenceHeartbeat';
+import { useRealtimeNotifications } from './shell/notifications/useRealtimeNotifications';
 
 // Import Zustand Store
-import { useSystemStore, getAppIcon } from './systemStore';
-import { AppRegistry } from './core/AppRegistry';
+import { useSystemStore, getAppIcon } from './shell/state/systemStore';
+import { AppRegistry } from './platform/registry/AppRegistry';
 
 export default function App() {
   const initializeStore = useSystemStore((state) => state.initializeStore);
@@ -32,10 +40,27 @@ export default function App() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  // Initialize the store from localStorage on mount
-  useEffect(() => {
-    initializeStore();
+  // Presence belongs to the session, so it is published once by the shell
+  // rather than by whichever app happens to be open.
+  usePresenceHeartbeat(isAuthenticated);
 
+  // Likewise the realtime connection: a message has to reach the user when
+  // Messenger is closed, and a closed window is an unmounted component.
+  useRealtimeNotifications(isAuthenticated);
+
+  // Loads settings/files/etc. from localStorage into the store, synchronously,
+  // during this component's very first render — deliberately not a
+  // `useEffect`. `DesktopLayout` (rendered as a child a few lines below) has
+  // its own mount effect that opens a window for the current URL, e.g.
+  // `/folder` reopens File Explorer — and on mount, React fires a child's
+  // effects before its parent's. An effect here would then run *after* that
+  // child already acted on the still-default, not-yet-loaded settings
+  // (`windows` seeded from each app's raw manifest size), silently discarding
+  // any per-app or global default window size for the one window every app
+  // starts already holding open.
+  useState(initializeStore);
+
+  useEffect(() => {
     const handleOffline = () => {
       setOfflineMode(true);
       addNotification({
@@ -57,11 +82,22 @@ export default function App() {
     window.addEventListener('offline', handleOffline);
     window.addEventListener('online', handleOnline);
 
+    const unsubscribeSession = onSessionEvent((event) => {
+      if (event !== 'expired') return;
+      addNotification({
+        sender: 'Session',
+        text: 'Your session has expired. Please sign in again.',
+        type: 'warning',
+      });
+      navigate('/login');
+    });
+
     return () => {
       window.removeEventListener('offline', handleOffline);
       window.removeEventListener('online', handleOnline);
+      unsubscribeSession();
     };
-  }, [initializeStore, addNotification, setOfflineMode]);
+  }, [addNotification, setOfflineMode, navigate]);
 
   // Handle global auth-based redirects
   useEffect(() => {
@@ -74,16 +110,26 @@ export default function App() {
         location.pathname !== '/login' &&
         location.pathname !== '/register' &&
         location.pathname !== '/forgot-password' &&
-        location.pathname !== '/reset-password'
+        location.pathname !== '/reset-password' &&
+        !location.pathname.startsWith('/s/')
       ) {
-        navigate('/login');
+        // Remembers where the visitor was actually headed — a Meet invite
+        // link chiefly, since its whole point is being opened by someone
+        // who often isn't signed in yet — so login can return them there
+        // instead of always landing on the bare desktop.
+        const intended = location.pathname + location.search;
+        navigate(`/login?next=${encodeURIComponent(intended)}`);
       }
     } else {
       if (location.pathname === '/login' || location.pathname === '/register') {
-        navigate('/');
+        const next = new URLSearchParams(location.search).get('next');
+        // Only ever follow a same-origin relative path — an open redirect
+        // otherwise, since `next` came off the URL a visitor followed here.
+        const isSafeRelativePath = next && next.startsWith('/') && !next.startsWith('//');
+        navigate(isSafeRelativePath ? next : '/');
       }
     }
-  }, [isAuthenticated, isInitializing, location.pathname, navigate]);
+  }, [isAuthenticated, isInitializing, location.pathname, location.search, navigate]);
 
   return (
     <main 
@@ -95,13 +141,24 @@ export default function App() {
         <Route path="/register" element={<LoginScreen />} />
         <Route path="/forgot-password" element={<ForgotPasswordScreen />} />
         <Route path="/reset-password" element={<ResetPasswordScreen />} />
+        <Route path="/s/:token" element={<ShareLinkPage />} />
         <Route path="/desktop" element={<Navigate to="/" replace />} />
         <Route path="/" element={<DesktopLayout />} />
+        {/* File Explorer is the only app whose route carries a sub-path —
+            the folder currently open, so a reload or a direct link lands
+            back in the same folder instead of always resetting to root. */}
+        <Route path="/folder/:folderId" element={<DesktopLayout />} />
+        {/* A Meet invite link ("copy invite link" in OSX Meet). Unlike the
+            folder route, the id here is consumed once to join the call
+            rather than kept reflected in the URL — see
+            `AppRegistry.getMeetingIdFromPath`. */}
+        <Route path="/meeting/:meetingId" element={<DesktopLayout />} />
         <Route path="/:appRoute" element={<DesktopLayout />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
       <GlobalContextMenu />
       <SystemToastNotifier />
+      <SyncStatusIndicator />
     </main>
   );
 }
@@ -114,11 +171,19 @@ function DesktopLayout() {
   const openAppWindow = useSystemStore((state) => state.openAppWindow);
   const focusWindow = useSystemStore((state) => state.focusWindow);
   const setFiles = useSystemStore((state) => state.setFiles);
+  const fileManagerCurrentFolderId = useSystemStore((state) => state.fileManagerCurrentFolderId);
+  const setFileManagerCurrentFolderId = useSystemStore((state) => state.setFileManagerCurrentFolderId);
+  const openMeeting = useSystemStore((state) => state.openMeeting);
   const logout = useSystemStore((state) => state.logout);
   const clampWindowsToViewport = useSystemStore((state) => state.clampWindowsToViewport);
   const openContextMenu = useContextMenuStore((state) => state.openContextMenu);
   const navigate = useNavigate();
   const location = useLocation();
+
+  // Desktop labels sit directly on the wallpaper, so their colour comes from
+  // the wallpaper rather than the theme. Every wallpaper used to be dark and
+  // the labels were hardcoded white; light wallpapers made that unreadable.
+  const desktopIsLight = wallpaperTone(settings.wallpaper) === 'light';
 
   const [desktopShortcutIds, setDesktopShortcutIds] = useState<string[]>(() => {
     return StorageService.get<string[]>('desktop-shortcuts', ['fileManager', 'paint', 'messenger']);
@@ -215,6 +280,10 @@ function DesktopLayout() {
     openContextMenu(e, desktopItems, 'Desktop');
   };
 
+  // The desktop background's right-click menu has no touch equivalent
+  // otherwise — a long touch-hold triggers the same handler.
+  const desktopLongPress = useLongPressContextMenu<HTMLDivElement>(handleDesktopContextMenu);
+
   const handleShortcutContextMenu = (e: React.MouseEvent, appId: string, title: string) => {
     e.preventDefault();
     e.stopPropagation();
@@ -281,6 +350,12 @@ function DesktopLayout() {
     return () => window.removeEventListener('resize', handleResize);
   }, [clampWindowsToViewport]);
 
+  // URL routing follows which windows are open, never where they sit. The
+  // store replaces the `windows` array on every geometry change, so depending
+  // on the array itself re-ran this effect — browser navigation included — for
+  // every frame of a window drag.
+  const openWindowSignature = windows.map((w) => `${w.id}:${w.isOpen}`).join('|');
+
   useEffect(() => {
     const currentPath = location.pathname;
     const currentActiveWindow = activeWindowId;
@@ -288,52 +363,124 @@ function DesktopLayout() {
     const isInitialMount = prevPathRef.current === null;
     const pathChanged = !isInitialMount && prevPathRef.current !== currentPath;
 
-    prevPathRef.current = currentPath;
+    const previousActiveWindow = prevActiveWindowRef.current;
     prevActiveWindowRef.current = currentActiveWindow;
 
     // 1. Handle browser direct URL navigation or back/forward buttons
     if (isInitialMount || pathChanged) {
+      prevPathRef.current = currentPath;
       const appId = AppRegistry.getAppIdForPath(currentPath);
       if (appId) {
-        const targetWin = windows.find(w => w.id === appId);
-        if (!targetWin?.isOpen || currentActiveWindow !== appId) {
-          openAppWindow(appId);
+        // A direct load of, or Back/Forward into, `/folder/:folderId` (or
+        // bare `/folder`) must seed which folder File Explorer opens to —
+        // otherwise it always starts at root regardless of the URL.
+        if (appId === 'fileManager') {
+          setFileManagerCurrentFolderId(AppRegistry.getFolderIdFromPath(currentPath));
+        }
+        // Likewise `/meeting/:meetingId` (an invite link): `openMeeting`
+        // both opens the window and hands OSX Meet the id to auto-join
+        // (the same `pendingMeetingId` hand-off a call started from
+        // Messages already uses), so it takes the place of the generic
+        // open-if-not-already-open call below rather than running after it.
+        const meetingIdFromPath = appId === 'meeting' ? AppRegistry.getMeetingIdFromPath(currentPath) : null;
+        if (meetingIdFromPath) {
+          openMeeting(meetingIdFromPath);
+        } else {
+          const targetWin = windows.find(w => w.id === appId);
+          if (!targetWin?.isOpen || currentActiveWindow !== appId) {
+            openAppWindow(appId);
+          }
         }
       } else if (currentPath !== '/') {
+        // We're about to navigate ourselves, so record the path this settles
+        // on rather than the one we're leaving. Recording `currentPath` here
+        // left `prevPathRef` one step behind the actual URL; the next render
+        // then saw the route we'd just set ourselves as a fresh external
+        // change, re-entered this branch, and could call `openAppWindow` on
+        // whatever app that route named — reopening a window someone had
+        // just closed if the close happened to leave that route behind.
+        prevPathRef.current = '/';
         navigate('/', { replace: true });
         focusWindow('');
       } else if (currentActiveWindow !== null) {
         focusWindow('');
       }
-    } 
-    // 2. Handle internal OS state changes (opening, closing, or switching app windows)
+    }
+    // 2. Handle internal OS state changes (opening, closing, or switching app
+    // windows — this also fires on a plain folder change inside an already-
+    // open File Explorer, since fileManagerCurrentFolderId is a dependency
+    // below even though neither the path nor the active window moved yet).
     else {
+      // Read live, not the `activeWindowId`/`windows`/`fileManagerCurrentFolderId`
+      // captured by this render: StrictMode double-invokes effects on mount
+      // without an intervening render, so a branch-1 pass that just called
+      // openAppWindow()/setFileManagerCurrentFolderId() moments ago has
+      // already updated the store, but this closure's own copies are still
+      // the pre-update ones. Deciding from those stale values here read
+      // `activeWindowId` as still null and overwrote the path branch 1 had
+      // just set with '/' — the file-manager reload regression this fixes.
+      const liveState = useSystemStore.getState();
+      const liveActiveWindow = liveState.activeWindowId;
       let expectedPath = '/';
 
-      if (currentActiveWindow) {
-        const activeApp = windows.find(w => w.id === currentActiveWindow);
+      if (liveActiveWindow) {
+        const activeApp = liveState.windows.find(w => w.id === liveActiveWindow);
         if (activeApp && activeApp.isOpen) {
-          expectedPath = AppRegistry.getPathForApp(currentActiveWindow) || '/';
+          expectedPath =
+            AppRegistry.getPathForApp(
+              liveActiveWindow,
+              liveActiveWindow === 'fileManager' ? liveState.fileManagerCurrentFolderId : undefined
+            ) || '/';
         }
       }
 
+      // Same reasoning as above: record the path we're settling on, not the
+      // one being left, so a self-triggered navigation isn't mistaken for an
+      // external one on the next pass.
+      prevPathRef.current = expectedPath;
       if (currentPath !== expectedPath) {
-        navigate(expectedPath, { replace: true });
+        // Folder-to-folder navigation within an already-focused File Explorer
+        // gets its own history entry, so browser Back/Forward walks through
+        // the folders visited — same as any address-bar-driven app. Every
+        // other transition here (opening/closing/switching windows) keeps
+        // replacing, as before, so window-management churn doesn't spam
+        // browser history.
+        const isFolderHopWithinFileManager =
+          liveActiveWindow === 'fileManager' && previousActiveWindow === 'fileManager';
+        navigate(expectedPath, isFolderHopWithinFileManager ? undefined : { replace: true });
       }
     }
-  }, [location.pathname, activeWindowId, windows, navigate, openAppWindow, focusWindow]);
+    // `windows` is read only for `id` and `isOpen`, which the signature covers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    location.pathname,
+    activeWindowId,
+    openWindowSignature,
+    fileManagerCurrentFolderId,
+    navigate,
+    openAppWindow,
+    focusWindow,
+    setFileManagerCurrentFolderId,
+    openMeeting,
+  ]);
 
   return (
-    <div 
+    <div
       className="relative w-full h-full overflow-hidden select-none"
       onClick={() => focusWindow('')}
       onContextMenu={handleDesktopContextMenu}
+      onPointerDown={desktopLongPress.onPointerDown}
+      onPointerUp={desktopLongPress.onPointerUp}
+      onPointerLeave={desktopLongPress.onPointerLeave}
+      onPointerCancel={desktopLongPress.onPointerCancel}
+      onClickCapture={desktopLongPress.onClickCapture}
     >
       {/* 1. LAYERED VECTOR WAVES DESKTOP WALLPAPER */}
       <Wallpaper settings={settings} />
 
       {/* 2. WINDOW STAGE AREA */}
       <div id="desktop-window-stage" className="absolute inset-0 pointer-events-none z-[50]">
+        <AppMenuProvider>
         {windows.map(app => (
           <AppWindow
             key={app.id}
@@ -343,14 +490,26 @@ function DesktopLayout() {
             showStatusBar={app.id !== 'launcher'}
           >
             {/* Render app dynamically using ApplicationRenderer */}
-            <ApplicationRenderer appId={app.id} />
+            <ApplicationRenderer appId={app.appId} windowId={app.id} />
           </AppWindow>
         ))}
+        </AppMenuProvider>
       </div>
 
-      {/* 4. DESKTOP SHORTCUTS */}
-      <div 
-        className="absolute top-6 left-6 flex flex-col gap-5 z-20 pointer-events-auto select-none"
+      {/* 4. DESKTOP SHORTCUTS
+          A user can pin any number of apps here (up to 11 via Settings, or
+          more via "Pin to Desktop" in the app menu), and a single fixed
+          vertical column with no wrap ran straight off the bottom of the
+          screen with nothing to catch it — invisible on a tall desktop
+          monitor, but a real cutoff on a short viewport (a phone in
+          landscape is ~390px tall). `flex-wrap` on a `flex-col` wraps into an
+          additional column instead, the same way desktop icons behave on a
+          real OS; `maxHeight` gives it a boundary to wrap against, reserving
+          room for the dock at the bottom (tallest at 'lg', ~92px) so wrapped
+          icons never sit under it. */}
+      <div
+        className="absolute top-6 left-6 flex flex-col flex-wrap content-start gap-5 z-20 pointer-events-auto select-none"
+        style={{ maxHeight: 'calc(100vh - 140px)' }}
         onClick={(e) => e.stopPropagation()}
       >
         {desktopShortcutIds.map((appId) => {
@@ -364,12 +523,18 @@ function DesktopLayout() {
                 toggleWindow(appId);
               }}
               onContextMenu={(e) => handleShortcutContextMenu(e, appId, title)}
-              className="flex flex-col items-center justify-center w-16 h-16 rounded-xl hover:bg-white/5 active:scale-95 transition-all text-center cursor-pointer group"
+              className={`flex flex-col items-center justify-center w-16 h-16 rounded-xl active:scale-95 transition-all text-center cursor-pointer group ${
+                desktopIsLight ? 'hover:bg-black/5' : 'hover:bg-white/5'
+              }`}
             >
               <div className="w-10 h-10 filter drop-shadow-md group-hover:scale-105 transition-transform shrink-0">
                 {getAppIcon(appId, 'w-full h-full')}
               </div>
-              <span className="text-[10px] font-semibold text-white/90 tracking-wide mt-1 drop-shadow-sm select-none truncate max-w-[70px]">
+              <span
+                className={`text-[10px] font-semibold tracking-wide mt-1 drop-shadow-sm select-none truncate max-w-[70px] ${
+                  desktopIsLight ? 'text-slate-900/90' : 'text-white/90'
+                }`}
+              >
                 {title}
               </span>
             </button>

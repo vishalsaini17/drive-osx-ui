@@ -4,6 +4,19 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Drive OSX</title>
+
+    <!--
+      Served from `public/`, which Vite copies to the root of `dist/` verbatim,
+      so these resolve to /favicon.png in development and in the nginx image.
+      One file covers every case: `sizes="any"` lets the browser scale it, and
+      iOS reuses it for the home-screen icon.
+    -->
+    <link rel="icon" type="image/png" sizes="any" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/favicon.png" />
+
+    <!-- Tints the browser chrome on mobile to match the desktop it opens into. -->
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f4f3fb" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0e0930" />
   </head>
   <body>
     <div id="root"></div>

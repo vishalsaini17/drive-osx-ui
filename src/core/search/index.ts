@@ -1,2 +1,0 @@
-// search core module
-export {};
