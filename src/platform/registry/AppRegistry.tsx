@@ -434,7 +434,7 @@ const registry: Record<string, AppRegistryEntry> = {
       defaultWindow: { w: 680, h: 540, minW: 500, minH: 420, x: 220, y: 100 },
       permissions: [],
       settingsSchema: [
-        { id: 'defaultMode', label: 'Default Start Mode', type: 'select', options: ['Basic', 'Scientific', 'Programmer', 'Converter'], defaultValue: 'Basic' },
+        { id: 'defaultMode', label: 'Default Start Mode', type: 'select', options: ['Basic', 'Scientific', 'Programmer', 'Financial', 'Converter'], defaultValue: 'Basic' },
         { id: 'angleUnit', label: 'Scientific Angle Unit', type: 'select', options: ['Degrees (DEG)', 'Radians (RAD)'], defaultValue: 'Degrees (DEG)' },
         { id: 'saveHistory', label: 'Persist Calculation History', type: 'toggle', defaultValue: true }
       ]
