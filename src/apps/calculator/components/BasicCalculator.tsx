@@ -39,7 +39,7 @@ export default function BasicCalculator({
   onMemorySave,
 }: BasicCalculatorProps) {
   return (
-    <div className="flex-1 flex flex-col p-4 gap-3 max-w-lg mx-auto w-full select-none">
+    <div className="flex-1 flex flex-col justify-center p-4 gap-3 max-w-lg mx-auto w-full select-none overflow-y-auto">
       {/* Memory Status Bar */}
       <div className="flex items-center justify-between text-[11px] font-mono px-1">
         <span className="text-zinc-400">
@@ -80,7 +80,7 @@ export default function BasicCalculator({
       </div>
 
       {/* Button Grid */}
-      <div className="grid grid-cols-4 gap-2.5 flex-1">
+      <div className="grid grid-cols-4 gap-2.5">
         {/* Row 1: AC, C, Backspace, Divide */}
         <button
           onClick={onAllClear}

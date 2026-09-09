@@ -1,13 +1,22 @@
 import React, { useState, useEffect } from 'react';
-import { Calculator as CalcIcon, Clock, Binary, Scale, FlaskConical, Sparkles } from 'lucide-react';
+import { Calculator as CalcIcon, Clock, Binary, Scale, FlaskConical, Landmark } from 'lucide-react';
 import { CalculatorMode, HistoryItem, AngleUnit, ProgrammerBase, WordSize } from './types';
 import BasicCalculator from './components/BasicCalculator';
 import ScientificCalculator from './components/ScientificCalculator';
 import ProgrammerCalculator from './components/ProgrammerCalculator';
 import UnitConverter from './components/UnitConverter';
+import FinancialCalculator from './components/FinancialCalculator';
 import HistoryPanel from './components/HistoryPanel';
 import { useAppMenu } from '../../platform/menus/AppMenuContext';
 import { separator } from '../../platform/menus/types';
+
+const MODE_TABS: { id: CalculatorMode; label: string; icon: typeof CalcIcon }[] = [
+  { id: 'basic', label: 'Basic', icon: CalcIcon },
+  { id: 'scientific', label: 'Scientific', icon: FlaskConical },
+  { id: 'programmer', label: 'Programmer', icon: Binary },
+  { id: 'financial', label: 'Financial', icon: Landmark },
+  { id: 'converter', label: 'Converter', icon: Scale },
+];
 
 export default function CalculatorApp({ windowId = 'calculator' }: { windowId?: string }) {
   const [mode, setMode] = useState<CalculatorMode>('basic');
@@ -314,6 +323,7 @@ export default function CalculatorApp({ windowId = 'calculator' }: { windowId?: 
         { id: 'mode-basic', label: 'Basic', selected: mode === 'basic', onSelect: () => setMode('basic') },
         { id: 'mode-scientific', label: 'Scientific', selected: mode === 'scientific', onSelect: () => setMode('scientific') },
         { id: 'mode-programmer', label: 'Programmer', selected: mode === 'programmer', onSelect: () => setMode('programmer') },
+        { id: 'mode-financial', label: 'Financial', selected: mode === 'financial', onSelect: () => setMode('financial') },
         { id: 'mode-converter', label: 'Unit Converter', selected: mode === 'converter', onSelect: () => setMode('converter') },
         separator(),
         { id: 'history', label: 'History Panel', checked: isHistoryOpen, onSelect: () => setIsHistoryOpen((prev) => !prev) },
@@ -339,86 +349,61 @@ export default function CalculatorApp({ windowId = 'calculator' }: { windowId?: 
   return (
     <div className="w-full h-full flex flex-col bg-zinc-100 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 overflow-hidden font-sans">
       {/* App Header & Navigation Tabs */}
-      <div className="p-3 border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 flex items-center justify-between shrink-0 shadow-2xs">
-        <div className="flex items-center gap-2">
-          <div className="p-2 rounded-xl bg-purple-600 text-white shadow-md">
-            <CalcIcon className="w-4 h-4" />
+      <div className="border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shrink-0 shadow-2xs">
+        <div className="p-3 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="p-2 rounded-xl bg-purple-600 text-white shadow-md shrink-0">
+              <CalcIcon className="w-4 h-4" />
+            </div>
+            <div className="min-w-0">
+              <h1 className="font-bold text-sm tracking-tight truncate">Calculator</h1>
+              <p className="text-[10px] text-zinc-400 font-medium truncate">Drive OSX Suite</p>
+            </div>
           </div>
-          <div>
-            <h1 className="font-bold text-sm tracking-tight">Calculator</h1>
-            <p className="text-[10px] text-zinc-400 font-medium">Drive OSX Suite</p>
-          </div>
+
+          {/* History Toggle Button */}
+          <button
+            onClick={() => setIsHistoryOpen(!isHistoryOpen)}
+            className={`p-2 rounded-xl border transition-all flex items-center gap-1.5 cursor-pointer text-xs font-semibold shrink-0 ${
+              isHistoryOpen
+                ? 'bg-purple-600 text-white border-purple-600 shadow-xs'
+                : 'bg-zinc-100 dark:bg-zinc-800 border-zinc-200 dark:border-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-700'
+            }`}
+            title="Toggle History Sidebar"
+          >
+            <Clock className="w-4 h-4" />
+            <span className="hidden sm:inline">History</span>
+            {history.length > 0 && (
+              <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-purple-500/20 text-purple-600 dark:text-purple-300 font-bold">
+                {history.length}
+              </span>
+            )}
+          </button>
         </div>
 
         {/* Mode Selector Tabs */}
-        <div className="flex items-center gap-1 p-1 rounded-xl bg-zinc-100 dark:bg-zinc-800 text-xs font-semibold">
-          <button
-            onClick={() => setMode('basic')}
-            className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 cursor-pointer transition-all ${
-              mode === 'basic'
-                ? 'bg-purple-600 text-white shadow-xs font-bold'
-                : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100'
-            }`}
-          >
-            <CalcIcon className="w-3.5 h-3.5" /> Basic
-          </button>
-          <button
-            onClick={() => setMode('scientific')}
-            className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 cursor-pointer transition-all ${
-              mode === 'scientific'
-                ? 'bg-purple-600 text-white shadow-xs font-bold'
-                : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100'
-            }`}
-          >
-            <FlaskConical className="w-3.5 h-3.5" /> Scientific
-          </button>
-          <button
-            onClick={() => setMode('programmer')}
-            className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 cursor-pointer transition-all ${
-              mode === 'programmer'
-                ? 'bg-purple-600 text-white shadow-xs font-bold'
-                : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100'
-            }`}
-          >
-            <Binary className="w-3.5 h-3.5" /> Programmer
-          </button>
-          <button
-            onClick={() => setMode('converter')}
-            className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 cursor-pointer transition-all ${
-              mode === 'converter'
-                ? 'bg-purple-600 text-white shadow-xs font-bold'
-                : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100'
-            }`}
-          >
-            <Scale className="w-3.5 h-3.5" /> Converter
-          </button>
+        <div className="mx-3 mb-3 flex items-center gap-1 flex-wrap p-1 rounded-xl bg-zinc-100 dark:bg-zinc-800 text-xs font-semibold">
+          {MODE_TABS.map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setMode(tab.id)}
+              className={`flex-1 min-w-[5.5rem] px-3 py-1.5 rounded-lg flex items-center justify-center gap-1.5 cursor-pointer transition-all ${
+                mode === tab.id
+                  ? 'bg-purple-600 text-white shadow-xs font-bold'
+                  : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-200/60 dark:hover:bg-zinc-700/50'
+              }`}
+            >
+              <tab.icon className="w-3.5 h-3.5 shrink-0" /> {tab.label}
+            </button>
+          ))}
         </div>
-
-        {/* History Toggle Button */}
-        <button
-          onClick={() => setIsHistoryOpen(!isHistoryOpen)}
-          className={`p-2 rounded-xl border transition-all flex items-center gap-1.5 cursor-pointer text-xs font-semibold ${
-            isHistoryOpen
-              ? 'bg-purple-600 text-white border-purple-600 shadow-xs'
-              : 'bg-zinc-100 dark:bg-zinc-800 border-zinc-200 dark:border-zinc-700 hover:bg-zinc-200'
-          }`}
-          title="Toggle History Sidebar"
-        >
-          <Clock className="w-4 h-4" />
-          <span className="hidden sm:inline">History</span>
-          {history.length > 0 && (
-            <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-purple-500/20 text-purple-600 dark:text-purple-300 font-bold">
-              {history.length}
-            </span>
-          )}
-        </button>
       </div>
 
       {/* Main Content Area + History Drawer Layout */}
       <div className="flex-1 flex overflow-hidden relative">
         <div className="flex-1 flex flex-col overflow-y-auto">
           {/* Main Display Area (Shown for Basic, Scientific, Programmer) */}
-          {mode !== 'converter' && (
+          {mode !== 'converter' && mode !== 'financial' && (
             <div className="p-4 bg-white dark:bg-zinc-900 border-b border-zinc-200 dark:border-zinc-800 flex flex-col justify-end text-right min-h-[100px] shadow-inner select-all">
               <div className="text-xs font-mono text-zinc-400 min-h-[18px] tracking-wide truncate">
                 {expression}
@@ -481,6 +466,8 @@ export default function CalculatorApp({ windowId = 'calculator' }: { windowId?: 
               onClear={handleAllClear}
             />
           )}
+
+          {mode === 'financial' && <FinancialCalculator />}
 
           {mode === 'converter' && <UnitConverter />}
         </div>

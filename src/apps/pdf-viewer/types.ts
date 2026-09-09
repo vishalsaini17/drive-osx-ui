@@ -1,16 +1,10 @@
 export type AnnotationType = 'highlight' | 'underline' | 'strikeout' | 'sticky-note' | 'drawing';
 
-export interface TextSelection {
-  pageIndex: number;
-  text: string;
-  rect: { x: number; y: number; width: number; height: number };
-}
-
 export interface StickyNote {
   id: string;
   pageIndex: number;
-  x: number; // percentage
-  y: number; // percentage
+  x: number; // percentage of page width
+  y: number; // percentage of page height
   text: string;
   author: string;
   color: string;
@@ -23,7 +17,12 @@ export interface TextAnnotation {
   pageIndex: number;
   text: string;
   color: string;
-  rect: { x: number; y: number; width: number; height: number };
+  /**
+   * One percentage-of-page rect per visual line the selection covered
+   * (`Range.getClientRects()`) — a selection spanning a paragraph wrap needs
+   * a rect per line, not one box stretched across all of them.
+   */
+  rects: { x: number; y: number; width: number; height: number }[];
 }
 
 export interface DrawingPath {
@@ -40,33 +39,22 @@ export interface Bookmark {
   pageIndex: number;
 }
 
-export interface PDFPageData {
-  pageNumber: number;
-  title: string;
-  contentLines: string[];
-  tables?: { headers: string[]; rows: string[][] }[];
-  keyFacts?: string[];
-}
-
-export interface PDFDocumentData {
-  id: string;
-  title: string;
-  fileName: string;
-  fileSize: string;
-  totalPages: number;
-  isPasswordProtected?: boolean;
-  password?: string;
-  isLocked?: boolean;
-  author?: string;
-  createdAt?: string;
-  bookmarks: Bookmark[];
-  pages: PDFPageData[];
-}
-
 export interface SearchMatch {
   id: string;
   pageIndex: number;
-  lineIndex: number;
-  textSnippet: string;
+  snippet: string;
   matchTerm: string;
+}
+
+/** Where the currently open document's bytes came from. */
+export type PDFSourceKind = 'drive' | 'local';
+
+export interface PDFDocMeta {
+  source: PDFSourceKind;
+  /** Drive file id — only set for `source === 'drive'`, used to fetch bytes and to Share. */
+  fileId?: string;
+  folderId?: string | null;
+  name: string;
+  sizeLabel: string;
+  numPages: number;
 }

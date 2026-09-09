@@ -1,4 +1,4 @@
-export type CalculatorMode = 'basic' | 'scientific' | 'programmer' | 'converter';
+export type CalculatorMode = 'basic' | 'scientific' | 'programmer' | 'converter' | 'financial';
 
 export interface HistoryItem {
   id: string;
