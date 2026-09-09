@@ -49,11 +49,19 @@ export const EDITOR_REGISTRY: EditorMapping[] = [
 export function getEditorForFile(name: string, mimeType: string): EditorMapping | undefined {
   const ext = name.split('.').pop()?.toLowerCase() || '';
 
-  return EDITOR_REGISTRY.find((mapping) => {
-    if (mapping.extensions.includes(ext)) return true;
-    if (mimeType && mapping.mimeTypes.includes(mimeType)) return true;
-    return false;
-  });
+  // Extension is checked across the *whole* registry before mimeType is
+  // consulted at all — not mapping-by-mapping in one pass. A single-pass
+  // `.find()` would return whichever mapping happens to come first in the
+  // array the moment either side of its check matched, so a callsite that
+  // (for lack of anything better) passes a coarse mimeType guess like
+  // `text/plain` for "this is some kind of document" could match `editor`
+  // (mimeTypes includes `text/plain`) before ever reaching `pdf-viewer` —
+  // even for a file named `report.pdf`, whose extension is unambiguous.
+  const byExtension = EDITOR_REGISTRY.find((mapping) => mapping.extensions.includes(ext));
+  if (byExtension) return byExtension;
+
+  if (!mimeType) return undefined;
+  return EDITOR_REGISTRY.find((mapping) => mapping.mimeTypes.includes(mimeType));
 }
 
 export function getAppForFile(name: string, mimeType: string): string | undefined {

@@ -1,5 +1,7 @@
-import React, { useState } from 'react';
-import { Bookmark, PDFDocumentData, StickyNote, TextAnnotation, SearchMatch } from '../types';
+import React, { useEffect, useRef } from 'react';
+import { Bookmark, StickyNote, TextAnnotation, SearchMatch } from '../types';
+import type { PDFDocumentProxy } from '../lib/pdfjs';
+import { PageThumbnail } from './PageThumbnail';
 import {
   Grid,
   Bookmark as BookmarkIcon,
@@ -8,20 +10,23 @@ import {
   Plus,
   Trash2,
   ChevronRight,
-  FileText,
   X,
-  Highlighter,
-  Pencil,
-  Sparkles,
 } from 'lucide-react';
 
+export type SidebarTab = 'thumbnails' | 'bookmarks' | 'search' | 'annotations';
+
 interface SidebarProps {
-  document: PDFDocumentData;
+  pdfDoc: PDFDocumentProxy;
+  numPages: number;
   currentPage: number;
+  bookmarks: Bookmark[];
   stickyNotes: StickyNote[];
   textAnnotations: TextAnnotation[];
   searchQuery: string;
   searchResults: SearchMatch[];
+  indexedCount: number;
+  activeTab: SidebarTab;
+  onActiveTabChange: (tab: SidebarTab) => void;
   onPageSelect: (pageIndex: number) => void;
   onAddBookmark: (pageIndex: number) => void;
   onDeleteBookmark: (id: string) => void;
@@ -32,12 +37,17 @@ interface SidebarProps {
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
-  document,
+  pdfDoc,
+  numPages,
   currentPage,
+  bookmarks,
   stickyNotes,
   textAnnotations,
   searchQuery,
   searchResults,
+  indexedCount,
+  activeTab,
+  onActiveTabChange,
   onPageSelect,
   onAddBookmark,
   onDeleteBookmark,
@@ -46,19 +56,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onDeleteTextAnnotation,
   onClose,
 }) => {
-  const [activeTab, setActiveTab] = useState<'thumbnails' | 'bookmarks' | 'search' | 'annotations'>('thumbnails');
-  const [newBookmarkTitle, setNewBookmarkTitle] = useState<string>('');
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
-  const handleCreateBookmark = () => {
-    onAddBookmark(currentPage - 1);
-  };
+  // Focus the search box whenever the Search tab becomes active — most
+  // relevantly when the toolbar's search button jumps here directly.
+  useEffect(() => {
+    if (activeTab === 'search') searchInputRef.current?.focus();
+  }, [activeTab]);
 
   return (
     <div className="w-72 bg-slate-950 border-r border-slate-800 flex flex-col font-sans shrink-0 overflow-hidden select-none">
       {/* Sidebar Navigation Tabs Header */}
       <div className="bg-slate-900 border-b border-slate-800 p-1 grid grid-cols-4 gap-1 text-xs font-bold text-slate-400">
         <button
-          onClick={() => setActiveTab('thumbnails')}
+          onClick={() => onActiveTabChange('thumbnails')}
           className={`py-2 rounded-lg flex flex-col items-center gap-1 transition-all cursor-pointer ${
             activeTab === 'thumbnails' ? 'bg-slate-800 text-blue-400 font-extrabold' : 'hover:text-slate-200'
           }`}
@@ -69,7 +80,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </button>
 
         <button
-          onClick={() => setActiveTab('bookmarks')}
+          onClick={() => onActiveTabChange('bookmarks')}
           className={`py-2 rounded-lg flex flex-col items-center gap-1 transition-all cursor-pointer ${
             activeTab === 'bookmarks' ? 'bg-slate-800 text-amber-400 font-extrabold' : 'hover:text-slate-200'
           }`}
@@ -80,7 +91,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </button>
 
         <button
-          onClick={() => setActiveTab('search')}
+          onClick={() => onActiveTabChange('search')}
           className={`py-2 rounded-lg flex flex-col items-center gap-1 transition-all cursor-pointer ${
             activeTab === 'search' ? 'bg-slate-800 text-emerald-400 font-extrabold' : 'hover:text-slate-200'
           }`}
@@ -91,7 +102,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </button>
 
         <button
-          onClick={() => setActiveTab('annotations')}
+          onClick={() => onActiveTabChange('annotations')}
           className={`py-2 rounded-lg flex flex-col items-center gap-1 transition-all cursor-pointer ${
             activeTab === 'annotations' ? 'bg-slate-800 text-purple-400 font-extrabold' : 'hover:text-slate-200'
           }`}
@@ -103,51 +114,31 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       {/* Sidebar Content Area */}
-      <div className="flex-1 p-3 overflow-y-auto custom-scrollbar">
+      <div className="flex-1 p-3 overflow-y-auto">
         {/* ================= THUMBNAILS TAB ================= */}
         {activeTab === 'thumbnails' && (
           <div className="space-y-3">
             <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 block">
-              Page Thumbnails ({document.totalPages})
+              Page Thumbnails ({numPages})
             </span>
 
-            {document.pages.map((page, idx) => {
-              const isActive = currentPage === page.pageNumber;
+            {Array.from({ length: numPages }, (_, idx) => {
+              const pageNumber = idx + 1;
+              const isActive = currentPage === pageNumber;
               return (
                 <div
-                  key={page.pageNumber}
+                  key={pageNumber}
                   onClick={() => onPageSelect(idx)}
                   className={`p-2 rounded-xl border transition-all cursor-pointer flex flex-col gap-1.5 ${
                     isActive
                       ? 'bg-blue-950/60 border-blue-500 ring-2 ring-blue-500/30'
-                      : 'bg-slate-900 border-slate-800 hover:bg-slate-850 hover:border-slate-700'
+                      : 'bg-slate-900 border-slate-800 hover:border-slate-700'
                   }`}
                 >
-                  <div className="flex items-center justify-between text-xs font-bold">
-                    <span className={isActive ? 'text-blue-400' : 'text-slate-300'}>
-                      Page {page.pageNumber}
-                    </span>
-                    <span className="text-[10px] text-slate-500 truncate max-w-[120px] font-medium">
-                      {page.title}
-                    </span>
-                  </div>
-
-                  {/* Thumbnail Card Representation */}
-                  <div className="w-full aspect-[1/1.3] bg-white rounded-lg p-2 border border-slate-700 text-[6px] text-slate-800 overflow-hidden shadow-inner flex flex-col justify-between">
-                    <div>
-                      <div className="font-extrabold text-[7px] text-blue-900 border-b border-slate-300 pb-0.5 mb-1 truncate">
-                        {page.title}
-                      </div>
-                      <div className="space-y-0.5 text-slate-600 font-sans line-clamp-6">
-                        {page.contentLines.map((l, i) => (
-                          <p key={i}>{l}</p>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="text-[5px] text-slate-400 text-right font-mono border-t border-slate-200 pt-0.5">
-                      {page.pageNumber}
-                    </div>
-                  </div>
+                  <span className={`text-xs font-bold ${isActive ? 'text-blue-400' : 'text-slate-300'}`}>
+                    Page {pageNumber}
+                  </span>
+                  <PageThumbnail pdfDoc={pdfDoc} pageNumber={pageNumber} />
                 </div>
               );
             })}
@@ -159,18 +150,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">
-                Bookmarks ({document.bookmarks.length})
+                Bookmarks ({bookmarks.length})
               </span>
               <button
-                onClick={handleCreateBookmark}
+                onClick={() => onAddBookmark(currentPage - 1)}
                 className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold flex items-center gap-1 cursor-pointer transition-colors"
               >
                 <Plus size={12} /> Bookmark Page {currentPage}
               </button>
             </div>
 
+            {bookmarks.length === 0 && (
+              <div className="text-center py-8 text-slate-500 text-xs font-medium">No bookmarks yet.</div>
+            )}
+
             <div className="space-y-2">
-              {document.bookmarks.map((bm) => (
+              {bookmarks.map((bm) => (
                 <div
                   key={bm.id}
                   onClick={() => onPageSelect(bm.pageIndex)}
@@ -182,9 +177,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       <span className="text-xs font-bold text-slate-200 block truncate group-hover:text-amber-300">
                         {bm.title}
                       </span>
-                      <span className="text-[10px] text-slate-500 font-semibold">
-                        Page {bm.pageIndex + 1}
-                      </span>
+                      <span className="text-[10px] text-slate-500 font-semibold">Page {bm.pageIndex + 1}</span>
                     </div>
                   </div>
                   <button
@@ -212,6 +205,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
             <div className="relative">
               <input
+                ref={searchInputRef}
                 type="text"
                 value={searchQuery}
                 onChange={(e) => onSearchChange(e.target.value)}
@@ -221,9 +215,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <Search size={14} className="absolute left-2.5 top-2.5 text-slate-500" />
             </div>
 
-            <span className="text-[11px] font-bold text-slate-400 block">
-              Matches Found: {searchResults.length}
-            </span>
+            {indexedCount < numPages && (
+              <span className="text-[10px] font-semibold text-slate-500 block">
+                Indexing pages for search… {indexedCount}/{numPages}
+              </span>
+            )}
+
+            {searchQuery.trim() && (
+              <span className="text-[11px] font-bold text-slate-400 block">
+                Matches Found: {searchResults.length}
+              </span>
+            )}
 
             <div className="space-y-2">
               {searchResults.map((match) => (
@@ -236,9 +238,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     <span>Page {match.pageIndex + 1}</span>
                     <ChevronRight size={12} />
                   </div>
-                  <p className="text-xs text-slate-300 font-medium leading-relaxed italic">
-                    "...{match.textSnippet}..."
-                  </p>
+                  <p className="text-xs text-slate-300 font-medium leading-relaxed italic">"...{match.snippet}..."</p>
                 </div>
               ))}
             </div>
@@ -315,7 +315,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
             {stickyNotes.length === 0 && textAnnotations.length === 0 && (
               <div className="text-center py-8 text-slate-500 text-xs font-medium">
-                No notes or highlights added yet.<br />Use annotation tools on top bar!
+                No notes or highlights added yet.
+                <br />
+                Use annotation tools on top bar!
               </div>
             )}
           </div>

@@ -2,6 +2,7 @@ import React from 'react';
 import {
   X,
   FileText,
+  BookOpen,
   Image as ImageIcon,
   Music,
   Video,
@@ -36,6 +37,14 @@ export default function OpenWithModal({
       icon: FileText,
       color: 'text-blue-500 bg-blue-500/10',
       kinds: ['text', 'code'],
+    },
+    {
+      key: 'pdf-viewer',
+      name: 'PDF Viewer',
+      desc: 'Read, search & annotate PDF documents',
+      icon: BookOpen,
+      color: 'text-rose-500 bg-rose-500/10',
+      kinds: ['pdf'],
     },
     {
       key: 'image-viewer',

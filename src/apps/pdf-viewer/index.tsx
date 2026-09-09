@@ -1,257 +1,265 @@
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  PDFDocumentData,
   AnnotationType,
+  Bookmark,
+  DrawingPath,
+  PDFDocMeta,
   StickyNote,
   TextAnnotation,
-  DrawingPath,
-  SearchMatch,
 } from './types';
-import { SAMPLE_PDFS } from './data/samplePdfs';
 import { Toolbar } from './components/Toolbar';
-import { Sidebar } from './components/Sidebar';
-import { PDFCanvasPage } from './components/PDFCanvasPage';
+import { Sidebar, SidebarTab } from './components/Sidebar';
+import { PDFPageView } from './components/PDFPageView';
 import { PasswordModal } from './components/PasswordModal';
-import { ShareModal } from './components/ShareModal';
+import ShareModal from '../file-explorer/components/ShareModal';
+import { usePdfDocument } from './hooks/usePdfDocument';
+import { usePdfTextIndex } from './hooks/usePdfTextIndex';
 import { useSystemStore } from '../../shell/state/systemStore';
-import { FileText, Check, AlertCircle, Sparkles } from 'lucide-react';
+import { FileService } from '../../platform/files/FileService';
+import { FileItem } from '../../platform/types';
+import { FileText, Check, AlertCircle, UploadCloud, FolderOpen, HardDrive } from 'lucide-react';
+import { useAppMenu } from '../../platform/menus/AppMenuContext';
+import { separator } from '../../platform/menus/types';
 
-export default function PDFViewerApp() {
-  // Document State
-  const [documents, setDocuments] = useState<PDFDocumentData[]>(SAMPLE_PDFS);
-  const [activeDocId, setActiveDocId] = useState<string>(SAMPLE_PDFS[0].id);
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB'];
+  let value = bytes / 1024;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex++;
+  }
+  return `${value.toFixed(1)} ${units[unitIndex]}`;
+}
 
-  const activeDoc = useMemo(
-    () => documents.find((d) => d.id === activeDocId) || documents[0],
-    [documents, activeDocId]
-  );
+export default function PDFViewerApp({ windowId = 'pdf-viewer' }: { windowId?: string }) {
+  const { status, pdfDoc, error, passwordAttemptFailed, load, submitPassword, cancelPassword } = usePdfDocument();
+  const { indexedCount, ensurePageText, search } = usePdfTextIndex(pdfDoc);
 
-  // Viewer Display States
+  const [docMeta, setDocMeta] = useState<PDFDocMeta | null>(null);
+  // Set only for a failure fetching bytes from Drive — distinct from
+  // `usePdfDocument`'s own `error`, which covers pdf.js failing to parse
+  // bytes it already has. Both render the same error card.
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const lastBytesRef = useRef<ArrayBuffer | null>(null);
+
+  // Viewer display state
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [zoomLevel, setZoomLevel] = useState<number>(100);
-  const [fitMode, setFitMode] = useState<'custom' | 'fit-width' | 'fit-page'>('custom');
+  const [fitMode, setFitMode] = useState<'custom' | 'fit-width' | 'fit-page'>('fit-width');
   const [rotation, setRotation] = useState<number>(0);
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(true);
+  const [sidebarTab, setSidebarTab] = useState<SidebarTab>('thumbnails');
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
-
-  // Security States
   const [isReadOnly, setIsReadOnly] = useState<boolean>(false);
-  const [showPasswordModal, setShowPasswordModal] = useState<boolean>(false);
-
-  // Share Modal State
-  const [showShareModal, setShowShareModal] = useState<boolean>(false);
-
-  // Annotation Tool State
   const [activeAnnotationTool, setActiveAnnotationTool] = useState<AnnotationType | 'select' | null>('select');
 
-  // Annotation Data per document
-  const [stickyNotes, setStickyNotes] = useState<Record<string, StickyNote[]>>({});
-  const [textAnnotations, setTextAnnotations] = useState<Record<string, TextAnnotation[]>>({});
-  const [drawingPaths, setDrawingPaths] = useState<Record<string, DrawingPath[]>>({});
+  // Per-document user data (reset whenever a new document is opened)
+  const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
+  const [stickyNotes, setStickyNotes] = useState<StickyNote[]>([]);
+  const [textAnnotations, setTextAnnotations] = useState<TextAnnotation[]>([]);
+  const [drawingPaths, setDrawingPaths] = useState<DrawingPath[]>([]);
 
-  // Search Engine State
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const searchResults = useMemo(() => search(searchQuery), [search, searchQuery, indexedCount]);
 
-  // Toast notification state
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [showShareModal, setShowShareModal] = useState<boolean>(false);
+  const [isDragOver, setIsDragOver] = useState<boolean>(false);
 
-  // System Store for saving to virtual drive disk
-  const setFiles = useSystemStore((state) => state.setFiles);
-  const resolveDefaultFolderId = useSystemStore((state) => state.resolveDefaultFolderId);
+  const containerRef = useRef<HTMLDivElement>(null); // outer app shell, for fullscreen
+  const viewportRef = useRef<HTMLDivElement>(null); // scrollable center pane, for fit-width/fit-page sizing
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  // Show Toast
   const triggerToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3000);
   };
 
-  // Search matches computer
-  const searchResults = useMemo<SearchMatch[]>(() => {
-    if (!searchQuery.trim() || activeDoc.isLocked) return [];
-    const queryLower = searchQuery.toLowerCase();
-    const matches: SearchMatch[] = [];
+  const resetDocumentState = () => {
+    setCurrentPage(1);
+    setZoomLevel(100);
+    setFitMode('fit-width');
+    setRotation(0);
+    setBookmarks([]);
+    setStickyNotes([]);
+    setTextAnnotations([]);
+    setDrawingPaths([]);
+    setSearchQuery('');
+    setActiveAnnotationTool('select');
+    setIsReadOnly(false);
+  };
 
-    activeDoc.pages.forEach((page, pIdx) => {
-      page.contentLines.forEach((line, lIdx) => {
-        if (line.toLowerCase().includes(queryLower)) {
-          matches.push({
-            id: `sm_${pIdx}_${lIdx}`,
-            pageIndex: pIdx,
-            lineIndex: lIdx,
-            textSnippet: line,
-            matchTerm: searchQuery,
-          });
-        }
-      });
-    });
+  const loadBytes = (buf: ArrayBuffer, meta: PDFDocMeta) => {
+    resetDocumentState();
+    setFetchError(null);
+    lastBytesRef.current = buf;
+    setDocMeta(meta);
+    // pdf.js transfers (detaches) whatever ArrayBuffer it's handed to its
+    // worker, so `buf` itself would come back zero-length — pass a copy and
+    // keep the original intact for Download/Print.
+    load(buf.slice(0));
+  };
 
-    return matches;
-  }, [searchQuery, activeDoc]);
-
-  // Open PDF File Picker / Sample Switcher
-  const handleOpenPdf = () => {
-    const docTitles = documents.map((d, i) => `${i + 1}. ${d.title}`).join('\n');
-    const choice = prompt(
-      `Select a preloaded PDF or enter custom document index:\n${docTitles}\n\nType 1, 2, or 3:`,
-      '1'
-    );
-
-    if (choice) {
-      const idx = parseInt(choice, 10) - 1;
-      if (!isNaN(idx) && documents[idx]) {
-        setActiveDocId(documents[idx].id);
-        setCurrentPage(1);
-        if (documents[idx].isLocked) {
-          setShowPasswordModal(true);
-        } else {
-          triggerToast(`Opened "${documents[idx].title}"`);
-        }
-      }
+  const loadFromDrive = async (fileId: string, name: string, folderId: string | null) => {
+    setFetchError(null);
+    setDocMeta({ source: 'drive', fileId, folderId, name, sizeLabel: '—', numPages: 0 });
+    try {
+      const url = await FileService.downloadUrl(fileId);
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Download failed (HTTP ${res.status}).`);
+      const buf = await res.arrayBuffer();
+      loadBytes(buf, { source: 'drive', fileId, folderId, name, sizeLabel: formatBytes(buf.byteLength), numPages: 0 });
+    } catch (err) {
+      setDocMeta(null);
+      setFetchError(err instanceof Error ? err.message : 'Failed to download this PDF from Drive.');
     }
   };
 
-  // Unlock Password
-  const handleUnlockDocument = () => {
-    setDocuments((prev) =>
-      prev.map((d) => (d.id === activeDoc.id ? { ...d, isLocked: false } : d))
-    );
-    setShowPasswordModal(false);
-    triggerToast(`Document "${activeDoc.title}" unlocked successfully!`);
+  const loadFromLocalFile = async (file: File) => {
+    const buf = await file.arrayBuffer();
+    loadBytes(buf, { source: 'local', name: file.name, sizeLabel: formatBytes(buf.byteLength), numPages: 0 });
   };
 
-  // Add Bookmark
+  // Reflect the real page count once pdf.js finishes loading.
+  useEffect(() => {
+    if (pdfDoc) setDocMeta((m) => (m ? { ...m, numPages: pdfDoc.numPages } : m));
+  }, [pdfDoc]);
+
+  // --- Receiving a file opened from File Explorer -------------------------
+  const isPrimaryWindow = windowId === 'pdf-viewer';
+  const pdfViewerFileId = useSystemStore((s) => s.pdfViewerFileId);
+  const pdfViewerFileName = useSystemStore((s) => s.pdfViewerFileName);
+  const pdfViewerCurrentFolderId = useSystemStore((s) => s.pdfViewerCurrentFolderId);
+  const consumePendingPdfViewerFile = useSystemStore((s) => s.consumePendingPdfViewerFile);
+  const handleCloseWindow = useSystemStore((s) => s.handleCloseWindow);
+  const requestFilePick = useSystemStore((s) => s.requestFilePick);
+  const filePickerResult = useSystemStore((s) => s.filePickerResults[windowId]);
+  const consumeFilePickerResult = useSystemStore((s) => s.consumeFilePickerResult);
+  const focusWindow = useSystemStore((s) => s.focusWindow);
+
+  const lastOpenedSignatureRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!isPrimaryWindow || !pdfViewerFileId) return;
+    const signature = `${pdfViewerFileId}:${pdfViewerFileName}`;
+    if (lastOpenedSignatureRef.current === signature) return;
+    lastOpenedSignatureRef.current = signature;
+    loadFromDrive(pdfViewerFileId, pdfViewerFileName ?? 'Document.pdf', pdfViewerCurrentFolderId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPrimaryWindow, pdfViewerFileId, pdfViewerFileName, pdfViewerCurrentFolderId]);
+
+  const hasSeededRef = useRef(false);
+  useEffect(() => {
+    if (hasSeededRef.current) return;
+    hasSeededRef.current = true;
+    const pending = consumePendingPdfViewerFile(windowId);
+    if (pending) loadFromDrive(pending.fileId, pending.name, pending.folderId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // --- Local "Open PDF" (native file picker, no Drive round-trip needed) --
+  const handleOpenFromComputer = () => fileInputRef.current?.click();
+
+  const handleLocalFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (file) loadFromLocalFile(file);
+  };
+
+  // --- "Open PDF" from Drive OSX's own File Explorer, as a picker ---------
+  const handleOpenFromDrive = () => requestFilePick(windowId, 'file');
+
+  useEffect(() => {
+    if (!filePickerResult) return;
+    const result = consumeFilePickerResult(windowId);
+    if (!result) return;
+    focusWindow(windowId);
+    if (result.mode === 'file') {
+      if (!result.file.name.toLowerCase().endsWith('.pdf')) {
+        triggerToast(`"${result.file.name}" isn't a PDF file.`);
+        return;
+      }
+      loadFromDrive(result.file.id, result.file.name, result.file.parentId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filePickerResult, windowId, consumeFilePickerResult, focusWindow]);
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    const file = Array.from(e.dataTransfer.files).find((f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
+    if (file) loadFromLocalFile(file);
+    else triggerToast('Only PDF files can be opened here.');
+  };
+
+  // --- Bookmarks ------------------------------------------------------------
   const handleAddBookmark = (pageIndex: number) => {
-    const bookmarkTitle = prompt(
-      'Enter Bookmark Label:',
-      `Page ${pageIndex + 1}: ${activeDoc.pages[pageIndex]?.title || 'Section'}`
-    );
-    if (!bookmarkTitle) return;
-
-    const newBm = {
-      id: 'bm_' + Date.now(),
-      title: bookmarkTitle,
-      pageIndex,
-    };
-
-    setDocuments((prev) =>
-      prev.map((d) =>
-        d.id === activeDoc.id ? { ...d, bookmarks: [...d.bookmarks, newBm] } : d
-      )
-    );
+    const title = prompt('Enter Bookmark Label:', `Page ${pageIndex + 1}`);
+    if (!title) return;
+    setBookmarks((prev) => [...prev, { id: 'bm_' + Date.now(), title, pageIndex }]);
     triggerToast(`Bookmarked Page ${pageIndex + 1}`);
   };
+  const handleDeleteBookmark = (id: string) => setBookmarks((prev) => prev.filter((b) => b.id !== id));
 
-  const handleDeleteBookmark = (id: string) => {
-    setDocuments((prev) =>
-      prev.map((d) =>
-        d.id === activeDoc.id
-          ? { ...d, bookmarks: d.bookmarks.filter((bm) => bm.id !== id) }
-          : d
-      )
-    );
-  };
-
-  // Sticky Note handlers
+  // --- Sticky notes / markup / drawing --------------------------------------
   const handleAddStickyNote = (notePartial: Omit<StickyNote, 'id' | 'createdAt'>) => {
     const newNote: StickyNote = {
       ...notePartial,
       id: 'sn_' + Date.now(),
       createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
-
-    setStickyNotes((prev) => ({
-      ...prev,
-      [activeDoc.id]: [...(prev[activeDoc.id] || []), newNote],
-    }));
+    setStickyNotes((prev) => [...prev, newNote]);
     triggerToast('Sticky note added to page');
   };
+  const handleDeleteStickyNote = (id: string) => setStickyNotes((prev) => prev.filter((n) => n.id !== id));
 
-  const handleDeleteStickyNote = (id: string) => {
-    setStickyNotes((prev) => ({
-      ...prev,
-      [activeDoc.id]: (prev[activeDoc.id] || []).filter((n) => n.id !== id),
-    }));
-  };
-
-  // Text Annotation handlers
   const handleAddTextAnnotation = (annPartial: Omit<TextAnnotation, 'id'>) => {
-    const newAnn: TextAnnotation = {
-      ...annPartial,
-      id: 'ann_' + Date.now(),
-    };
-
-    setTextAnnotations((prev) => ({
-      ...prev,
-      [activeDoc.id]: [...(prev[activeDoc.id] || []), newAnn],
-    }));
+    const newAnn: TextAnnotation = { ...annPartial, id: 'ann_' + Date.now() };
+    setTextAnnotations((prev) => [...prev, newAnn]);
     triggerToast(`Added ${newAnn.type} annotation`);
   };
+  const handleDeleteTextAnnotation = (id: string) => setTextAnnotations((prev) => prev.filter((a) => a.id !== id));
 
-  const handleDeleteTextAnnotation = (id: string) => {
-    setTextAnnotations((prev) => ({
-      ...prev,
-      [activeDoc.id]: (prev[activeDoc.id] || []).filter((a) => a.id !== id),
-    }));
-  };
-
-  // Drawing Path handlers
   const handleAddDrawingPath = (pathPartial: Omit<DrawingPath, 'id'>) => {
-    const newPath: DrawingPath = {
-      ...pathPartial,
-      id: 'dp_' + Date.now(),
-    };
-
-    setDrawingPaths((prev) => ({
-      ...prev,
-      [activeDoc.id]: [...(prev[activeDoc.id] || []), newPath],
-    }));
+    setDrawingPaths((prev) => [...prev, { ...pathPartial, id: 'dp_' + Date.now() }]);
   };
 
-  // Copy Text
-  const handleCopyPageText = (textOverride?: string) => {
-    const pageObj = activeDoc.pages[currentPage - 1];
-    const textToCopy = textOverride || pageObj?.contentLines.join('\n') || '';
-
-    navigator.clipboard.writeText(textToCopy);
+  // --- Copy / download / print ----------------------------------------------
+  const handleCopyPageText = async () => {
+    const indexed = await ensurePageText(currentPage);
+    const text = indexed?.fullText.trim();
+    if (!text) {
+      triggerToast('No selectable text on this page.');
+      return;
+    }
+    await navigator.clipboard.writeText(text);
     triggerToast('Page text copied to clipboard!');
   };
 
-  // Download PDF
   const handleDownloadPdf = () => {
-    const content = JSON.stringify(activeDoc, null, 2);
-    const blob = new Blob([content], { type: 'application/json' });
+    const buf = lastBytesRef.current;
+    if (!buf || !docMeta) return;
+    const blob = new Blob([buf], { type: 'application/pdf' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = activeDoc.fileName;
+    a.download = docMeta.name.toLowerCase().endsWith('.pdf') ? docMeta.name : `${docMeta.name}.pdf`;
     a.click();
     URL.revokeObjectURL(url);
-
-    // Save to System Disk
-    setFiles((prev) => [
-      ...prev,
-      {
-        id: 'file_pdf_' + Date.now(),
-        name: activeDoc.fileName,
-        type: 'file',
-        content,
-        parentId: resolveDefaultFolderId('Documents') || null,
-        createdAt: new Date().toLocaleDateString(),
-      },
-    ]);
-
-    triggerToast(`Downloaded "${activeDoc.fileName}" & saved to Documents!`);
+    triggerToast(`Downloaded "${docMeta.name}"`);
   };
 
-  // Print PDF
   const handlePrintPdf = () => {
-    window.print();
-    triggerToast('Sent document to system print queue');
+    const buf = lastBytesRef.current;
+    if (!buf) return;
+    const blob = new Blob([buf], { type: 'application/pdf' });
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
+    triggerToast('Opened the PDF in a new tab — use its Print button');
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
   };
 
-  // Toggle Fullscreen
   const handleToggleFullscreen = () => {
     if (!containerRef.current) return;
     if (!document.fullscreenElement) {
@@ -263,38 +271,78 @@ export default function PDFViewerApp() {
     }
   };
 
-  const currentDocStickyNotes = stickyNotes[activeDoc.id] || [];
-  const currentDocTextAnnotations = textAnnotations[activeDoc.id] || [];
-  const currentDocDrawingPaths = drawingPaths[activeDoc.id] || [];
+  // --- Share ------------------------------------------------------------------
+  const shareFileItem: FileItem | null =
+    docMeta?.source === 'drive' && docMeta.fileId
+      ? { id: docMeta.fileId, name: docMeta.name, type: 'file', parentId: docMeta.folderId ?? null, createdAt: new Date().toISOString() }
+      : null;
+
+  const handleShare = () => {
+    if (shareFileItem) setShowShareModal(true);
+    else triggerToast('Save this PDF to Drive first to share it.');
+  };
+
+  useAppMenu(windowId, [
+    {
+      id: 'file',
+      label: 'File',
+      items: [
+        { id: 'open', label: 'Open from Computer…', shortcut: 'Ctrl+O', onSelect: handleOpenFromComputer },
+        { id: 'open-drive', label: 'Open from Drive OSX…', onSelect: handleOpenFromDrive },
+        { id: 'download', label: 'Download', disabled: status !== 'ready', onSelect: handleDownloadPdf },
+        { id: 'print', label: 'Print…', shortcut: 'Ctrl+P', disabled: status !== 'ready', onSelect: handlePrintPdf },
+        separator(),
+        { id: 'close-window', label: 'Close Window', onSelect: () => handleCloseWindow(windowId) },
+      ],
+    },
+    {
+      id: 'view',
+      label: 'View',
+      items: [
+        { id: 'sidebar', label: 'Sidebar', checked: sidebarOpen, onSelect: () => setSidebarOpen((v) => !v) },
+        separator(),
+        { id: 'zoom-in', label: 'Zoom In', disabled: status !== 'ready', onSelect: () => { setZoomLevel((z) => Math.min(300, z + 25)); setFitMode('custom'); } },
+        { id: 'zoom-out', label: 'Zoom Out', disabled: status !== 'ready', onSelect: () => { setZoomLevel((z) => Math.max(25, z - 25)); setFitMode('custom'); } },
+        { id: 'fit-width', label: 'Fit Width', selected: fitMode === 'fit-width', disabled: status !== 'ready', onSelect: () => setFitMode('fit-width') },
+        { id: 'fit-page', label: 'Fit Page', selected: fitMode === 'fit-page', disabled: status !== 'ready', onSelect: () => setFitMode('fit-page') },
+        separator(),
+        { id: 'rotate', label: 'Rotate Clockwise', disabled: status !== 'ready', onSelect: () => setRotation((r) => (r + 90) % 360) },
+      ],
+    },
+  ]);
+
+  const controlsDisabled = status !== 'ready';
 
   return (
     <div
       ref={containerRef}
       className="h-full flex flex-col bg-slate-950 font-sans text-slate-100 select-none overflow-hidden relative"
     >
-      {/* Toast Notification Alert */}
+      <input ref={fileInputRef} type="file" accept="application/pdf,.pdf" className="hidden" onChange={handleLocalFileSelected} />
+
       {toastMessage && (
-        <div className="fixed top-12 right-6 z-50 bg-blue-600 text-white px-4 py-2.5 rounded-2xl shadow-2xl border border-blue-400 text-xs font-bold flex items-center gap-2 animate-bounce">
+        <div className="fixed top-12 right-6 z-50 bg-blue-600 text-white px-4 py-2.5 rounded-2xl shadow-2xl border border-blue-400 text-xs font-bold flex items-center gap-2">
           <Check size={16} />
           <span>{toastMessage}</span>
         </div>
       )}
 
-      {/* Main Top Toolbar */}
       <Toolbar
-        documentTitle={activeDoc.title}
+        documentTitle={docMeta?.name ?? 'No document open'}
         currentPage={currentPage}
-        totalPages={activeDoc.totalPages}
+        totalPages={docMeta?.numPages ?? 0}
         zoomLevel={zoomLevel}
         fitMode={fitMode}
         rotation={rotation}
         activeAnnotationTool={activeAnnotationTool}
         isReadOnly={isReadOnly}
-        isLocked={!!activeDoc.isLocked}
+        isLocked={status === 'password'}
+        controlsDisabled={controlsDisabled}
         sidebarOpen={sidebarOpen}
         onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
-        onOpenPdf={handleOpenPdf}
-        onPageChange={(page) => setCurrentPage(page)}
+        onOpenFromComputer={handleOpenFromComputer}
+        onOpenFromDrive={handleOpenFromDrive}
+        onPageChange={(page) => setCurrentPage(Math.max(1, Math.min(docMeta?.numPages ?? 1, page)))}
         onZoomChange={(zoom, fit) => {
           setZoomLevel(zoom);
           setFitMode(fit || 'custom');
@@ -302,98 +350,189 @@ export default function PDFViewerApp() {
         onRotate={() => setRotation((r) => (r + 90) % 360)}
         onSetAnnotationTool={(tool) => setActiveAnnotationTool(tool)}
         onToggleReadOnly={() => setIsReadOnly(!isReadOnly)}
-        onOpenSearch={() => setSidebarOpen(true)}
-        onCopyText={() => handleCopyPageText()}
+        onOpenSearch={() => {
+          setSidebarOpen(true);
+          setSidebarTab('search');
+        }}
+        onCopyText={handleCopyPageText}
         onDownload={handleDownloadPdf}
         onPrint={handlePrintPdf}
-        onShare={() => setShowShareModal(true)}
+        onShare={handleShare}
         onToggleFullscreen={handleToggleFullscreen}
-        onUnlockPasswordPrompt={() => setShowPasswordModal(true)}
+        onUnlockPasswordPrompt={() => {
+          /* Password modal is already shown automatically while status === 'password'. */
+        }}
       />
 
-      {/* Main Content Workspace */}
       <div className="flex-1 flex overflow-hidden relative">
-        {/* Navigation Sidebar */}
-        {sidebarOpen && (
+        {status === 'ready' && pdfDoc && sidebarOpen && (
           <Sidebar
-            document={activeDoc}
+            pdfDoc={pdfDoc}
+            numPages={pdfDoc.numPages}
             currentPage={currentPage}
-            stickyNotes={currentDocStickyNotes}
-            textAnnotations={currentDocTextAnnotations}
+            bookmarks={bookmarks}
+            stickyNotes={stickyNotes}
+            textAnnotations={textAnnotations}
             searchQuery={searchQuery}
             searchResults={searchResults}
+            indexedCount={indexedCount}
+            activeTab={sidebarTab}
+            onActiveTabChange={setSidebarTab}
             onPageSelect={(pIdx) => setCurrentPage(pIdx + 1)}
             onAddBookmark={handleAddBookmark}
             onDeleteBookmark={handleDeleteBookmark}
-            onSearchChange={(q) => setSearchQuery(q)}
+            onSearchChange={setSearchQuery}
             onDeleteStickyNote={handleDeleteStickyNote}
             onDeleteTextAnnotation={handleDeleteTextAnnotation}
             onClose={() => setSidebarOpen(false)}
           />
         )}
 
-        {/* Center Viewer Canvas Stage */}
-        <div className="flex-1 bg-slate-900 overflow-y-auto p-6 md:p-10 flex flex-col items-center custom-scrollbar">
-          {activeDoc.isLocked ? (
-            /* Locked State Screen */
-            <div className="my-auto text-center space-y-4 max-w-md p-8 bg-slate-950 rounded-3xl border border-slate-800 shadow-2xl">
+        <div
+          ref={viewportRef}
+          onDragOver={(e) => {
+            if (status !== 'ready') {
+              e.preventDefault();
+              setIsDragOver(true);
+            }
+          }}
+          onDragLeave={() => setIsDragOver(false)}
+          onDrop={status !== 'ready' ? handleDrop : undefined}
+          className="flex-1 bg-slate-900 overflow-y-auto p-6 flex flex-col items-center relative"
+        >
+          {status === 'idle' && !docMeta && !fetchError && (
+            <div
+              className={`m-auto text-center space-y-4 max-w-md p-10 rounded-3xl border-2 border-dashed transition-colors ${
+                isDragOver ? 'border-blue-500 bg-blue-500/10' : 'border-slate-800'
+              }`}
+            >
+              <div className="w-16 h-16 bg-rose-500/15 text-rose-400 rounded-3xl border border-rose-500/30 flex items-center justify-center mx-auto shadow-md">
+                <FileText size={32} />
+              </div>
+              <h3 className="text-lg font-black text-white">No PDF Open</h3>
+              <p className="text-xs text-slate-400 leading-relaxed font-medium">
+                Open a PDF from your computer or from Drive OSX, or drag &amp; drop a file here. PDFs also open here
+                automatically when double-clicked in File Explorer.
+              </p>
+              <div className="flex items-center justify-center gap-2 pt-1">
+                <button
+                  onClick={handleOpenFromComputer}
+                  className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-black rounded-2xl shadow-lg transition-colors cursor-pointer flex items-center gap-2"
+                >
+                  <FolderOpen size={14} /> From Computer
+                </button>
+                <button
+                  onClick={(e) => {
+                    // See Toolbar.tsx's identical guard: the window
+                    // container's own onClick refocuses this window on
+                    // every click inside it, which would run after this
+                    // handler opens and focuses the picker window and steal
+                    // focus straight back.
+                    e.stopPropagation();
+                    handleOpenFromDrive();
+                  }}
+                  className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-black rounded-2xl border border-slate-700 shadow-lg transition-colors cursor-pointer flex items-center gap-2"
+                >
+                  <HardDrive size={14} /> From Drive OSX
+                </button>
+              </div>
+              <div className="flex items-center justify-center gap-1.5 text-[10px] text-slate-500 font-semibold pt-1">
+                <UploadCloud size={12} /> or drop a .pdf file anywhere in this window
+              </div>
+            </div>
+          )}
+
+          {(status === 'loading' || (status === 'idle' && docMeta)) && (
+            <div className="m-auto text-center space-y-3">
+              <div className="w-10 h-10 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto" />
+              <p className="text-xs text-slate-400 font-semibold">Loading {docMeta?.name ?? 'document'}…</p>
+            </div>
+          )}
+
+          {(status === 'error' || fetchError) && (
+            <div className="m-auto text-center space-y-4 max-w-md p-8 bg-slate-950 rounded-3xl border border-slate-800 shadow-2xl">
+              <div className="w-16 h-16 bg-rose-500/20 text-rose-400 rounded-3xl border border-rose-500/30 flex items-center justify-center mx-auto shadow-md">
+                <AlertCircle size={32} />
+              </div>
+              <h3 className="text-lg font-black text-white">Couldn't Open This PDF</h3>
+              <p className="text-xs text-slate-400 leading-relaxed font-medium">{fetchError || error}</p>
+              <div className="flex items-center justify-center gap-2">
+                <button
+                  onClick={handleOpenFromComputer}
+                  className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-black rounded-2xl shadow-lg transition-colors cursor-pointer flex items-center gap-2"
+                >
+                  <FolderOpen size={14} /> From Computer
+                </button>
+                <button
+                  onClick={(e) => {
+                    // See Toolbar.tsx's identical guard: the window
+                    // container's own onClick refocuses this window on
+                    // every click inside it, which would run after this
+                    // handler opens and focuses the picker window and steal
+                    // focus straight back.
+                    e.stopPropagation();
+                    handleOpenFromDrive();
+                  }}
+                  className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-black rounded-2xl border border-slate-700 shadow-lg transition-colors cursor-pointer flex items-center gap-2"
+                >
+                  <HardDrive size={14} /> From Drive OSX
+                </button>
+              </div>
+            </div>
+          )}
+
+          {status === 'password' && (
+            <div className="m-auto text-center space-y-4 max-w-md p-8 bg-slate-950 rounded-3xl border border-slate-800 shadow-2xl">
               <div className="w-16 h-16 bg-amber-500/20 text-amber-400 rounded-3xl border border-amber-500/30 flex items-center justify-center mx-auto shadow-md">
                 <AlertCircle size={32} />
               </div>
               <h3 className="text-lg font-black text-white">This PDF is Password Protected</h3>
               <p className="text-xs text-slate-400 leading-relaxed font-medium">
-                To view page contents, bookmarks, and annotation overlays, please enter the document security password.
+                Enter the document's password in the dialog to view its contents.
               </p>
-              <button
-                onClick={() => setShowPasswordModal(true)}
-                className="px-6 py-2.5 bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-black rounded-2xl shadow-lg transition-colors cursor-pointer"
-              >
-                Enter Password to Unlock
-              </button>
             </div>
-          ) : (
-            /* Unlocked Canvas Viewer */
-            <div className="w-full flex flex-col items-center">
-              {activeDoc.pages[currentPage - 1] && (
-                <PDFCanvasPage
-                  page={activeDoc.pages[currentPage - 1]}
-                  pageIndex={currentPage - 1}
-                  zoomLevel={zoomLevel}
-                  fitMode={fitMode}
-                  rotation={rotation}
-                  activeAnnotationTool={activeAnnotationTool}
-                  isReadOnly={isReadOnly}
-                  stickyNotes={currentDocStickyNotes}
-                  textAnnotations={currentDocTextAnnotations}
-                  drawingPaths={currentDocDrawingPaths}
-                  searchMatches={searchResults}
-                  onAddStickyNote={handleAddStickyNote}
-                  onAddTextAnnotation={handleAddTextAnnotation}
-                  onAddDrawingPath={handleAddDrawingPath}
-                  onDeleteStickyNote={handleDeleteStickyNote}
-                  onSelectTextToCopy={(sel) => triggerToast(`Selected text: "${sel.substring(0, 30)}..."`)}
-                />
-              )}
-            </div>
+          )}
+
+          {status === 'ready' && pdfDoc && (
+            <PDFPageView
+              pdfDoc={pdfDoc}
+              pageNumber={currentPage}
+              zoomLevel={zoomLevel}
+              fitMode={fitMode}
+              rotation={rotation}
+              containerRef={viewportRef}
+              activeAnnotationTool={activeAnnotationTool}
+              isReadOnly={isReadOnly}
+              stickyNotes={stickyNotes}
+              textAnnotations={textAnnotations}
+              drawingPaths={drawingPaths}
+              searchQuery={searchQuery}
+              ensurePageText={ensurePageText}
+              onAddStickyNote={handleAddStickyNote}
+              onAddTextAnnotation={handleAddTextAnnotation}
+              onAddDrawingPath={handleAddDrawingPath}
+              onDeleteStickyNote={handleDeleteStickyNote}
+              onDeleteTextAnnotation={handleDeleteTextAnnotation}
+              onSelectTextToCopy={(sel) => triggerToast(`Selected: "${sel.substring(0, 30)}${sel.length > 30 ? '…' : ''}"`)}
+            />
           )}
         </div>
       </div>
 
-      {/* Modals */}
-      {showPasswordModal && (
+      {status === 'password' && (
         <PasswordModal
-          documentTitle={activeDoc.title}
-          correctPassword={activeDoc.password}
-          onUnlock={handleUnlockDocument}
-          onCancel={() => setShowPasswordModal(false)}
+          documentTitle={docMeta?.name ?? 'Document'}
+          attemptFailed={passwordAttemptFailed}
+          onSubmit={submitPassword}
+          onCancel={() => {
+            cancelPassword();
+            setDocMeta(null);
+          }}
         />
       )}
 
-      {showShareModal && (
-        <ShareModal
-          documentTitle={activeDoc.title}
-          onClose={() => setShowShareModal(false)}
-        />
+      {showShareModal && shareFileItem && (
+        <ShareModal fileItem={shareFileItem} isOpen={showShareModal} onClose={() => setShowShareModal(false)} onSharedChanged={() => {}} />
       )}
     </div>
   );

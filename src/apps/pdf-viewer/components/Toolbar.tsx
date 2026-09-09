@@ -1,8 +1,10 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { AnnotationType } from '../types';
 import {
   FileText,
   FolderOpen,
+  HardDrive,
+  ChevronDown,
   ZoomIn,
   ZoomOut,
   RotateCw,
@@ -39,9 +41,12 @@ interface ToolbarProps {
   activeAnnotationTool: AnnotationType | 'select' | null;
   isReadOnly: boolean;
   isLocked: boolean;
+  /** True whenever there's no page to act on yet (no document / loading / errored) — distinct from `isLocked`, which specifically means "password protected". */
+  controlsDisabled: boolean;
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
-  onOpenPdf: () => void;
+  onOpenFromComputer: () => void;
+  onOpenFromDrive: () => void;
   onPageChange: (page: number) => void;
   onZoomChange: (zoom: number, fitMode?: 'custom' | 'fit-width' | 'fit-page') => void;
   onRotate: () => void;
@@ -66,9 +71,11 @@ export const Toolbar: React.FC<ToolbarProps> = ({
   activeAnnotationTool,
   isReadOnly,
   isLocked,
+  controlsDisabled,
   sidebarOpen,
   onToggleSidebar,
-  onOpenPdf,
+  onOpenFromComputer,
+  onOpenFromDrive,
   onPageChange,
   onZoomChange,
   onRotate,
@@ -82,6 +89,18 @@ export const Toolbar: React.FC<ToolbarProps> = ({
   onToggleFullscreen,
   onUnlockPasswordPrompt,
 }) => {
+  const blocked = isLocked || controlsDisabled;
+  const [openMenuOpen, setOpenMenuOpen] = useState(false);
+  const openMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!openMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (openMenuRef.current && !openMenuRef.current.contains(e.target as Node)) setOpenMenuOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [openMenuOpen]);
   return (
     <div className="bg-slate-900 border-b border-slate-800 text-slate-200 select-none shrink-0 font-sans">
       {/* Top Main Toolbar Header */}
@@ -126,13 +145,44 @@ export const Toolbar: React.FC<ToolbarProps> = ({
             </div>
           </div>
 
-          <button
-            onClick={onOpenPdf}
-            className="ml-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-bold border border-slate-700 transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs"
-          >
-            <FolderOpen size={14} className="text-amber-400" />
-            <span>Open PDF</span>
-          </button>
+          <div className="relative ml-2" ref={openMenuRef}>
+            <button
+              onClick={() => setOpenMenuOpen((v) => !v)}
+              className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-bold border border-slate-700 transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs"
+            >
+              <FolderOpen size={14} className="text-amber-400" />
+              <span>Open PDF</span>
+              <ChevronDown size={12} className={`transition-transform ${openMenuOpen ? 'rotate-180' : ''}`} />
+            </button>
+
+            {openMenuOpen && (
+              <div className="absolute left-0 top-full mt-1.5 w-56 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl z-50 overflow-hidden py-1">
+                <button
+                  onClick={() => {
+                    setOpenMenuOpen(false);
+                    onOpenFromComputer();
+                  }}
+                  className="w-full text-left px-3 py-2.5 text-xs font-bold text-slate-200 hover:bg-slate-800 flex items-center gap-2.5 cursor-pointer"
+                >
+                  <FolderOpen size={15} className="text-amber-400 shrink-0" /> From This Computer
+                </button>
+                <button
+                  onClick={(e) => {
+                    // The window container's own onClick refocuses this
+                    // window on every click inside it — harmless normally,
+                    // but it runs *after* this handler opens and focuses the
+                    // picker window, stealing focus straight back to us.
+                    e.stopPropagation();
+                    setOpenMenuOpen(false);
+                    onOpenFromDrive();
+                  }}
+                  className="w-full text-left px-3 py-2.5 text-xs font-bold text-slate-200 hover:bg-slate-800 flex items-center gap-2.5 cursor-pointer"
+                >
+                  <HardDrive size={15} className="text-blue-400 shrink-0" /> From Drive OSX
+                </button>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Middle Section: Page Controls, Zoom, Rotate */}
@@ -141,7 +191,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
           <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs font-bold">
             <button
               onClick={() => onPageChange(1)}
-              disabled={currentPage <= 1 || isLocked}
+              disabled={currentPage <= 1 || blocked}
               className="p-1 hover:bg-slate-800 disabled:opacity-30 rounded text-slate-300 cursor-pointer"
               title="First Page"
             >
@@ -149,7 +199,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
             </button>
             <button
               onClick={() => onPageChange(currentPage - 1)}
-              disabled={currentPage <= 1 || isLocked}
+              disabled={currentPage <= 1 || blocked}
               className="p-1 hover:bg-slate-800 disabled:opacity-30 rounded text-slate-300 cursor-pointer"
               title="Previous Page"
             >
@@ -161,7 +211,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
                 min={1}
                 max={totalPages}
                 value={currentPage}
-                disabled={isLocked}
+                disabled={blocked}
                 onChange={(e) => {
                   const val = parseInt(e.target.value, 10);
                   if (!isNaN(val)) onPageChange(Math.max(1, Math.min(totalPages, val)));
@@ -172,7 +222,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
             </div>
             <button
               onClick={() => onPageChange(currentPage + 1)}
-              disabled={currentPage >= totalPages || isLocked}
+              disabled={currentPage >= totalPages || blocked}
               className="p-1 hover:bg-slate-800 disabled:opacity-30 rounded text-slate-300 cursor-pointer"
               title="Next Page"
             >
@@ -180,7 +230,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
             </button>
             <button
               onClick={() => onPageChange(totalPages)}
-              disabled={currentPage >= totalPages || isLocked}
+              disabled={currentPage >= totalPages || blocked}
               className="p-1 hover:bg-slate-800 disabled:opacity-30 rounded text-slate-300 cursor-pointer"
               title="Last Page"
             >
@@ -192,7 +242,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
           <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs font-bold">
             <button
               onClick={() => onZoomChange(Math.max(25, zoomLevel - 25), 'custom')}
-              disabled={isLocked}
+              disabled={blocked}
               className="p-1 hover:bg-slate-800 disabled:opacity-30 rounded text-slate-300 cursor-pointer"
               title="Zoom Out"
             >
@@ -200,7 +250,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
             </button>
             <select
               value={fitMode !== 'custom' ? fitMode : zoomLevel}
-              disabled={isLocked}
+              disabled={blocked}
               onChange={(e) => {
                 const val = e.target.value;
                 if (val === 'fit-width') onZoomChange(100, 'fit-width');
@@ -220,7 +270,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
             </select>
             <button
               onClick={() => onZoomChange(Math.min(300, zoomLevel + 25), 'custom')}
-              disabled={isLocked}
+              disabled={blocked}
               className="p-1 hover:bg-slate-800 disabled:opacity-30 rounded text-slate-300 cursor-pointer"
               title="Zoom In"
             >
@@ -231,7 +281,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
           {/* Rotate Control */}
           <button
             onClick={onRotate}
-            disabled={isLocked}
+            disabled={blocked}
             className="p-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-slate-200 rounded-xl border border-slate-700 transition-colors cursor-pointer"
             title={`Rotate Clockwise 90° (Current: ${rotation}°)`}
           >
@@ -258,7 +308,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
           {/* Search Trigger */}
           <button
             onClick={onOpenSearch}
-            disabled={isLocked}
+            disabled={blocked}
             className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg border border-slate-700 transition-colors cursor-pointer"
             title="Search Text in PDF (Ctrl+F)"
           >
@@ -268,7 +318,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
           {/* Copy Text */}
           <button
             onClick={onCopyText}
-            disabled={isLocked}
+            disabled={blocked}
             className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg border border-slate-700 transition-colors cursor-pointer"
             title="Copy Page Text to Clipboard"
           >
@@ -278,7 +328,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
           {/* Download */}
           <button
             onClick={onDownload}
-            disabled={isLocked}
+            disabled={blocked}
             className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg border border-slate-700 transition-colors cursor-pointer"
             title="Download PDF Document"
           >
@@ -288,7 +338,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
           {/* Print */}
           <button
             onClick={onPrint}
-            disabled={isLocked}
+            disabled={blocked}
             className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg border border-slate-700 transition-colors cursor-pointer"
             title="Print PDF Document"
           >
@@ -316,7 +366,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
       </div>
 
       {/* Secondary Ribbon: Annotation Toolbar */}
-      {!isReadOnly && !isLocked && (
+      {!isReadOnly && !blocked && (
         <div className="px-4 py-1.5 bg-slate-950/80 border-b border-slate-800 flex items-center justify-between text-xs overflow-x-auto custom-scrollbar">
           <div className="flex items-center gap-2">
             <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400 mr-1">

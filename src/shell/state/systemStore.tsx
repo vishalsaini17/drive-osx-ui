@@ -81,6 +81,22 @@ interface SystemState {
    */
   pendingEditorWindowFiles: Record<string, { fileId: string; name: string; content: string; folderId: string | null }>;
   /**
+   * The Drive file the primary (single, reused) PDF Viewer window should
+   * load, mirroring `editorFileId` above. The viewer fetches the actual PDF
+   * bytes itself via `FileService.downloadUrl` — this only identifies which
+   * file to fetch.
+   */
+  pdfViewerFileId: string | null;
+  pdfViewerFileName: string | null;
+  pdfViewerCurrentFolderId: string | null;
+  /**
+   * Files requested into a brand-new PDF Viewer window (`forceNewWindow`),
+   * keyed by that window's own unique id — same pattern as
+   * `pendingEditorWindowFiles`, consumed once on mount via
+   * `consumePendingPdfViewerFile`.
+   */
+  pendingPdfViewerFiles: Record<string, { fileId: string; name: string; folderId: string | null }>;
+  /**
    * A File Manager window opened as a picker (`requestFilePick`) reads its own
    * entry once, on mount, via `consumeFilePickerRequest` — keyed by that
    * picker window's own unique id, same pattern as `pendingEditorWindowFiles`.
@@ -186,6 +202,11 @@ interface SystemState {
   openTextFileInNewEditorWindow: (fileId: string, name: string, content: string, folderId?: string | null) => string;
   /** Reads and clears one window's pending file request (see `pendingEditorWindowFiles`). */
   consumePendingEditorWindowFile: (windowId: string) => { fileId: string; name: string; content: string; folderId: string | null } | null;
+  openPdfFileInViewer: (fileId: string, name: string, folderId?: string | null) => void;
+  /** Always opens a fresh PDF Viewer window for this file, never the one already showing something else. Returns that window's id. */
+  openPdfFileInNewViewerWindow: (fileId: string, name: string, folderId?: string | null) => string;
+  /** Reads and clears one window's pending file request (see `pendingPdfViewerFiles`). */
+  consumePendingPdfViewerFile: (windowId: string) => { fileId: string; name: string; folderId: string | null } | null;
   /** Opens a fresh File Manager window in picker mode for `requesterWindowId`. Returns the picker window's id. */
   requestFilePick: (requesterWindowId: string, mode: 'file' | 'folder') => string;
   /** Reads and clears one picker window's request (see `pendingFilePickerRequests`). */
@@ -344,6 +365,10 @@ export const useSystemStore = create<SystemState>((set, get) => ({
   editorFileContent: '',
   editorCurrentFolderId: null,
   pendingEditorWindowFiles: {},
+  pdfViewerFileId: null,
+  pdfViewerFileName: null,
+  pdfViewerCurrentFolderId: null,
+  pendingPdfViewerFiles: {},
   pendingFilePickerRequests: {},
   filePickerResults: {},
   fileManagerCurrentFolderId: null,
@@ -922,10 +947,12 @@ export const useSystemStore = create<SystemState>((set, get) => ({
         // rather than Select/Cancel — its unconsumed picker request.
         const { [id]: _removedGeometry, ...restGeometry } = state.rememberedGeometry ?? {};
         const { [id]: _removedPending, ...restPending } = state.pendingEditorWindowFiles;
+        const { [id]: _removedPendingPdf, ...restPendingPdf } = state.pendingPdfViewerFiles;
         const { [id]: _removedPickerRequest, ...restPickerRequests } = state.pendingFilePickerRequests;
         rest = {
           rememberedGeometry: restGeometry,
           pendingEditorWindowFiles: restPending,
+          pendingPdfViewerFiles: restPendingPdf,
           pendingFilePickerRequests: restPickerRequests,
         };
       }
@@ -1176,6 +1203,37 @@ export const useSystemStore = create<SystemState>((set, get) => ({
       set((state) => {
         const { [windowId]: _consumed, ...rest } = state.pendingEditorWindowFiles;
         return { pendingEditorWindowFiles: rest };
+      });
+    }
+    return pending;
+  },
+
+  openPdfFileInViewer: (fileId, name, folderId) => {
+    set({
+      pdfViewerFileId: fileId,
+      pdfViewerFileName: name,
+      pdfViewerCurrentFolderId: folderId || null,
+    });
+    get().openAppWindow('pdf-viewer');
+  },
+
+  openPdfFileInNewViewerWindow: (fileId, name, folderId) => {
+    const windowId = get().openAppWindow('pdf-viewer', { forceNewWindow: true });
+    set((state) => ({
+      pendingPdfViewerFiles: {
+        ...state.pendingPdfViewerFiles,
+        [windowId]: { fileId, name, folderId: folderId || null },
+      },
+    }));
+    return windowId;
+  },
+
+  consumePendingPdfViewerFile: (windowId) => {
+    const pending = get().pendingPdfViewerFiles[windowId] ?? null;
+    if (pending) {
+      set((state) => {
+        const { [windowId]: _consumed, ...rest } = state.pendingPdfViewerFiles;
+        return { pendingPdfViewerFiles: rest };
       });
     }
     return pending;

@@ -185,6 +185,8 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
   const handleEmptyTrash = useSystemStore((state) => state.handleEmptyTrash);
   const openTextFileInEditor = useSystemStore((state) => state.openTextFileInEditor);
   const openTextFileInNewEditorWindow = useSystemStore((state) => state.openTextFileInNewEditorWindow);
+  const openPdfFileInViewer = useSystemStore((state) => state.openPdfFileInViewer);
+  const openPdfFileInNewViewerWindow = useSystemStore((state) => state.openPdfFileInNewViewerWindow);
   const consumeFilePickerRequest = useSystemStore((state) => state.consumeFilePickerRequest);
   const resolveFilePicker = useSystemStore((state) => state.resolveFilePicker);
   const handleCloseWindow = useSystemStore((state) => state.handleCloseWindow);
@@ -2544,6 +2546,14 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
         openTextFileInNewEditorWindow(item.id, item.name, content, currentFolderId);
       } else {
         openTextFileInEditor(item.id, item.name, content, currentFolderId);
+      }
+    } else if (appKey === 'pdf-viewer') {
+      // The viewer fetches the actual PDF bytes itself (FileService.downloadUrl)
+      // rather than through `item.content`, which never holds real binary data.
+      if (forceNewWindow) {
+        openPdfFileInNewViewerWindow(item.id, item.name, currentFolderId);
+      } else {
+        openPdfFileInViewer(item.id, item.name, currentFolderId);
       }
     } else if (appKey === 'image-viewer' || appKey === 'audio-player' || appKey === 'video-player' || appKey === 'code-viewer') {
       setActivePreviewItem(item);
