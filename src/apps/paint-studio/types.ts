@@ -17,12 +17,18 @@ export type NodeShape =
   | 'parallelogram'
   | 'capsule'
   | 'triangle'
+  | 'right-triangle'
   | 'cylinder'
   | 'hexagon'
+  | 'pentagon'
+  | 'octagon'
   | 'document'
   | 'star'
   | 'heart'
   | 'speech-bubble'
+  | 'cross'
+  | 'arrow-right'
+  | 'line'
   | 'text';
 
 export type EdgeRouting = 'straight' | 'orthogonal' | 'curved';

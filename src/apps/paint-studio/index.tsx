@@ -2,15 +2,16 @@ import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react'
 import { jsPDF } from 'jspdf';
 import {
   Pencil, PaintBucket, Type, Eraser, Pipette, Brush, Square, Circle, Minus,
-  Triangle, Star, Heart, MessageSquare, ArrowRight, Database, Workflow, Box,
+  Triangle, Star, Heart, MessageSquare, ArrowRight, Workflow,
+  Pentagon, Octagon, Plus, Hexagon,
   RotateCw, RotateCcw, FlipHorizontal, FlipVertical, Copy, Clipboard, Download,
   Undo2, Redo2, X, MousePointer2, ZoomIn, ZoomOut, Keyboard, Grid,
   PenTool, Highlighter, Trash2, Eye, EyeOff, Send, MessageCircle,
   FileDown, Hand, Group, Ungroup, AlignHorizontalJustifyStart, AlignVerticalJustifyStart,
   AlignHorizontalJustifyCenter, AlignVerticalJustifyCenter, AlignHorizontalJustifyEnd,
   AlignVerticalJustifyEnd, AlignHorizontalDistributeCenter, AlignVerticalDistributeCenter,
-  BringToFront, SendToBack, Spline, Share2, Magnet, Hexagon, FileText,
-  Slash, MoveRight, Save,
+  BringToFront, SendToBack, Spline, Share2, Magnet,
+  MoveRight, Save,
 } from 'lucide-react';
 import WindowStatus from '../../shell/window-manager/WindowStatusContext';
 import { useAppMenu } from '../../platform/menus/AppMenuContext';
@@ -23,10 +24,12 @@ import {
   isEdge, isNode, ArrowHead, StrokeDash, AnchorSide,
 } from './types';
 import {
-  AlignMode, ResizeHandle, alignNodes, applyResize, bestAnchor, boundsOf,
-  cloneObjects, distributeNodes, duplicateObjects, expandGroups, hitTest, makeId,
-  normalizeRect, objectsInRect, resolveEndpoint, snap,
+  AlignMode, HANDLE_CURSOR, RESIZE_HANDLES, ResizeHandle, alignNodes, applyResize, bestAnchor, boundsOf,
+  cloneObjects, distributeNodes, duplicateObjects, expandGroups, handlePositions, hitTest, makeId,
+  nodePath, normalizeRect, objectsInRect, resolveEndpoint, snap,
+  transformObjectsForCanvasFlip, transformObjectsForCanvasRotate,
 } from './utils/diagram';
+import { FileService } from '../../platform/files/FileService';
 
 type RasterTool = 'pen' | 'pencil' | 'marker' | 'brush' | 'eraser' | 'fill' | 'picker';
 type DiagramTool = 'select' | 'connector' | 'shape' | 'text' | 'pan';
@@ -59,7 +62,7 @@ interface Collaborator {
 }
 
 interface Interaction {
-  type: 'move' | 'resize' | 'marquee' | 'connect' | 'pan';
+  type: 'move' | 'resize' | 'marquee' | 'connect' | 'pan' | 'draw-shape';
   startCanvas: Point;
   startClient: Point;
   handle?: ResizeHandle;
@@ -67,6 +70,7 @@ interface Interaction {
   connectFrom?: { nodeId: string; anchor: AnchorSide };
   additive?: boolean;
   startScroll?: { left: number; top: number };
+  drawColor?: string;
 }
 
 const PALETTE = [
@@ -76,21 +80,30 @@ const PALETTE = [
   '#dbeafe', '#fef9c3',
 ];
 
+// Plain drawable outlines for the raster Shapes tool — deliberately excludes
+// the flowchart-specific shapes (parallelogram/capsule/hexagon/cylinder/
+// document), which stay exclusive to the Flowchart list below so the two
+// tools don't offer overlapping-but-differently-behaving versions of the
+// same shape. This palette draws pixels onto the canvas (draggable outline,
+// fillable afterward with the Fill tool); Flowchart instead places live,
+// connectable, resizable vector nodes — see the "Shapes" vs "Flowchart"
+// sections in the toolbar below.
 const SHAPE_PALETTE: { shape: NodeShape; label: string; icon: React.ComponentType<any> }[] = [
   { shape: 'rectangle', label: 'Rectangle', icon: Square },
   { shape: 'rounded-rect', label: 'Rounded rectangle', icon: Square },
   { shape: 'ellipse', label: 'Ellipse', icon: Circle },
-  { shape: 'diamond', label: 'Decision', icon: Diamond },
-  { shape: 'parallelogram', label: 'Data', icon: Slash },
-  { shape: 'capsule', label: 'Terminal', icon: Box },
-  { shape: 'hexagon', label: 'Preparation', icon: Hexagon },
-  { shape: 'cylinder', label: 'Database', icon: Database },
-  { shape: 'document', label: 'Document', icon: FileText },
+  { shape: 'diamond', label: 'Diamond', icon: Diamond },
   { shape: 'triangle', label: 'Triangle', icon: Triangle },
+  { shape: 'right-triangle', label: 'Right triangle', icon: Triangle },
+  { shape: 'pentagon', label: 'Pentagon', icon: Pentagon },
+  { shape: 'hexagon', label: 'Hexagon', icon: Hexagon },
+  { shape: 'octagon', label: 'Octagon', icon: Octagon },
   { shape: 'star', label: 'Star', icon: Star },
   { shape: 'heart', label: 'Heart', icon: Heart },
   { shape: 'speech-bubble', label: 'Callout', icon: MessageSquare },
-  { shape: 'text', label: 'Text label', icon: Type },
+  { shape: 'cross', label: 'Cross', icon: Plus },
+  { shape: 'line', label: 'Line', icon: Minus },
+  { shape: 'arrow-right', label: 'Arrow', icon: ArrowRight },
 ];
 
 /** lucide has no Diamond export in this version; draw one from a square. */
@@ -102,6 +115,95 @@ function Diamond({ size = 16, className = '' }: { size?: number; className?: str
     </svg>
   );
 }
+
+/**
+ * A small coloured badge cursor — a white-ringed circle in a colour + glyph
+ * unique to one tool — so hovering the canvas shows at a glance which tool
+ * is armed, not just a generic crosshair every raster/shape tool shared
+ * before. The hotspot sits at the badge's centre, so clicks land exactly
+ * where the badge appears to be pointing.
+ */
+function toolCursorUrl(bgColor: string, glyphSvg: string): string {
+  const size = 26;
+  const half = size / 2;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"><circle cx="${half}" cy="${half}" r="${half - 1.5}" fill="${bgColor}" stroke="white" stroke-width="2"/>${glyphSvg}</svg>`;
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${half} ${half}, crosshair`;
+}
+
+/**
+ * Wraps a lucide icon's own path data (copied verbatim from its source, not
+ * redrawn) at native 24×24 scale, shrunk and centred to sit inside the
+ * 26×26 cursor badge — so the cursor is the *same* pen/eraser/bucket
+ * silhouette already shown on that tool's sidebar button, not an abstract
+ * dot/square/triangle standing in for it.
+ */
+function iconGlyph(innerSvg: string): string {
+  return `<g transform="translate(5.2,5.2) scale(0.65)" fill="none" stroke="white" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">${innerSvg}</g>`;
+}
+
+const TOOL_CURSOR_GLYPHS: Partial<Record<Tool, { color: string; glyph: string }>> = {
+  // Paths below are lucide-react's own icon data for PenTool/Pencil/
+  // Highlighter/Brush/Eraser/PaintBucket/Pipette/Spline — the exact icons
+  // already used for these buttons in the left tool panel.
+  pen: {
+    color: '#1e293b',
+    glyph: iconGlyph(
+      '<path d="M15.707 21.293a1 1 0 0 1-1.414 0l-1.586-1.586a1 1 0 0 1 0-1.414l5.586-5.586a1 1 0 0 1 1.414 0l1.586 1.586a1 1 0 0 1 0 1.414z"/>' +
+      '<path d="m18 13-1.375-6.874a1 1 0 0 0-.746-.776L3.235 2.028a1 1 0 0 0-1.207 1.207L5.35 15.879a1 1 0 0 0 .776.746L13 18"/>' +
+      '<path d="m2.3 2.3 7.286 7.286"/><circle cx="11" cy="11" r="2"/>'
+    ),
+  },
+  pencil: {
+    color: '#f59e0b',
+    glyph: iconGlyph(
+      '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/>' +
+      '<path d="m15 5 4 4"/>'
+    ),
+  },
+  marker: {
+    color: '#eab308',
+    glyph: iconGlyph('<path d="m9 11-6 6v3h9l3-3"/><path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4"/>'),
+  },
+  brush: {
+    color: '#8b5cf6',
+    glyph: iconGlyph(
+      '<path d="m11 10 3 3"/>' +
+      '<path d="M6.5 21A3.5 3.5 0 1 0 3 17.5a2.62 2.62 0 0 1-.708 1.792A1 1 0 0 0 3 21z"/>' +
+      '<path d="M9.969 17.031 21.378 5.624a1 1 0 0 0-3.002-3.002L6.967 14.031"/>'
+    ),
+  },
+  eraser: {
+    color: '#f472b6',
+    glyph: iconGlyph(
+      '<path d="M21 21H8a2 2 0 0 1-1.42-.587l-3.994-3.999a2 2 0 0 1 0-2.828l10-10a2 2 0 0 1 2.829 0l5.999 6a2 2 0 0 1 0 2.828L12.834 21"/>' +
+      '<path d="m5.082 11.09 8.828 8.828"/>'
+    ),
+  },
+  fill: {
+    color: '#3b82f6',
+    glyph: iconGlyph(
+      '<path d="m19 11-8-8-8.6 8.6a2 2 0 0 0 0 2.8l5.2 5.2c.8.8 2 .8 2.8 0L19 11Z"/>' +
+      '<path d="m5 2 5 5"/><path d="M2 13h15"/>' +
+      '<path d="M22 20a2 2 0 1 1-4 0c0-1.6 1.7-2.4 2-4 .3 1.6 2 2.4 2 4Z"/>'
+    ),
+  },
+  picker: {
+    color: '#14b8a6',
+    glyph: iconGlyph(
+      '<path d="m12 9-8.414 8.414A2 2 0 0 0 3 18.828v1.344a2 2 0 0 1-.586 1.414A2 2 0 0 1 3.828 21h1.344a2 2 0 0 0 1.414-.586L15 12"/>' +
+      '<path d="m18 9 .4.4a1 1 0 1 1-3 3l-3.8-3.8a1 1 0 1 1 3-3l.4.4 3.4-3.4a1 1 0 1 1 3 3z"/>' +
+      '<path d="m2 22 .414-.414"/>'
+    ),
+  },
+  connector: {
+    color: '#6366f1',
+    glyph: iconGlyph('<circle cx="19" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><path d="M5 17A12 12 0 0 1 17 5"/>'),
+  },
+};
+
+const TOOL_CURSORS: Partial<Record<Tool, string>> = Object.fromEntries(
+  Object.entries(TOOL_CURSOR_GLYPHS).map(([tool, spec]) => [tool, toolCursorUrl(spec.color, spec.glyph)])
+);
 
 export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -124,6 +226,10 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
   const [canvasHeight, setCanvasHeight] = useState(800);
   const [objects, setObjects] = useState<DiagramObject[]>([]);
   const [isDirty, setIsDirty] = useState(false);
+  // Set once the document has actually been saved to Drive, so a later save
+  // updates that same file instead of creating a new one each time.
+  const [currentFileId, setCurrentFileId] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
 
   // Collaboration is real state: nobody is listed until the document is
   // actually shared, and comments start empty rather than pre-seeded.
@@ -137,6 +243,9 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
   const [showCommentPins, setShowCommentPins] = useState(true);
   const [commentDraft, setCommentDraft] = useState('');
   const [pendingCommentPoint, setPendingCommentPoint] = useState<Point | null>(null);
+  // Armed by "Pin a comment here", disarmed by the next canvas click, which
+  // is what actually sets `pendingCommentPoint` — see handleStagePointerDown.
+  const [isPlacingComment, setIsPlacingComment] = useState(false);
 
   // -------------------------------------------------------------------------
   // Tools
@@ -183,6 +292,16 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
   // Raster drawing
   const [isDrawing, setIsDrawing] = useState(false);
   const rasterSnapshotRef = useRef<ImageData | null>(null);
+
+  // After the initial drag that draws a raster shape, it stays adjustable —
+  // resize handles let its width/height/corner be fine-tuned — until the
+  // user commits it (click elsewhere, Enter, switch tool) or cancels it
+  // (Escape). `rasterSnapshotRef` holds the pre-shape pixels the whole time
+  // so every resize can cleanly redraw from a blank slate.
+  const [shapeAdjust, setShapeAdjust] = useState<{ shape: NodeShape; rect: Rect; color: string; width: number } | null>(null);
+  const [shapeAdjustDrag, setShapeAdjustDrag] = useState<
+    { handle: ResizeHandle; startX: number; startY: number; originRect: Rect; shape: NodeShape; color: string; width: number } | null
+  >(null);
 
   const [clipboard, setClipboard] = useState<DiagramObject[]>([]);
 
@@ -433,48 +552,101 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
     [pushHistory]
   );
 
+  // A slider or a number field fires its change handler continuously while
+  // being dragged/typed into — pushing a full history entry on every tick
+  // (as `updateObjects` does) means a single opacity drag from 10 to 100 can
+  // by itself evict 60 entries' worth of earlier, unrelated undo history.
+  // These two turn a whole drag into exactly one undo step instead: the
+  // control passes `live: true` on every change while it's being dragged
+  // (a plain `setObjects`, no history), captures the value the drag started
+  // from the first time, and calls `commitLiveEdit` once when the
+  // interaction ends (pointer up / blur) to push that single step.
+  const liveEditOriginRef = useRef<{ objects: DiagramObject[]; canvasWidth: number; canvasHeight: number; label: string } | null>(null);
+
+  const beginLiveEdit = useCallback(
+    (label: string) => {
+      if (liveEditOriginRef.current) return;
+      liveEditOriginRef.current = { objects: cloneObjects(objects), canvasWidth, canvasHeight, label };
+    },
+    [objects, canvasWidth, canvasHeight]
+  );
+
+  const commitLiveEdit = useCallback(() => {
+    const origin = liveEditOriginRef.current;
+    liveEditOriginRef.current = null;
+    if (!origin) return;
+    // Nothing to undo if the drag ended back where it started (e.g. a click
+    // that didn't actually move the slider).
+    if (JSON.stringify(origin.objects) === JSON.stringify(objects)) return;
+    setPast((prev) => {
+      const appended = [...prev, { raster: null, objects: origin.objects, canvasWidth: origin.canvasWidth, canvasHeight: origin.canvasHeight, label: origin.label }];
+      return appended.length > 60 ? appended.slice(appended.length - 60) : appended;
+    });
+    setFuture([]);
+    setLastAction(origin.label);
+    setIsDirty(true);
+  }, [objects]);
+
   const patchSelectedNodes = useCallback(
-    (label: string, patch: Partial<DiagramNode> | ((node: DiagramNode) => Partial<DiagramNode>)) => {
+    (label: string, patch: Partial<DiagramNode> | ((node: DiagramNode) => Partial<DiagramNode>), live = false) => {
       if (selectedNodes.length === 0) return;
-      updateObjects(label, (prev) =>
+      const apply = (prev: DiagramObject[]) =>
         prev.map((object) => {
           if (!isNode(object) || !selectedIds.includes(object.id)) return object;
           const value = typeof patch === 'function' ? patch(object) : patch;
           return { ...object, ...value };
-        })
-      );
+        });
+      if (live) {
+        beginLiveEdit(label);
+        setObjects(apply);
+        setIsDirty(true);
+      } else {
+        updateObjects(label, apply);
+      }
     },
-    [selectedNodes.length, selectedIds, updateObjects]
+    [selectedNodes.length, selectedIds, updateObjects, beginLiveEdit]
   );
 
   const patchSelectedNodeStyle = useCallback(
-    (label: string, patch: Partial<DiagramNode['style']>) => {
+    (label: string, patch: Partial<DiagramNode['style']>, live = false) => {
       setNodeStyle((prev) => ({ ...prev, ...patch }));
       if (selectedNodes.length === 0) return;
-      updateObjects(label, (prev) =>
+      const apply = (prev: DiagramObject[]) =>
         prev.map((object) =>
           isNode(object) && selectedIds.includes(object.id)
             ? { ...object, style: { ...object.style, ...patch } }
             : object
-        )
-      );
+        );
+      if (live) {
+        beginLiveEdit(label);
+        setObjects(apply);
+        setIsDirty(true);
+      } else {
+        updateObjects(label, apply);
+      }
     },
-    [selectedNodes.length, selectedIds, updateObjects]
+    [selectedNodes.length, selectedIds, updateObjects, beginLiveEdit]
   );
 
   const patchSelectedEdgeStyle = useCallback(
-    (label: string, patch: Partial<DiagramEdge['style']>) => {
+    (label: string, patch: Partial<DiagramEdge['style']>, live = false) => {
       setEdgeStyle((prev) => ({ ...prev, ...patch }));
       if (selectedEdges.length === 0) return;
-      updateObjects(label, (prev) =>
+      const apply = (prev: DiagramObject[]) =>
         prev.map((object) =>
           isEdge(object) && selectedIds.includes(object.id)
             ? { ...object, style: { ...object.style, ...patch } }
             : object
-        )
-      );
+        );
+      if (live) {
+        beginLiveEdit(label);
+        setObjects(apply);
+        setIsDirty(true);
+      } else {
+        updateObjects(label, apply);
+      }
     },
-    [selectedEdges.length, selectedIds, updateObjects]
+    [selectedEdges.length, selectedIds, updateObjects, beginLiveEdit]
   );
 
   // -------------------------------------------------------------------------
@@ -520,11 +692,18 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
     setSelectedIds([]);
   }, [selectedIds, objects, updateObjects]);
 
+  // How far the *next* paste offsets from the clipboard's original position —
+  // advances on every paste so repeats cascade down-right instead of landing
+  // exactly on top of each other, and resets whenever the clipboard itself
+  // changes (a fresh copy/cut should start cascading from zero again).
+  const pasteOffsetRef = useRef(0);
+
   const copySelection = useCallback(
     (cut: boolean) => {
       if (selectedIds.length === 0) return;
       const ids = expandGroups(selectedIds, objects);
       setClipboard(cloneObjects(objects.filter((o) => ids.includes(o.id))));
+      pasteOffsetRef.current = 0;
       setLastAction(cut ? 'Cut objects' : 'Copied objects');
       if (cut) deleteSelection();
     },
@@ -533,7 +712,8 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
 
   const pasteClipboard = useCallback(() => {
     if (clipboard.length === 0) return;
-    const copies = duplicateObjects(clipboard, 24);
+    pasteOffsetRef.current += 24;
+    const copies = duplicateObjects(clipboard, pasteOffsetRef.current);
     updateObjects(`Paste ${copies.length} object${copies.length > 1 ? 's' : ''}`, (prev) => [...prev, ...copies]);
     setSelectedIds(copies.map((o) => o.id));
   }, [clipboard, updateObjects]);
@@ -740,14 +920,130 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
     setLastAction(`Picked ${hex}`);
   }, []);
 
+  /**
+   * Draws a shape outline directly onto the raster canvas — real pixels, not
+   * a diagram node — so it becomes part of the picture: fillable with the
+   * Fill tool, erasable, and paintable over, the same as anything else drawn
+   * with the pen or brush. Reuses `nodePath` (the same outline geometry the
+   * vector diagram layer draws) via `Path2D`, so a rectangle/star/etc. looks
+   * identical whether it came from the raster Shapes tool or a Flowchart node.
+   */
+  const drawRasterShape = (ctx: CanvasRenderingContext2D, shape: NodeShape, rect: Rect, color: string, width: number) => {
+    if (rect.w < 1 || rect.h < 1) return;
+    const d = nodePath(shape, rect);
+    if (!d) return;
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.stroke(new Path2D(d));
+    ctx.restore();
+  };
+
+  // -------------------------------------------------------------------------
+  // Shape adjustment (resize handles shown right after drawing a shape)
+  // -------------------------------------------------------------------------
+
+  /** Locks in the shape at its current size — the pixels are already there from the last redraw. */
+  const commitShapeAdjust = useCallback(() => {
+    setShapeAdjust(null);
+    rasterSnapshotRef.current = null;
+    setLastAction('Drew shape');
+  }, []);
+
+  /** Reverts to the pixels from before the shape was drawn, and drops the now-empty undo step for it. */
+  const cancelShapeAdjust = useCallback(() => {
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext('2d');
+    if (canvas && ctx && rasterSnapshotRef.current) {
+      ctx.putImageData(rasterSnapshotRef.current, 0, 0);
+    }
+    setShapeAdjust(null);
+    rasterSnapshotRef.current = null;
+    setPast((prev) => prev.slice(0, -1));
+  }, []);
+
+  // Live handle drag, tracked on the window (same pattern as the canvas
+  // frame-resize drag above) so the pointer may leave the small handle.
+  useEffect(() => {
+    if (!shapeAdjustDrag) return;
+
+    const onMove = (event: PointerEvent) => {
+      const dx = (event.clientX - shapeAdjustDrag.startX) / scale;
+      const dy = (event.clientY - shapeAdjustDrag.startY) / scale;
+      const nextRect = applyResize(shapeAdjustDrag.originRect, shapeAdjustDrag.handle, dx, dy, event.shiftKey);
+      setShapeAdjust((prev) => (prev ? { ...prev, rect: nextRect } : prev));
+
+      const canvas = canvasRef.current;
+      const ctx = canvas?.getContext('2d');
+      if (canvas && ctx && rasterSnapshotRef.current) {
+        ctx.putImageData(rasterSnapshotRef.current, 0, 0);
+        drawRasterShape(ctx, shapeAdjustDrag.shape, nextRect, shapeAdjustDrag.color, shapeAdjustDrag.width);
+      }
+    };
+
+    const onUp = () => setShapeAdjustDrag(null);
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
+  }, [shapeAdjustDrag, scale]);
+
+  const startShapeAdjustResize = (handle: ResizeHandle) => (event: React.PointerEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!shapeAdjust) return;
+    setShapeAdjustDrag({
+      handle,
+      startX: event.clientX,
+      startY: event.clientY,
+      originRect: shapeAdjust.rect,
+      shape: shapeAdjust.shape,
+      color: shapeAdjust.color,
+      width: shapeAdjust.width,
+    });
+  };
+
+  // Switching tools away from Shapes (via the sidebar, not the canvas) has
+  // no other hook into the adjust phase — commit whatever was being sized.
+  useEffect(() => {
+    if (tool !== 'shape' && shapeAdjust) commitShapeAdjust();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tool]);
+
   // -------------------------------------------------------------------------
   // Pointer handling
   // -------------------------------------------------------------------------
   const handleStagePointerDown = (event: React.PointerEvent) => {
     if (editingNodeId) commitNodeText();
+    // Reaching here at all (rather than a handle's own onPointerDown, which
+    // stops propagation) means the click landed outside the shape and its
+    // handles — this click's job is only to dismiss the adjust overlay, the
+    // same way clicking away from a selected node just deselects it. Consume
+    // it here rather than falling through to the active tool, which used to
+    // draw a brand-new copy of the shape right on top of committing this one.
+    if (shapeAdjust) {
+      commitShapeAdjust();
+      return;
+    }
     const point = toCanvasPoint(event.clientX, event.clientY);
     const secondary = event.button === 2;
     const drawColor = secondary ? secondaryColor : primaryColor;
+
+    // "Pin a comment here" arms this instead of acting immediately — the
+    // next canvas click is where the pin actually lands, taking priority
+    // over whatever tool is otherwise active.
+    if (isPlacingComment) {
+      setPendingCommentPoint(point);
+      setIsPlacingComment(false);
+      return;
+    }
 
     // Middle-drag pans regardless of the active tool.
     if (event.button === 1 || tool === 'pan') {
@@ -787,8 +1083,22 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
     }
 
     if (tool === 'shape') {
-      addNode(shapeToPlace, point);
-      setTool('select');
+      // Drawn as real pixels (drag to size it, rubber-band preview while
+      // dragging), not a diagram node — see `drawRasterShape`. Keeping this
+      // on the raster canvas is what lets the Fill tool color it afterward,
+      // the same as any other closed outline drawn with the pen.
+      const canvas = canvasRef.current;
+      const ctx = canvas?.getContext('2d');
+      if (!canvas || !ctx) return;
+      pushHistory(`Draw ${shapeToPlace}`, true);
+      rasterSnapshotRef.current = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      interactionRef.current = {
+        type: 'draw-shape',
+        startCanvas: point,
+        startClient: { x: event.clientX, y: event.clientY },
+        drawColor,
+      };
+      setIsDrawing(true);
       return;
     }
 
@@ -886,6 +1196,20 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
       return;
     }
 
+    if (interaction.type === 'draw-shape') {
+      const canvas = canvasRef.current;
+      const ctx = canvas?.getContext('2d');
+      if (!canvas || !ctx || !rasterSnapshotRef.current) return;
+      // Rubber-band preview: restore the pre-drag pixels, then redraw the
+      // outline at the current size — otherwise every intermediate size
+      // would leave its own outline behind instead of just showing the last.
+      ctx.putImageData(rasterSnapshotRef.current, 0, 0);
+      const rect = normalizeRect(interaction.startCanvas.x, interaction.startCanvas.y, point.x, point.y);
+      const drawColor = event.buttons === 2 ? secondaryColor : primaryColor;
+      drawRasterShape(ctx, shapeToPlace, rect, drawColor, strokeWidth);
+      return;
+    }
+
     if (interaction.type === 'connect') {
       setPendingEdge({ from: interaction.startCanvas, to: point });
       const target = hitTest(objects, point);
@@ -961,6 +1285,28 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
     interactionRef.current = null;
 
     if (!interaction) return;
+
+    if (interaction.type === 'draw-shape') {
+      const point = toCanvasPoint(event.clientX, event.clientY);
+      let rect = normalizeRect(interaction.startCanvas.x, interaction.startCanvas.y, point.x, point.y);
+      // A plain click with barely any drag: place a sensible default size
+      // centred on it, same as double-clicking a shape used to, rather than
+      // requiring every shape to be dragged out by hand.
+      if (rect.w < 4 || rect.h < 4) {
+        rect = { x: interaction.startCanvas.x - 60, y: interaction.startCanvas.y - 40, w: 120, h: 80 };
+      }
+      const canvas = canvasRef.current;
+      const ctx = canvas?.getContext('2d');
+      const color = interaction.drawColor ?? primaryColor;
+      if (canvas && ctx && rasterSnapshotRef.current) {
+        ctx.putImageData(rasterSnapshotRef.current, 0, 0);
+        drawRasterShape(ctx, shapeToPlace, rect, color, strokeWidth);
+      }
+      // Stays adjustable (resize handles below) until committed/cancelled —
+      // `rasterSnapshotRef` is intentionally left set for that, not cleared here.
+      setShapeAdjust({ shape: shapeToPlace, rect, color, width: strokeWidth });
+      return;
+    }
 
     if (interaction.type === 'marquee' && marquee) {
       const hits = objectsInRect(objects, marquee).map((o) => o.id);
@@ -1095,14 +1441,16 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
     if (!canvas || !ctx) return;
     pushHistory(`Rotate ${degrees}°`, true);
 
+    const oldW = canvas.width;
+    const oldH = canvas.height;
     const buffer = document.createElement('canvas');
-    buffer.width = canvas.width;
-    buffer.height = canvas.height;
+    buffer.width = oldW;
+    buffer.height = oldH;
     buffer.getContext('2d')?.drawImage(canvas, 0, 0);
 
     const swap = degrees === 90 || degrees === 270;
-    const newW = swap ? canvas.height : canvas.width;
-    const newH = swap ? canvas.width : canvas.height;
+    const newW = swap ? oldH : oldW;
+    const newH = swap ? oldW : oldH;
 
     canvas.width = newW;
     canvas.height = newH;
@@ -1116,6 +1464,9 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
 
     setCanvasWidth(newW);
     setCanvasHeight(newH);
+    // The diagram layer needs the exact same rotation, or its shapes stay
+    // put while the pixels underneath them turn.
+    setObjects((prev) => transformObjectsForCanvasRotate(prev, oldW, oldH, newW, newH, degrees));
   };
 
   const flipCanvas = (axis: 'horizontal' | 'vertical') => {
@@ -1140,6 +1491,9 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
     }
     ctx.drawImage(buffer, 0, 0);
     ctx.restore();
+
+    // Same reason as rotateCanvas: keep the shapes aligned with the pixels.
+    setObjects((prev) => transformObjectsForCanvasFlip(prev, canvas.width, canvas.height, axis));
   };
 
   const clearAll = () => {
@@ -1244,22 +1598,35 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
   }, [composite, documentName]);
 
   const saveToDrive = useCallback(async () => {
+    if (isSaving) return;
     const output = await composite();
     if (!output) return;
-    setFiles((prev) => [
-      ...prev,
-      {
-        id: `file_paint_${Date.now()}`,
-        name: `${documentName || 'diagram'}.png`,
-        type: 'file',
-        content: output.toDataURL('image/png'),
-        parentId: resolveDefaultFolderId('Pictures') || resolveDefaultFolderId('Documents') || null,
-        createdAt: new Date().toLocaleDateString(),
-      },
-    ]);
-    setIsDirty(false);
-    setLastAction(`Saved ${documentName} to Drive`);
-  }, [composite, documentName, setFiles, resolveDefaultFolderId]);
+    const name = `${documentName || 'diagram'}.png`;
+    const content = output.toDataURL('image/png');
+
+    setIsSaving(true);
+    try {
+      if (currentFileId) {
+        const updated = await FileService.updateFile(currentFileId, { name, content, mimeType: 'image/png' });
+        setFiles((prev) => prev.map((f) => (f.id === currentFileId ? { ...f, name: updated.name, content } : f)));
+      } else {
+        const parentId = resolveDefaultFolderId('Pictures') || resolveDefaultFolderId('Documents') || null;
+        const created = await FileService.createFile({ name, type: 'file', parentId, content, mimeType: 'image/png' });
+        setCurrentFileId(created._id);
+        setFiles((prev) => [
+          ...prev,
+          { id: created._id, name: created.name, type: 'file' as const, content, parentId: created.parentId, createdAt: created.createdAt },
+        ]);
+      }
+      setIsDirty(false);
+      setLastAction(`Saved ${documentName} to Drive`);
+    } catch (error) {
+      console.error('Failed to save Paint Studio document:', error);
+      alert(`Failed to save "${documentName}" to Drive. Your drawing is still open here — please try again.`);
+    } finally {
+      setIsSaving(false);
+    }
+  }, [isSaving, composite, documentName, currentFileId, setFiles, resolveDefaultFolderId]);
 
   // -------------------------------------------------------------------------
   // Sharing and comments (real state)
@@ -1310,6 +1677,11 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
         if (event.key === 'Escape') (target as HTMLElement).blur();
         return;
+      }
+
+      if (shapeAdjust) {
+        if (event.key === 'Escape') { event.preventDefault(); cancelShapeAdjust(); return; }
+        if (event.key === 'Enter') { event.preventDefault(); commitShapeAdjust(); return; }
       }
 
       const mod = event.ctrlKey || event.metaKey;
@@ -1380,7 +1752,7 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
   }, [
     undo, redo, copySelection, pasteClipboard, duplicateSelection, deleteSelection,
     groupSelection, ungroupSelection, saveToDrive, objects, selectedIds, snapToGrid,
-    gridSize, updateObjects,
+    gridSize, updateObjects, shapeAdjust, commitShapeAdjust, cancelShapeAdjust,
   ]);
 
   // -------------------------------------------------------------------------
@@ -1605,6 +1977,17 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
     },
   ]);
 
+  // The Shapes tool's cursor traces the actual shape about to be drawn —
+  // the most literal way to answer "what will clicking here do", and it
+  // updates immediately when a different shape is picked from the palette.
+  const shapeToolCursor = (() => {
+    const d = nodePath(shapeToPlace, { x: 5.5, y: 5.5, w: 15, h: 15 });
+    const outline = d
+      ? `<path d="${d}" fill="none" stroke="white" stroke-width="2" stroke-linejoin="round"/>`
+      : '<rect x="8" y="8" width="10" height="10" fill="none" stroke="white" stroke-width="2"/>';
+    return toolCursorUrl('#64748b', outline);
+  })();
+
   return (
     <div ref={rootRef} className="h-full flex flex-col bg-[#f0f3f9] text-slate-800 font-sans select-none overflow-hidden">
       <input ref={fileInputRef} type="file" accept="image/*" onChange={importImage} className="hidden" />
@@ -1700,7 +2083,12 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
                   onClick={() => {
                     if (activeSlot === 1) setPrimaryColor(color);
                     else setSecondaryColor(color);
-                    if (selectedNodes.length) patchSelectedNodeStyle('Fill colour', activeSlot === 1 ? { stroke: color } : { fill: color });
+                    if (selectedNodes.length) {
+                      patchSelectedNodeStyle(
+                        activeSlot === 1 ? 'Stroke colour' : 'Fill colour',
+                        activeSlot === 1 ? { stroke: color } : { fill: color }
+                      );
+                    }
                     if (selectedEdges.length && activeSlot === 1) patchSelectedEdgeStyle('Line colour', { stroke: color });
                   }}
                   className="w-3.5 h-3.5 rounded-xs border border-slate-300 hover:scale-125 transition-transform cursor-pointer"
@@ -1732,9 +2120,11 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
             onChange={(e) => {
               const value = Number(e.target.value);
               setStrokeWidth(value);
-              if (selectedNodes.length) patchSelectedNodeStyle('Stroke width', { strokeWidth: value });
-              if (selectedEdges.length) patchSelectedEdgeStyle('Stroke width', { strokeWidth: value });
+              if (selectedNodes.length) patchSelectedNodeStyle('Stroke width', { strokeWidth: value }, true);
+              if (selectedEdges.length) patchSelectedEdgeStyle('Stroke width', { strokeWidth: value }, true);
             }}
+            onPointerUp={commitLiveEdit}
+            onBlur={commitLiveEdit}
             className="w-20 accent-blue-600 cursor-pointer"
           />
         </div>
@@ -1813,12 +2203,11 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
 
             <div>
               <div className="text-[9px] font-extrabold uppercase text-slate-400 tracking-wider mb-1 px-1">Diagram</div>
-              <div className="grid grid-cols-5 gap-1">
+              <div className="grid grid-cols-4 gap-1">
                 {toolButton('select', 'Select', MousePointer2, 'V')}
                 {toolButton('connector', 'Connector', Spline, 'C')}
                 {toolButton('text', 'Text', Type, 'T')}
                 {toolButton('pan', 'Pan', Hand, 'H')}
-                {toolButton('shape', 'Place shape', Square, 'R')}
               </div>
             </div>
 
@@ -1852,7 +2241,8 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
                 ))}
               </div>
               <p className="text-[10px] text-slate-500 mt-1 px-1 leading-snug">
-                Pick a shape, then click the canvas to place it.
+                Pick a shape, then drag on the canvas to draw it — Fill can
+                then colour it in, same as any other drawing.
               </p>
             </div>
 
@@ -1879,6 +2269,10 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
                   </button>
                 ))}
               </div>
+              <p className="text-[10px] text-slate-500 mt-1 px-1 leading-snug">
+                Adds a live node you can move, resize, relabel and connect —
+                unlike Shapes, it isn't part of the drawing's pixels.
+              </p>
             </div>
           </div>
         )}
@@ -1909,11 +2303,12 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
               width: canvasWidth * scale + 14,
               height: canvasHeight * scale + 14,
               cursor:
-                tool === 'pan' ? (interactionRef.current?.type === 'pan' ? 'grabbing' : 'grab')
-                : tool === 'picker' ? 'copy'
+                isPlacingComment ? 'crosshair'
+                : tool === 'pan' ? (interactionRef.current?.type === 'pan' ? 'grabbing' : 'grab')
                 : tool === 'text' ? 'text'
                 : tool === 'select' ? 'default'
-                : 'crosshair',
+                : tool === 'shape' ? shapeToolCursor
+                : TOOL_CURSORS[tool] ?? 'crosshair',
             }}
           >
             <div
@@ -1964,6 +2359,41 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
                 onHandlePointerDown={handleResizeHandleDown}
               />
             </div>
+
+            {/* Shape adjustment handles — shown right after drawing a raster
+                shape, until it's committed or cancelled. */}
+            {shapeAdjust && (
+              <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 35 }}>
+                <div
+                  className="absolute border-2 border-dashed border-blue-500"
+                  style={{
+                    left: shapeAdjust.rect.x * scale,
+                    top: shapeAdjust.rect.y * scale,
+                    width: shapeAdjust.rect.w * scale,
+                    height: shapeAdjust.rect.h * scale,
+                  }}
+                />
+                {RESIZE_HANDLES.map((handle) => {
+                  const pos = handlePositions(shapeAdjust.rect)[handle];
+                  const size = 10;
+                  return (
+                    <div
+                      key={handle}
+                      onPointerDown={startShapeAdjustResize(handle)}
+                      title="Drag to resize — Enter to keep, Esc to cancel"
+                      className="absolute bg-white border-2 border-blue-500 rounded-xs shadow-sm pointer-events-auto"
+                      style={{
+                        left: pos.x * scale - size / 2,
+                        top: pos.y * scale - size / 2,
+                        width: size,
+                        height: size,
+                        cursor: HANDLE_CURSOR[handle],
+                      }}
+                    />
+                  );
+                })}
+              </div>
+            )}
 
             {/* Inline label editor */}
             {editingNode && (
@@ -2163,7 +2593,8 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
                 <label className="text-[11px] font-bold text-slate-600">Text</label>
                 <div className="flex items-center gap-1">
                   <input type="number" min={8} max={72} value={selectedNodes[0].style.fontSize}
-                    onChange={(e) => patchSelectedNodeStyle('Font size', { fontSize: Number(e.target.value) || 12 })}
+                    onChange={(e) => patchSelectedNodeStyle('Font size', { fontSize: Number(e.target.value) || 12 }, true)}
+                    onBlur={commitLiveEdit}
                     className="w-14 px-1.5 py-1 border border-slate-300 rounded text-[11px]" />
                   <button
                     onClick={() => patchSelectedNodeStyle('Bold', { bold: !selectedNodes[0].style.bold })}
@@ -2184,7 +2615,9 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
 
                 <label className="text-[11px] font-bold text-slate-600">Opacity</label>
                 <input type="range" min={10} max={100} value={selectedNodes[0].style.opacity * 100}
-                  onChange={(e) => patchSelectedNodeStyle('Opacity', { opacity: Number(e.target.value) / 100 })}
+                  onChange={(e) => patchSelectedNodeStyle('Opacity', { opacity: Number(e.target.value) / 100 }, true)}
+                  onPointerUp={commitLiveEdit}
+                  onBlur={commitLiveEdit}
                   className="w-full accent-blue-600 cursor-pointer" />
 
                 {selectedNodes.length === 1 && (
@@ -2198,8 +2631,9 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
                             type="number"
                             value={Math.round(selectedNodes[0][field])}
                             onChange={(e) =>
-                              patchSelectedNodes('Set geometry', { [field]: Number(e.target.value) || 0 } as Partial<DiagramNode>)
+                              patchSelectedNodes('Set geometry', { [field]: Number(e.target.value) || 0 } as Partial<DiagramNode>, true)
                             }
+                            onBlur={commitLiveEdit}
                             className="w-full px-1.5 py-1 border border-slate-300 rounded text-[11px]"
                           />
                         </div>
@@ -2207,7 +2641,9 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
                     </div>
                     <label className="text-[11px] font-bold text-slate-600">Rotation</label>
                     <input type="range" min={0} max={359} value={selectedNodes[0].rotation}
-                      onChange={(e) => patchSelectedNodes('Rotate', { rotation: Number(e.target.value) })}
+                      onChange={(e) => patchSelectedNodes('Rotate', { rotation: Number(e.target.value) }, true)}
+                      onPointerUp={commitLiveEdit}
+                      onBlur={commitLiveEdit}
                       className="w-full accent-blue-600 cursor-pointer" />
                   </>
                 )}
@@ -2341,19 +2777,24 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
 
             <div className="p-2.5 border-t border-slate-200 shrink-0 space-y-1.5">
               <button
-                onClick={() =>
-                  setPendingCommentPoint(
-                    pendingCommentPoint
-                      ? null
-                      : mousePos || { x: canvasWidth / 2, y: canvasHeight / 2 }
-                  )
-                }
+                onClick={() => {
+                  if (isPlacingComment || pendingCommentPoint) {
+                    // Cancel: either disarm placement mode, or drop the point
+                    // already picked so the user can start over.
+                    setIsPlacingComment(false);
+                    setPendingCommentPoint(null);
+                  } else {
+                    setIsPlacingComment(true);
+                  }
+                }}
                 className={`w-full py-1.5 rounded-lg text-[11px] font-bold cursor-pointer ${
-                  pendingCommentPoint ? 'bg-amber-500 text-white' : 'bg-slate-100 hover:bg-slate-200'
+                  isPlacingComment || pendingCommentPoint ? 'bg-amber-500 text-white' : 'bg-slate-100 hover:bg-slate-200'
                 }`}
               >
                 {pendingCommentPoint
-                  ? `Placing at ${Math.round(pendingCommentPoint.x)}, ${Math.round(pendingCommentPoint.y)}`
+                  ? `Placing at ${Math.round(pendingCommentPoint.x)}, ${Math.round(pendingCommentPoint.y)} — click to cancel`
+                  : isPlacingComment
+                  ? 'Click the canvas to place…'
                   : 'Pin a comment here'}
               </button>
               <div className="flex items-center gap-1.5">

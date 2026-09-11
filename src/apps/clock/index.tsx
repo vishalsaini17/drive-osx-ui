@@ -228,7 +228,7 @@ export default function ClockApp() {
   const [timerMins, setTimerMins] = useState(0);
   const [timerSecs, setTimerSecs] = useState(0);
   const [timerTitle, setTimerTitle] = useState('');
-  
+
   const [timerDurationSecs, setTimerDurationSecs] = useState(0);
   const [timerRemainingSecs, setTimerRemainingSecs] = useState(0);
   const [timerRunning, setTimerRunning] = useState(false);
@@ -418,11 +418,10 @@ export default function ClockApp() {
         <div className="flex items-center gap-1 bg-slate-100/90 p-1 rounded-2xl border border-slate-200/70 shadow-inner">
           <button
             onClick={() => setActiveTab('world')}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-              activeTab === 'world'
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${activeTab === 'world'
                 ? 'bg-white text-slate-900 shadow-sm'
                 : 'text-slate-600 hover:text-slate-900'
-            }`}
+              }`}
           >
             <Globe size={14} className={activeTab === 'world' ? 'text-blue-500' : ''} />
             <span>World</span>
@@ -430,11 +429,10 @@ export default function ClockApp() {
 
           <button
             onClick={() => setActiveTab('alarms')}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-              activeTab === 'alarms'
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${activeTab === 'alarms'
                 ? 'bg-white text-slate-900 shadow-sm'
                 : 'text-slate-600 hover:text-slate-900'
-            }`}
+              }`}
           >
             <AlarmClock size={14} className={activeTab === 'alarms' ? 'text-blue-500' : ''} />
             <span>Alarms</span>
@@ -442,11 +440,10 @@ export default function ClockApp() {
 
           <button
             onClick={() => setActiveTab('stopwatch')}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-              activeTab === 'stopwatch'
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${activeTab === 'stopwatch'
                 ? 'bg-white text-slate-900 shadow-sm'
                 : 'text-slate-600 hover:text-slate-900'
-            }`}
+              }`}
           >
             <StopwatchIcon size={14} className={activeTab === 'stopwatch' ? 'text-blue-500' : ''} />
             <span>Stopwatch</span>
@@ -454,11 +451,10 @@ export default function ClockApp() {
 
           <button
             onClick={() => setActiveTab('timer')}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-              activeTab === 'timer'
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${activeTab === 'timer'
                 ? 'bg-white text-slate-900 shadow-sm'
                 : 'text-slate-600 hover:text-slate-900'
-            }`}
+              }`}
           >
             <Hourglass size={14} className={activeTab === 'timer' ? 'text-blue-500' : ''} />
             <span>Timer</span>
@@ -467,12 +463,12 @@ export default function ClockApp() {
 
         {/* Right Menu Controls */}
         <div className="flex items-center gap-1">
-          <button
+          {/* <button
             className="p-1.5 rounded-lg hover:bg-slate-200/80 text-slate-600 transition-colors focus:outline-none cursor-pointer"
             title="Options"
           >
             <Menu size={18} />
-          </button>
+          </button> */}
         </div>
       </div>
 
@@ -483,46 +479,45 @@ export default function ClockApp() {
             {worldCities
               .filter((city) => !city.isCurrentLocation && city.desc !== 'Current location')
               .map((city) => {
-              const timeStr = getCityTimeStr(city.timezone);
+                const timeStr = getCityTimeStr(city.timezone);
 
-              return (
-                <div
-                  key={city.id}
-                  className="p-4 px-6 flex items-center justify-between hover:bg-slate-50/60 transition-colors group"
-                >
-                  <div>
-                    <h3 className="text-base font-bold text-slate-900 leading-snug">
-                      {city.name}
-                    </h3>
-                    <p className="text-xs font-medium text-slate-400">
-                      {city.desc}
-                    </p>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <div
-                      className={`px-4 py-1.5 rounded-full text-2xl font-mono font-semibold tracking-tight shadow-xs ${
-                        city.pillColor === 'blue'
-                          ? 'bg-blue-100/90 text-blue-700'
-                          : 'bg-amber-100/90 text-amber-800'
-                      }`}
-                    >
-                      {timeStr}
+                return (
+                  <div
+                    key={city.id}
+                    className="p-4 px-6 flex items-center justify-between hover:bg-slate-50/60 transition-colors group"
+                  >
+                    <div>
+                      <h3 className="text-base font-bold text-slate-900 leading-snug">
+                        {city.name}
+                      </h3>
+                      <p className="text-xs font-medium text-slate-400">
+                        {city.desc}
+                      </p>
                     </div>
 
-                    {!city.isCurrentLocation && (
-                      <button
-                        onClick={() => handleRemoveCity(city.id)}
-                        className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-rose-500 transition-all cursor-pointer"
-                        title="Remove City"
+                    <div className="flex items-center gap-2">
+                      <div
+                        className={`px-4 py-1.5 rounded-full text-2xl font-mono font-semibold tracking-tight shadow-xs ${city.pillColor === 'blue'
+                            ? 'bg-blue-100/90 text-blue-700'
+                            : 'bg-amber-100/90 text-amber-800'
+                          }`}
                       >
-                        <XCircle size={18} />
-                      </button>
-                    )}
+                        {timeStr}
+                      </div>
+
+                      {!city.isCurrentLocation && (
+                        <button
+                          onClick={() => handleRemoveCity(city.id)}
+                          className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-rose-500 transition-all cursor-pointer"
+                          title="Remove City"
+                        >
+                          <XCircle size={18} />
+                        </button>
+                      )}
+                    </div>
                   </div>
-                </div>
-              );
-            })}
+                );
+              })}
           </div>
         </div>
       )}
@@ -562,11 +557,10 @@ export default function ClockApp() {
               {alarms.map((alarm) => (
                 <div
                   key={alarm.id}
-                  className={`p-4 rounded-2xl border transition-all flex items-center justify-between ${
-                    alarm.enabled
+                  className={`p-4 rounded-2xl border transition-all flex items-center justify-between ${alarm.enabled
                       ? 'bg-white border-slate-200/90 shadow-sm'
                       : 'bg-slate-100/60 border-slate-200/60 opacity-60'
-                  }`}
+                    }`}
                 >
                   <div>
                     <div className="flex items-baseline gap-2">
@@ -586,14 +580,12 @@ export default function ClockApp() {
                     {/* Toggle Switch */}
                     <button
                       onClick={() => toggleAlarmEnabled(alarm.id)}
-                      className={`w-12 h-6 rounded-full p-0.5 transition-colors cursor-pointer relative ${
-                        alarm.enabled ? 'bg-blue-600' : 'bg-slate-300'
-                      }`}
+                      className={`w-12 h-6 rounded-full p-0.5 transition-colors cursor-pointer relative ${alarm.enabled ? 'bg-blue-600' : 'bg-slate-300'
+                        }`}
                     >
                       <div
-                        className={`w-5 h-5 rounded-full bg-white shadow-md transition-transform ${
-                          alarm.enabled ? 'translate-x-6' : 'translate-x-0'
-                        }`}
+                        className={`w-5 h-5 rounded-full bg-white shadow-md transition-transform ${alarm.enabled ? 'translate-x-6' : 'translate-x-0'
+                          }`}
                       />
                     </button>
 
@@ -856,11 +848,10 @@ export default function ClockApp() {
               <button
                 onClick={handleConfirmAddCity}
                 disabled={!selectedSearchCity}
-                className={`px-4 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                  selectedSearchCity
+                className={`px-4 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${selectedSearchCity
                     ? 'bg-blue-400 hover:bg-blue-500 active:scale-95 text-white shadow-xs'
                     : 'bg-blue-300 text-white/90 opacity-70 cursor-not-allowed'
-                }`}
+                  }`}
               >
                 Add
               </button>
@@ -925,11 +916,10 @@ export default function ClockApp() {
                       <button
                         key={`${item.name}-${item.country}-${idx}`}
                         onClick={() => setSelectedSearchCity(item)}
-                        className={`w-full p-3 px-4 text-left cursor-pointer transition-colors flex items-center justify-between ${
-                          isSelected
+                        className={`w-full p-3 px-4 text-left cursor-pointer transition-colors flex items-center justify-between ${isSelected
                             ? 'bg-blue-50/90'
                             : 'hover:bg-slate-50/90'
-                        }`}
+                          }`}
                       >
                         <div>
                           <div className="text-xs font-normal text-slate-800">
@@ -1003,17 +993,15 @@ export default function ClockApp() {
               <div className="flex bg-slate-100 border border-slate-300 rounded-xl p-0.5 ml-2">
                 <button
                   onClick={() => setNewAlarmPeriod('AM')}
-                  className={`px-2.5 py-1 text-xs font-bold rounded-lg ${
-                    newAlarmPeriod === 'AM' ? 'bg-blue-600 text-white' : 'text-slate-600'
-                  }`}
+                  className={`px-2.5 py-1 text-xs font-bold rounded-lg ${newAlarmPeriod === 'AM' ? 'bg-blue-600 text-white' : 'text-slate-600'
+                    }`}
                 >
                   AM
                 </button>
                 <button
                   onClick={() => setNewAlarmPeriod('PM')}
-                  className={`px-2.5 py-1 text-xs font-bold rounded-lg ${
-                    newAlarmPeriod === 'PM' ? 'bg-blue-600 text-white' : 'text-slate-600'
-                  }`}
+                  className={`px-2.5 py-1 text-xs font-bold rounded-lg ${newAlarmPeriod === 'PM' ? 'bg-blue-600 text-white' : 'text-slate-600'
+                    }`}
                 >
                   PM
                 </button>

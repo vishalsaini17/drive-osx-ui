@@ -255,10 +255,39 @@ export function nodePath(shape: NodeShape, rect: Rect): string {
     }
     case 'triangle':
       return `M ${cx} ${y} L ${right} ${bottom} L ${x} ${bottom} Z`;
+    case 'right-triangle':
+      return `M ${x} ${y} L ${x} ${bottom} L ${right} ${bottom} Z`;
     case 'hexagon': {
       const shift = Math.min(w * 0.18, 26);
       return `M ${x + shift} ${y} L ${right - shift} ${y} L ${right} ${cy} L ${right - shift} ${bottom} L ${x + shift} ${bottom} L ${x} ${cy} Z`;
     }
+    case 'pentagon':
+      return regularPolygonPath(cx, cy, Math.min(w, h) / 2, 5);
+    case 'octagon':
+      return regularPolygonPath(cx, cy, Math.min(w, h) / 2, 8);
+    case 'cross': {
+      // A plus sign: a horizontal bar and a vertical bar, both centred,
+      // traced as one 12-point outline.
+      const t = Math.min(w, h) / 6; // half-thickness of each arm
+      return [
+        `M ${cx - t} ${y}`, `L ${cx + t} ${y}`, `L ${cx + t} ${cy - t}`,
+        `L ${right} ${cy - t}`, `L ${right} ${cy + t}`, `L ${cx + t} ${cy + t}`,
+        `L ${cx + t} ${bottom}`, `L ${cx - t} ${bottom}`, `L ${cx - t} ${cy + t}`,
+        `L ${x} ${cy + t}`, `L ${x} ${cy - t}`, `L ${cx - t} ${cy - t}`, 'Z',
+      ].join(' ');
+    }
+    case 'arrow-right': {
+      const headW = Math.min(w * 0.4, w - 4);
+      const bodyHalfH = h * 0.2;
+      return [
+        `M ${x} ${cy - bodyHalfH}`, `L ${right - headW} ${cy - bodyHalfH}`, `L ${right - headW} ${y}`,
+        `L ${right} ${cy}`, `L ${right - headW} ${bottom}`, `L ${right - headW} ${cy + bodyHalfH}`,
+        `L ${x} ${cy + bodyHalfH}`, 'Z',
+      ].join(' ');
+    }
+    case 'line':
+      // Open path, deliberately unclosed — a straight stroke with no fill.
+      return `M ${x} ${y} L ${right} ${bottom}`;
     case 'cylinder': {
       const ry = Math.min(h * 0.18, 18);
       return [
@@ -335,9 +364,82 @@ function roundedRectPath(x: number, y: number, w: number, h: number, r: number):
   ].join(' ');
 }
 
+/** A regular N-sided polygon inscribed in a circle, point-up (like `star`'s outer points). */
+function regularPolygonPath(cx: number, cy: number, radius: number, sides: number): string {
+  const points: string[] = [];
+  for (let i = 0; i < sides; i++) {
+    const angle = (2 * Math.PI * i) / sides - Math.PI / 2;
+    points.push(`${cx + radius * Math.cos(angle)} ${cy + radius * Math.sin(angle)}`);
+  }
+  return `M ${points.join(' L ')} Z`;
+}
+
 // ---------------------------------------------------------------------------
 // Hit testing
 // ---------------------------------------------------------------------------
+
+/** Shapes close enough to their own bounding box that a precise outline test isn't worth it. */
+const BBOX_SHAPES = new Set<NodeShape>(['rectangle', 'rounded-rect', 'capsule', 'document', 'cylinder', 'text']);
+
+function rotateAround(point: Point, center: Point, degrees: number): Point {
+  if (!degrees) return point;
+  const rad = (degrees * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const dx = point.x - center.x;
+  const dy = point.y - center.y;
+  return { x: center.x + dx * cos - dy * sin, y: center.y + dx * sin + dy * cos };
+}
+
+// One <path> reused for every precise hit-test, rather than allocating a
+// fresh SVG element per node per pointer-move. It has to actually be in the
+// document for `isPointInFill` to work — Chromium (confirmed empirically)
+// silently returns false for a detached element regardless of its geometry,
+// so a purely in-memory element made every non-rectangular node
+// unselectable, not just imprecise. Kept zero-size and non-interactive so it
+// has no visible or layout effect.
+let hitTestPathEl: SVGPathElement | null = null;
+function getHitTestPathEl(): SVGPathElement | null {
+  if (typeof document === 'undefined') return null;
+  if (hitTestPathEl) return hitTestPathEl;
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('width', '0');
+  svg.setAttribute('height', '0');
+  svg.style.position = 'fixed';
+  svg.style.pointerEvents = 'none';
+  svg.style.opacity = '0';
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  svg.appendChild(path);
+  document.body.appendChild(svg);
+  hitTestPathEl = path;
+  return path;
+}
+
+/**
+ * Whether `point` falls inside `node`'s actual rendered outline, not just its
+ * bounding box — a click in the empty corner beside a diamond/star/triangle
+ * shouldn't hit it just because it's within the rectangle around it — and
+ * accounting for the node's own rotation, which the renderer applies
+ * visually (`DiagramLayer`'s `NodeView`) but a plain bbox test ignores.
+ */
+export function pointInNode(point: Point, node: DiagramNode): boolean {
+  const rect = nodeRect(node);
+  const center = { x: node.x + node.w / 2, y: node.y + node.h / 2 };
+  // Test in the node's own unrotated space: rotate the click point backwards
+  // by the node's rotation instead of rotating the shape forwards.
+  const local = node.rotation ? rotateAround(point, center, -node.rotation) : point;
+  if (!pointInRect(local, rect)) return false;
+  if (BBOX_SHAPES.has(node.shape)) return true;
+
+  const path = getHitTestPathEl();
+  if (!path || typeof path.isPointInFill !== 'function') return true;
+  path.setAttribute('d', nodePath(node.shape, rect));
+  try {
+    return path.isPointInFill({ x: local.x, y: local.y });
+  } catch {
+    return true;
+  }
+}
 
 /**
  * Topmost object under a point. Nodes are tested before edges because the
@@ -347,7 +449,7 @@ function roundedRectPath(x: number, y: number, w: number, h: number, r: number):
 export function hitTest(objects: DiagramObject[], point: Point): DiagramObject | null {
   for (let i = objects.length - 1; i >= 0; i--) {
     const object = objects[i];
-    if (isNode(object) && pointInRect(point, nodeRect(object))) return object;
+    if (isNode(object) && pointInNode(point, object)) return object;
   }
   for (let i = objects.length - 1; i >= 0; i--) {
     const object = objects[i];
@@ -504,6 +606,92 @@ export function distributeNodes(nodes: DiagramNode[], axis: 'horizontal' | 'vert
   }
 
   return nodes.map((node) => moved.get(node.id) || node);
+}
+
+// ---------------------------------------------------------------------------
+// Canvas-wide transforms
+// ---------------------------------------------------------------------------
+
+/**
+ * Carries the diagram layer through the same rotation applied to the raster
+ * canvas, so shapes stay aligned with the drawing underneath them instead of
+ * staying put while the pixels turn. `degrees` is one of 90/180/270 (canvas
+ * rotate only ever offers those); `oldW`/`oldH` are the canvas size before
+ * the rotation, `newW`/`newH` after (swapped for 90/270).
+ */
+export function transformObjectsForCanvasRotate(
+  objects: DiagramObject[],
+  oldW: number,
+  oldH: number,
+  newW: number,
+  newH: number,
+  degrees: number
+): DiagramObject[] {
+  const oldCenter = { x: oldW / 2, y: oldH / 2 };
+  const newCenter = { x: newW / 2, y: newH / 2 };
+  // Matches the matrix `ctx.rotate()` applies to the raster canvas exactly,
+  // so a node's new position lines up with where its pixels actually went.
+  const rad = (degrees * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const rotatePoint = (p: Point): Point => {
+    const dx = p.x - oldCenter.x;
+    const dy = p.y - oldCenter.y;
+    return { x: newCenter.x + dx * cos - dy * sin, y: newCenter.y + dx * sin + dy * cos };
+  };
+  const swap = degrees === 90 || degrees === 270;
+
+  return objects.map((object) => {
+    if (isNode(object)) {
+      const center = rotatePoint({ x: object.x + object.w / 2, y: object.y + object.h / 2 });
+      const w = swap ? object.h : object.w;
+      const h = swap ? object.w : object.h;
+      return {
+        ...object,
+        x: Math.round(center.x - w / 2),
+        y: Math.round(center.y - h / 2),
+        w,
+        h,
+        rotation: (((object.rotation + degrees) % 360) + 360) % 360,
+      };
+    }
+    // Node-anchored endpoints follow their node automatically; only free
+    // {x, y} endpoints carry their own coordinates that need transforming.
+    return {
+      ...object,
+      from: 'nodeId' in object.from ? object.from : rotatePoint(object.from),
+      to: 'nodeId' in object.to ? object.to : rotatePoint(object.to),
+    };
+  });
+}
+
+/** Same idea as `transformObjectsForCanvasRotate`, for a horizontal/vertical flip. */
+export function transformObjectsForCanvasFlip(
+  objects: DiagramObject[],
+  width: number,
+  height: number,
+  axis: 'horizontal' | 'vertical'
+): DiagramObject[] {
+  const flipPoint = (p: Point): Point =>
+    axis === 'horizontal' ? { x: width - p.x, y: p.y } : { x: p.x, y: height - p.y };
+
+  return objects.map((object) => {
+    if (isNode(object)) {
+      const center = flipPoint({ x: object.x + object.w / 2, y: object.y + object.h / 2 });
+      return {
+        ...object,
+        x: Math.round(center.x - object.w / 2),
+        y: Math.round(center.y - object.h / 2),
+        // A mirror reverses the sense of rotation regardless of which axis.
+        rotation: (360 - (object.rotation % 360)) % 360,
+      };
+    }
+    return {
+      ...object,
+      from: 'nodeId' in object.from ? object.from : flipPoint(object.from),
+      to: 'nodeId' in object.to ? object.to : flipPoint(object.to),
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
