@@ -7,6 +7,18 @@ import { BlockMeasurement, BlockSplitPoint } from './types';
  * view. Everything downstream (`paginationEngine.ts`) works off the plain
  * data this produces, which is what lets that engine be reused by
  * print/export without a browser.
+ *
+ * Deliberately reads geometry straight off the live, browser-rendered DOM
+ * rather than computing word-wrap independently (e.g. via Canvas 2D
+ * `measureText`): a synthetic layout can only ever *approximate* the
+ * browser's actual text rendering (font substitution, kerning, subpixel
+ * rounding all vary), and in a contentEditable surface the visible text is
+ * still laid out by the browser regardless of what a separate computation
+ * decided — so any drift between the two shows up as decorations landing
+ * off the real line boundaries, compounding page over page. Reading the
+ * real rendered DOM is exact by construction; that trade (depending on a
+ * mounted view instead of being usable headless) is the right one for an
+ * editor that has to stay visually correct above all else.
  */
 
 const LINE_SPLITTABLE_TYPES = new Set(['paragraph', 'heading', 'listItem']);
@@ -63,7 +75,19 @@ export function measureDocument(view: EditorView, options: MeasureOptions = {}):
 
     const dom = view.nodeDOM(pos);
     const el = dom instanceof HTMLElement ? dom : (dom?.parentElement ?? null);
-    const heightPx = el ? el.getBoundingClientRect().height / zoom : 0;
+    // `getBoundingClientRect` never includes an element's own margin (it's
+    // outside the border box by definition), but the vertical space a block
+    // actually occupies in the page's flow does include the gap its
+    // margin-bottom opens up before the next block. Omitting it understates
+    // every paragraph's contribution to a page's used height — with a dozen
+    // paragraphs stacked on a page that adds up to real, visible space the
+    // budget doesn't know about, so content keeps getting packed in past
+    // where it actually fits, and the overflow shows up as a growing
+    // misalignment on the pages that follow. Reading the real computed
+    // margin (not a hand-kept constant) keeps this exact by construction —
+    // it can never drift from whatever the CSS actually says.
+    const marginBottomPx = el ? parseFloat(getComputedStyle(el).marginBottom || '0') : 0;
+    const heightPx = el ? el.getBoundingClientRect().height / zoom + marginBottomPx : 0;
 
     const splittable = LINE_SPLITTABLE_TYPES.has(node.type.name);
     const splitPoints = splittable && computeSplits && el ? computeSplitPoints(view, el, pos, node, zoom) : [];
@@ -109,6 +133,14 @@ function computeSplitPoints(
 ): BlockSplitPoint[] {
   const blockRect = el.getBoundingClientRect();
   const raw: BlockSplitPoint[] = [];
+  // Tracks the top of the last line a candidate was recorded for, so only
+  // the first word of each visual line becomes a split candidate — every
+  // other word on that line shares its `heightBeforePx`, and the engine
+  // picks the *last* candidate whose height still fits. Without this dedup,
+  // that would pick the last word of a line whose top (but not bottom) fits,
+  // splitting the line itself across the page boundary instead of moving it
+  // to the next page as a whole — never how a real word processor breaks.
+  let lastLineTop: number | null = null;
 
   const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
   let textNode = walker.nextNode() as Text | null;
@@ -122,6 +154,9 @@ function computeSplitPoints(
       range.collapse(true);
       const rect = range.getClientRects()[0];
       if (!rect) continue;
+
+      if (lastLineTop !== null && Math.abs(rect.top - lastLineTop) < 0.5) continue;
+      lastLineTop = rect.top;
 
       const pmPos = view.posAtDOM(textNode, offset);
       if (pmPos > blockPos) {
