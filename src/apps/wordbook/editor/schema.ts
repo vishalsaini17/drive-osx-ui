@@ -12,9 +12,14 @@ import { Table } from '@tiptap/extension-table';
 import TableRow from '@tiptap/extension-table-row';
 import TableCell from '@tiptap/extension-table-cell';
 import TableHeader from '@tiptap/extension-table-header';
+import TaskList from '@tiptap/extension-task-list';
+import TaskItem from '@tiptap/extension-task-item';
 import { Extension } from '@tiptap/core';
 import { PageBreakNode } from './nodes/PageBreakNode';
 import { WordBookImage } from './nodes/WordBookImage';
+import { BookmarkNode } from './nodes/BookmarkNode';
+import { SmartChipNode } from './nodes/SmartChipNode';
+import { DropdownChipNode } from './nodes/DropdownChipNode';
 
 declare module '@tiptap/core' {
   interface Commands<ReturnType> {
@@ -65,6 +70,46 @@ const FontSize = Extension.create({
         ({ chain }) =>
           chain().setMark('textStyle', { fontSize: null }).removeEmptyTextStyle().run(),
     };
+  },
+});
+
+/**
+ * Line spacing and space-after, adjustable per paragraph/heading like
+ * Word's paragraph controls — both were previously fixed by the stylesheet
+ * for every block alike (`PageCanvas.tsx`'s `lineHeight: 1.5` and
+ * `.wb-prosemirror p { margin: 0 0 10px 0 }`). Rendered as plain inline
+ * styles, the same technique `FontSize` above already uses on `textStyle`;
+ * `null` (unset) leaves the stylesheet default in effect. Nothing in the
+ * pagination engine needs to change for this to paginate correctly — it
+ * already reads a block's real rendered height and computed margin
+ * straight off the DOM rather than from a fixed constant.
+ */
+const ParagraphSpacing = Extension.create({
+  name: 'paragraphSpacing',
+  addGlobalAttributes() {
+    return [
+      {
+        types: ['paragraph', 'heading'],
+        attributes: {
+          lineHeight: {
+            default: null,
+            parseHTML: (element) => element.style.lineHeight || null,
+            renderHTML: (attributes) => {
+              if (!attributes.lineHeight) return {};
+              return { style: `line-height: ${attributes.lineHeight}` };
+            },
+          },
+          spacingAfter: {
+            default: null,
+            parseHTML: (element) => element.style.marginBottom || null,
+            renderHTML: (attributes) => {
+              if (!attributes.spacingAfter) return {};
+              return { style: `margin-bottom: ${attributes.spacingAfter}` };
+            },
+          },
+        },
+      },
+    ];
   },
 });
 
@@ -121,16 +166,22 @@ export function wordBookExtensions() {
     Subscript,
     Superscript,
     Highlight.configure({ multicolor: true }),
-    Link.configure({ openOnClick: false }),
+    Link.configure({ openOnClick: false, HTMLAttributes: { title: 'Ctrl+Click to open', rel: 'noopener noreferrer' } }),
     TextAlign.configure({ types: ['heading', 'paragraph'] }),
     Table.configure({ resizable: true }),
     TableRow,
     TableHeader,
     TableCell,
+    TaskList,
+    TaskItem.configure({ nested: true }),
     WordBookImage.configure({
       resize: { enabled: true, directions: ['left', 'right', 'bottom-left', 'bottom-right'], minWidth: 60, minHeight: 40 },
     }),
+    ParagraphSpacing,
     KeepWithNext,
     PageBreakNode,
+    BookmarkNode,
+    SmartChipNode,
+    DropdownChipNode,
   ];
 }

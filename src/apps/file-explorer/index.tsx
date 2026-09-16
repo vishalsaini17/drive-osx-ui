@@ -187,6 +187,8 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
   const openTextFileInNewEditorWindow = useSystemStore((state) => state.openTextFileInNewEditorWindow);
   const openPdfFileInViewer = useSystemStore((state) => state.openPdfFileInViewer);
   const openPdfFileInNewViewerWindow = useSystemStore((state) => state.openPdfFileInNewViewerWindow);
+  const openBookFileInWordbook = useSystemStore((state) => state.openBookFileInWordbook);
+  const openBookFileInNewWordbookWindow = useSystemStore((state) => state.openBookFileInNewWordbookWindow);
   const consumeFilePickerRequest = useSystemStore((state) => state.consumeFilePickerRequest);
   const resolveFilePicker = useSystemStore((state) => state.resolveFilePicker);
   const handleCloseWindow = useSystemStore((state) => state.handleCloseWindow);
@@ -2554,6 +2556,14 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
         openPdfFileInNewViewerWindow(item.id, item.name, currentFolderId);
       } else {
         openPdfFileInViewer(item.id, item.name, currentFolderId);
+      }
+    } else if (appKey === 'wordbook') {
+      // Word Book fetches the file's own content itself (FileService.getFile)
+      // once it loads, same reasoning as pdf-viewer above.
+      if (forceNewWindow) {
+        openBookFileInNewWordbookWindow(item.id, item.name, currentFolderId);
+      } else {
+        openBookFileInWordbook(item.id, item.name, currentFolderId);
       }
     } else if (appKey === 'image-viewer' || appKey === 'audio-player' || appKey === 'video-player' || appKey === 'code-viewer') {
       setActivePreviewItem(item);

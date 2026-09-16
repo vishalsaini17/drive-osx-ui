@@ -97,6 +97,20 @@ interface SystemState {
    */
   pendingPdfViewerFiles: Record<string, { fileId: string; name: string; folderId: string | null }>;
   /**
+   * The `.book`/`.doc`/`.docx` file requested into the primary Word Book
+   * window on next load, mirroring `pdfViewerFileId` above.
+   */
+  wordbookFileId: string | null;
+  wordbookFileName: string | null;
+  wordbookCurrentFolderId: string | null;
+  /**
+   * Files requested into a brand-new Word Book window (`forceNewWindow`),
+   * keyed by that window's own unique id — same pattern as
+   * `pendingPdfViewerFiles`, consumed once on mount via
+   * `consumePendingWordbookFile`.
+   */
+  pendingWordbookFiles: Record<string, { fileId: string; name: string; folderId: string | null }>;
+  /**
    * A File Manager window opened as a picker (`requestFilePick`) reads its own
    * entry once, on mount, via `consumeFilePickerRequest` — keyed by that
    * picker window's own unique id, same pattern as `pendingEditorWindowFiles`.
@@ -207,6 +221,11 @@ interface SystemState {
   openPdfFileInNewViewerWindow: (fileId: string, name: string, folderId?: string | null) => string;
   /** Reads and clears one window's pending file request (see `pendingPdfViewerFiles`). */
   consumePendingPdfViewerFile: (windowId: string) => { fileId: string; name: string; folderId: string | null } | null;
+  openBookFileInWordbook: (fileId: string, name: string, folderId?: string | null) => void;
+  /** Always opens a fresh Word Book window for this file, never the one already showing something else. Returns that window's id. */
+  openBookFileInNewWordbookWindow: (fileId: string, name: string, folderId?: string | null) => string;
+  /** Reads and clears one window's pending file request (see `pendingWordbookFiles`). */
+  consumePendingWordbookFile: (windowId: string) => { fileId: string; name: string; folderId: string | null } | null;
   /** Opens a fresh File Manager window in picker mode for `requesterWindowId`. Returns the picker window's id. */
   requestFilePick: (requesterWindowId: string, mode: 'file' | 'folder') => string;
   /** Reads and clears one picker window's request (see `pendingFilePickerRequests`). */
@@ -369,6 +388,10 @@ export const useSystemStore = create<SystemState>((set, get) => ({
   pdfViewerFileName: null,
   pdfViewerCurrentFolderId: null,
   pendingPdfViewerFiles: {},
+  wordbookFileId: null,
+  wordbookFileName: null,
+  wordbookCurrentFolderId: null,
+  pendingWordbookFiles: {},
   pendingFilePickerRequests: {},
   filePickerResults: {},
   fileManagerCurrentFolderId: null,
@@ -948,11 +971,13 @@ export const useSystemStore = create<SystemState>((set, get) => ({
         const { [id]: _removedGeometry, ...restGeometry } = state.rememberedGeometry ?? {};
         const { [id]: _removedPending, ...restPending } = state.pendingEditorWindowFiles;
         const { [id]: _removedPendingPdf, ...restPendingPdf } = state.pendingPdfViewerFiles;
+        const { [id]: _removedPendingBook, ...restPendingBook } = state.pendingWordbookFiles;
         const { [id]: _removedPickerRequest, ...restPickerRequests } = state.pendingFilePickerRequests;
         rest = {
           rememberedGeometry: restGeometry,
           pendingEditorWindowFiles: restPending,
           pendingPdfViewerFiles: restPendingPdf,
+          pendingWordbookFiles: restPendingBook,
           pendingFilePickerRequests: restPickerRequests,
         };
       }
@@ -1234,6 +1259,37 @@ export const useSystemStore = create<SystemState>((set, get) => ({
       set((state) => {
         const { [windowId]: _consumed, ...rest } = state.pendingPdfViewerFiles;
         return { pendingPdfViewerFiles: rest };
+      });
+    }
+    return pending;
+  },
+
+  openBookFileInWordbook: (fileId, name, folderId) => {
+    set({
+      wordbookFileId: fileId,
+      wordbookFileName: name,
+      wordbookCurrentFolderId: folderId || null,
+    });
+    get().openAppWindow('wordbook');
+  },
+
+  openBookFileInNewWordbookWindow: (fileId, name, folderId) => {
+    const windowId = get().openAppWindow('wordbook', { forceNewWindow: true });
+    set((state) => ({
+      pendingWordbookFiles: {
+        ...state.pendingWordbookFiles,
+        [windowId]: { fileId, name, folderId: folderId || null },
+      },
+    }));
+    return windowId;
+  },
+
+  consumePendingWordbookFile: (windowId) => {
+    const pending = get().pendingWordbookFiles[windowId] ?? null;
+    if (pending) {
+      set((state) => {
+        const { [windowId]: _consumed, ...rest } = state.pendingWordbookFiles;
+        return { pendingWordbookFiles: rest };
       });
     }
     return pending;

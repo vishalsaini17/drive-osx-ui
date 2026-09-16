@@ -86,6 +86,85 @@ export function RibbonSelect({
   );
 }
 
+/** A Docs-style [-] [number] [+] stepper — used for font size. Commits on blur/Enter, not on every keystroke, so a partial edit (e.g. clearing the box to retype) never fires an intermediate change. */
+export function RibbonStepper({
+  value,
+  onChange,
+  min = 1,
+  max = 400,
+  title,
+}: {
+  value: number;
+  onChange: (value: number) => void;
+  min?: number;
+  max?: number;
+  title: string;
+}) {
+  const [text, setText] = useState(String(value));
+  const lastCommitted = useRef(value);
+  useEffect(() => {
+    if (value !== lastCommitted.current) setText(String(value));
+  }, [value]);
+
+  const commit = (raw: string) => {
+    const parsed = parseFloat(raw);
+    if (Number.isFinite(parsed)) {
+      const clamped = Math.min(max, Math.max(min, parsed));
+      lastCommitted.current = clamped;
+      setText(String(clamped));
+      onChange(clamped);
+    } else {
+      setText(String(value));
+    }
+  };
+
+  const step = (delta: number) => {
+    const next = Math.min(max, Math.max(min, value + delta));
+    lastCommitted.current = next;
+    setText(String(next));
+    onChange(next);
+  };
+
+  return (
+    <div className="flex items-center h-7 border border-zinc-300 rounded bg-white">
+      <button
+        type="button"
+        title="Decrease"
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => step(-1)}
+        className="w-5 h-full flex items-center justify-center text-zinc-600 hover:bg-zinc-100 cursor-pointer rounded-l"
+      >
+        −
+      </button>
+      <input
+        type="text"
+        inputMode="decimal"
+        title={title}
+        aria-label={title}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={(e) => commit(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            commit(e.currentTarget.value);
+            e.currentTarget.blur();
+          }
+        }}
+        className="w-8 h-full text-center text-xs outline-none"
+      />
+      <button
+        type="button"
+        title="Increase"
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => step(1)}
+        className="w-5 h-full flex items-center justify-center text-zinc-600 hover:bg-zinc-100 cursor-pointer rounded-r"
+      >
+        +
+      </button>
+    </div>
+  );
+}
+
 const SWATCHES = [
   '#18181b', '#71717a', '#dc2626', '#ea580c', '#d97706', '#65a30d',
   '#16a34a', '#0891b2', '#2563eb', '#7c3aed', '#c026d3', '#db2777',

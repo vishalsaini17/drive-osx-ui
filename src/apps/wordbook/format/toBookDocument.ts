@@ -4,7 +4,7 @@ import {
   BookMetadata,
   generateBookId,
 } from '../../../platform/documents/book/bookFormat';
-import { a4PageSetup } from '../../../platform/documents/book/pageSetup';
+import { a4PageSetup, PageSetup } from '../../../platform/documents/book/pageSetup';
 
 /**
  * Wraps the editor's `getJSON()` output into the `.book` file shape.
@@ -17,6 +17,8 @@ import { a4PageSetup } from '../../../platform/documents/book/pageSetup';
 export function toBookDocument(
   editorJSON: unknown,
   existing: Pick<BookDocument, 'metadata' | 'defaultPageSetup' | 'headers' | 'footers' | 'assets'> | null,
+  /** The page setup actually in effect right now — takes priority over `existing`'s, since the live editor state (e.g. after a Page Setup change) is always more current than whatever was last loaded/saved, including for a brand-new document that has no `existing` at all yet. */
+  currentPageSetup?: PageSetup,
 ): BookDocument {
   const now = new Date().toISOString();
   const metadata: BookMetadata = existing
@@ -26,7 +28,7 @@ export function toBookDocument(
   return {
     formatVersion: BOOK_FORMAT_VERSION,
     metadata,
-    defaultPageSetup: existing?.defaultPageSetup ?? a4PageSetup('portrait'),
+    defaultPageSetup: currentPageSetup ?? existing?.defaultPageSetup ?? a4PageSetup('portrait'),
     sections: [
       {
         id: 'main',

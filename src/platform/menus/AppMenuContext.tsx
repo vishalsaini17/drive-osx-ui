@@ -94,7 +94,7 @@ export function bindHandlers(menus: Menu[], latest: { current: Menu[] }): Menu[]
   const bindItems = (items: any[], path: number[]): any[] =>
     items.map((item, index) => {
       const here = [...path, index];
-      if (item.kind === 'separator' || item.kind === 'heading') return item;
+      if (item.kind === 'separator' || item.kind === 'heading' || item.kind === 'custom') return item;
       if (item.kind === 'submenu') return { ...item, items: bindItems(item.items, here) };
       return {
         ...item,
@@ -131,6 +131,12 @@ export function menuSignature(menus: Menu[]): string {
       .map((item) => {
         if (item.kind === 'separator') return '|';
         if (item.kind === 'heading') return `h:${item.label}`;
+        // No comparable static props to fingerprint — a custom item's
+        // `render` closure is always taken fresh off the latest `menus`
+        // array below (never routed through the stale-closure indirection
+        // that action items need), so identity by id is all a signature
+        // needs to provide here.
+        if (item.kind === 'custom') return `c:${item.id}`;
         if (item.kind === 'submenu') {
           return `s:${item.id}:${item.label}:${item.disabled ? 1 : 0}(${encode(item.items)})`;
         }
