@@ -137,6 +137,52 @@ const KeepWithNext = Extension.create({
 });
 
 /**
+ * Which preset glyph/numbering set a bullet/ordered list uses, and which
+ * checkbox look a checklist uses — cosmetic per-list choices, matching
+ * Google Docs' bullet/numbered-list/checklist style pickers. Applied purely
+ * via CSS (`PageCanvas.tsx`, keyed off the rendered `data-*-style` attribute
+ * below) using `::marker` content overrides and `counters()` for the
+ * multi-level numbering presets — no separate list-rendering logic needed.
+ */
+const ListStyles = Extension.create({
+  name: 'listStyles',
+  addGlobalAttributes() {
+    return [
+      {
+        types: ['bulletList'],
+        attributes: {
+          bulletStyle: {
+            default: 'default',
+            parseHTML: (element) => element.getAttribute('data-bullet-style') || 'default',
+            renderHTML: (attributes) => ({ 'data-bullet-style': attributes.bulletStyle ?? 'default' }),
+          },
+        },
+      },
+      {
+        types: ['orderedList'],
+        attributes: {
+          numberStyle: {
+            default: 'default',
+            parseHTML: (element) => element.getAttribute('data-number-style') || 'default',
+            renderHTML: (attributes) => ({ 'data-number-style': attributes.numberStyle ?? 'default' }),
+          },
+        },
+      },
+      {
+        types: ['taskList'],
+        attributes: {
+          checklistVariant: {
+            default: 'square',
+            parseHTML: (element) => element.getAttribute('data-checklist-variant') || 'square',
+            renderHTML: (attributes) => ({ 'data-checklist-variant': attributes.checklistVariant ?? 'square' }),
+          },
+        },
+      },
+    ];
+  },
+});
+
+/**
  * The full extension list, assembled once so both the live editor and any
  * headless (export) instance build the exact same schema.
  *
@@ -179,6 +225,7 @@ export function wordBookExtensions() {
     }),
     ParagraphSpacing,
     KeepWithNext,
+    ListStyles,
     PageBreakNode,
     BookmarkNode,
     SmartChipNode,

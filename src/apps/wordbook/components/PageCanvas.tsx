@@ -8,6 +8,7 @@ interface PageCanvasProps {
   plan: PageBreakPlan;
   pageSetup: PageSetup;
   zoom: number;
+  showLineNumbers?: boolean;
 }
 
 /**
@@ -21,7 +22,7 @@ interface PageCanvasProps {
  * needs to be part of the editable DOM tree, so it's plain React, not
  * ProseMirror decorations.
  */
-export default function PageCanvas({ editor, plan, pageSetup, zoom }: PageCanvasProps) {
+export default function PageCanvas({ editor, plan, pageSetup, zoom, showLineNumbers }: PageCanvasProps) {
   const pageWidthPx = mmToPx(pageSetup.widthMm);
   const content = contentAreaMm(pageSetup);
   const contentWidthPx = mmToPx(content.widthMm);
@@ -35,7 +36,7 @@ export default function PageCanvas({ editor, plan, pageSetup, zoom }: PageCanvas
     pages.length > 0 ? pages[pages.length - 1].topOffsetPx + pages[pages.length - 1].heightPx : mmToPx(pageSetup.heightMm);
 
   return (
-    <div className="flex-1 min-h-0 overflow-auto bg-[#e9eaee]" data-testid="wb-scroll-container">
+    <div className={`flex-1 min-h-0 overflow-auto bg-[#e9eaee] ${showLineNumbers ? 'wb-line-numbers' : ''}`} data-testid="wb-scroll-container">
       <style>{`
         .wb-prosemirror { outline: none; }
         .wb-prosemirror p { margin: 0 0 10px 0; }
@@ -50,6 +51,67 @@ export default function PageCanvas({ editor, plan, pageSetup, zoom }: PageCanvas
         .wb-prosemirror ul[data-type="taskList"] li > div { flex: 1; }
         .wb-prosemirror ul[data-type="taskList"] li[data-checked="true"] > div { color: #9ca3af; text-decoration: line-through; }
         .wb-prosemirror ul[data-type="taskList"] ul[data-type="taskList"] { margin: 0; padding-left: 1.4em; }
+
+        /* Checklist style variants (Insert-menu-style picker on the ribbon's checklist button). */
+        .wb-prosemirror ul[data-type="taskList"][data-checklist-variant="round"] li > label input[type="checkbox"] {
+          appearance: none; -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%;
+          border: 1.5px solid #a1a1aa; background: #fff; cursor: pointer; position: relative; margin: 0;
+        }
+        .wb-prosemirror ul[data-type="taskList"][data-checklist-variant="round"] li > label input[type="checkbox"]:checked {
+          background: #16a34a; border-color: #16a34a;
+        }
+        .wb-prosemirror ul[data-type="taskList"][data-checklist-variant="round"] li > label input[type="checkbox"]:checked::after {
+          content: ''; position: absolute; left: 4px; top: 1px; width: 3px; height: 7px; border: solid white;
+          border-width: 0 1.5px 1.5px 0; transform: rotate(45deg);
+        }
+
+        /*
+          Bullet-style presets. Only the shape/glyph varies — native browser
+          nesting already shows disc/circle/square per depth for an
+          untagged list, so "default" is simply the absence of an override.
+          Modern \`::marker\` supports arbitrary \`content\` directly (no
+          \`list-style:none\` + \`::before\` workaround needed).
+        */
+        .wb-prosemirror ul[data-bullet-style="diamond"] > li::marker { content: "❖  "; }
+        .wb-prosemirror ul[data-bullet-style="diamond"] ul > li::marker { content: "➢  "; }
+        .wb-prosemirror ul[data-bullet-style="diamond"] ul ul > li::marker { content: "▪  "; }
+        .wb-prosemirror ul[data-bullet-style="boxes"] > li::marker { content: "▪  "; }
+        .wb-prosemirror ul[data-bullet-style="boxes"] ul > li::marker { content: "▫  "; }
+        .wb-prosemirror ul[data-bullet-style="boxes"] ul ul > li::marker { content: "▣  "; }
+        .wb-prosemirror ul[data-bullet-style="arrow"] > li::marker { content: "➤  "; }
+        .wb-prosemirror ul[data-bullet-style="arrow"] ul > li::marker { content: "◆  "; }
+        .wb-prosemirror ul[data-bullet-style="arrow"] ul ul > li::marker { content: "▪  "; }
+        .wb-prosemirror ul[data-bullet-style="star"] > li::marker { content: "★  "; }
+        .wb-prosemirror ul[data-bullet-style="star"] ul > li::marker { content: "○  "; }
+        .wb-prosemirror ul[data-bullet-style="star"] ul ul > li::marker { content: "▪  "; }
+        .wb-prosemirror ul[data-bullet-style="arrow2"] > li::marker { content: "➤  "; }
+        .wb-prosemirror ul[data-bullet-style="arrow2"] ul > li::marker { content: "○  "; }
+        .wb-prosemirror ul[data-bullet-style="arrow2"] ul ul > li::marker { content: "▪  "; }
+
+        /*
+          Numbered-list-style presets. \`counters(list-item, ".")\` (plural)
+          walks every ancestor list's implicit \`list-item\` counter and joins
+          them — exactly the "1.2.3." legal-numbering look — with no manual
+          counter-reset bookkeeping needed.
+        */
+        .wb-prosemirror ol[data-number-style="default"] { list-style-type: decimal; }
+        .wb-prosemirror ol[data-number-style="default"] ol { list-style-type: lower-alpha; }
+        .wb-prosemirror ol[data-number-style="default"] ol ol { list-style-type: lower-roman; }
+        .wb-prosemirror ol[data-number-style="parens"] > li::marker { content: counter(list-item) ") "; }
+        .wb-prosemirror ol[data-number-style="parens"] ol > li::marker { content: counter(list-item, lower-alpha) ") "; }
+        .wb-prosemirror ol[data-number-style="parens"] ol ol > li::marker { content: counter(list-item, lower-roman) ") "; }
+        .wb-prosemirror ol[data-number-style="legal"] > li::marker,
+        .wb-prosemirror ol[data-number-style="legal"] ol > li::marker,
+        .wb-prosemirror ol[data-number-style="legal"] ol ol > li::marker { content: counters(list-item, ".") ". "; }
+        .wb-prosemirror ol[data-number-style="upperAlpha"] { list-style-type: upper-alpha; }
+        .wb-prosemirror ol[data-number-style="upperAlpha"] ol { list-style-type: lower-alpha; }
+        .wb-prosemirror ol[data-number-style="upperAlpha"] ol ol { list-style-type: lower-roman; }
+        .wb-prosemirror ol[data-number-style="upperRoman"] { list-style-type: upper-roman; }
+        .wb-prosemirror ol[data-number-style="upperRoman"] ol { list-style-type: upper-alpha; }
+        .wb-prosemirror ol[data-number-style="upperRoman"] ol ol { list-style-type: decimal; }
+        .wb-prosemirror ol[data-number-style="zeroPadded"] { list-style-type: decimal-leading-zero; }
+        .wb-prosemirror ol[data-number-style="zeroPadded"] ol { list-style-type: lower-alpha; }
+        .wb-prosemirror ol[data-number-style="zeroPadded"] ol ol { list-style-type: lower-roman; }
         .wb-prosemirror table { border-collapse: collapse; margin: 0 0 10px 0; width: 100%; }
         .wb-prosemirror td, .wb-prosemirror th { border: 1px solid #d4d4d8; padding: 4px 8px; }
         .wb-prosemirror img { max-width: 100%; }
@@ -100,6 +162,35 @@ export default function PageCanvas({ editor, plan, pageSetup, zoom }: PageCanvas
         }
         .wb-chip-date { cursor: default; }
         .wb-dropdown-chip { background: #f0fdf4; color: #166534; border-color: #bbf7d0; }
+        .wb-chip-citation {
+          background: transparent; border: none; padding: 0 1px; margin: 0; color: #2563eb; font-weight: 600;
+          font-size: 0.75em; vertical-align: super; line-height: 1; cursor: pointer;
+        }
+
+        /*
+          Continuous, document-wide numbering of each top-level block — not
+          true per-wrapped-visual-line numbers the way Word/Docs count them
+          (that needs live layout measurement of soft-wraps, the same
+          technique domMeasurement.ts uses for pagination; a real thing to
+          add later, not something CSS counters alone can do). Counting
+          blocks instead is what a CSS counter can express reliably with no
+          extra JS, and reads sensibly here since every editable page is one
+          continuous surface with no per-page DOM boundary to reset a
+          per-page counter at anyway.
+        */
+        .wb-line-numbers .wb-prosemirror { counter-reset: wb-line; }
+        .wb-line-numbers .wb-prosemirror > * { counter-increment: wb-line; position: relative; }
+        .wb-line-numbers .wb-prosemirror > *::before {
+          content: counter(wb-line);
+          position: absolute;
+          left: -2.6em;
+          top: 0.1em;
+          width: 2em;
+          text-align: right;
+          font-size: 0.7em;
+          color: #a1a1aa;
+          user-select: none;
+        }
         .wb-prosemirror a { cursor: text; }
         .wb-search-match { background: #fef08a; border-radius: 2px; }
         .wb-search-match-current { background: #fb923c; }

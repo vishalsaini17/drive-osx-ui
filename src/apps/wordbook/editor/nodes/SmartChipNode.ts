@@ -4,12 +4,14 @@ declare module '@tiptap/core' {
   interface Commands<ReturnType> {
     smartChip: {
       insertSmartChip: (attrs: {
-        chipType: 'date' | 'person' | 'file' | 'event';
+        chipType: 'date' | 'person' | 'file' | 'event' | 'citation';
         label: string;
         fileId?: string;
         personId?: string;
         personEmail?: string;
         eventId?: string;
+        citationIndex?: number;
+        citationText?: string;
       }) => ReturnType;
     };
   }
@@ -69,6 +71,19 @@ export const SmartChipNode = Node.create({
         parseHTML: (el) => el.getAttribute('data-event-id'),
         renderHTML: (attrs) => (attrs.eventId ? { 'data-event-id': attrs.eventId } : {}),
       },
+      citationIndex: {
+        default: null,
+        parseHTML: (el) => {
+          const v = el.getAttribute('data-citation-index');
+          return v ? parseInt(v, 10) : null;
+        },
+        renderHTML: (attrs) => (attrs.citationIndex != null ? { 'data-citation-index': String(attrs.citationIndex) } : {}),
+      },
+      citationText: {
+        default: null,
+        parseHTML: (el) => el.getAttribute('data-citation-text'),
+        renderHTML: (attrs) => (attrs.citationText ? { 'data-citation-text': attrs.citationText } : {}),
+      },
     };
   },
 
@@ -79,6 +94,21 @@ export const SmartChipNode = Node.create({
   renderHTML({ node, HTMLAttributes }) {
     const chipType = node.attrs.chipType as string;
     const label = node.attrs.label as string;
+
+    if (chipType === 'citation') {
+      const citationText = node.attrs.citationText as string;
+      return [
+        'span',
+        mergeAttributes(HTMLAttributes, {
+          'data-chip': '',
+          class: 'wb-chip wb-chip-citation',
+          contenteditable: 'false',
+          title: citationText || 'Citation',
+        }),
+        label,
+      ];
+    }
+
     return [
       'span',
       mergeAttributes(HTMLAttributes, {

@@ -27,6 +27,14 @@ interface WordBookShellProps {
   onToggleStar: () => void;
   isOutlineOpen: boolean;
   onToggleOutline: () => void;
+  spellcheckOn: boolean;
+  onToggleSpellcheck: () => void;
+  showLineNumbers: boolean;
+  isViewOnly: boolean;
+  onSetViewOnly: (viewOnly: boolean) => void;
+  canShare: boolean;
+  onShare: () => void;
+  onShareToChat: () => void;
 }
 
 export default function WordBookShell({
@@ -46,6 +54,14 @@ export default function WordBookShell({
   onToggleStar,
   isOutlineOpen,
   onToggleOutline,
+  spellcheckOn,
+  onToggleSpellcheck,
+  showLineNumbers,
+  isViewOnly,
+  onSetViewOnly,
+  canShare,
+  onShare,
+  onShareToChat,
 }: WordBookShellProps) {
   return (
     <AppShell className="bg-[#d8d9de] text-zinc-900">
@@ -58,22 +74,42 @@ export default function WordBookShell({
         onSave={onSave}
         onRename={onRenameTitle}
         onToggleStar={onToggleStar}
+        isViewOnly={isViewOnly}
+        onSetViewOnly={onSetViewOnly}
+        canShare={canShare}
+        onShare={onShare}
+        onShareToChat={onShareToChat}
       />
-      <RibbonToolbar
-        editor={editor}
-        zoom={zoom}
-        onZoomChange={onZoomChange}
-        currentFolderId={currentFolderId}
-        resolveDefaultFolderId={resolveDefaultFolderId}
-        isOutlineOpen={isOutlineOpen}
-        onToggleOutline={onToggleOutline}
-      />
+      {/* Viewing hides the whole editing ribbon rather than just disabling
+          it — a row of buttons that visibly do nothing when clicked is a
+          worse signal of "read-only" than the row simply not being there. */}
+      {!isViewOnly && (
+        <RibbonToolbar
+          editor={editor}
+          zoom={zoom}
+          onZoomChange={onZoomChange}
+          currentFolderId={currentFolderId}
+          resolveDefaultFolderId={resolveDefaultFolderId}
+          isOutlineOpen={isOutlineOpen}
+          onToggleOutline={onToggleOutline}
+          spellcheckOn={spellcheckOn}
+          onToggleSpellcheck={onToggleSpellcheck}
+        />
+      )}
+      {isViewOnly && (
+        <div className="shrink-0 bg-amber-50 border-b border-amber-200 px-3 py-1.5 text-[11px] text-amber-800 flex items-center gap-1.5">
+          <span>Viewing — this document is read-only.</span>
+          <button type="button" onClick={() => onSetViewOnly(false)} className="underline hover:no-underline cursor-pointer font-medium">
+            Switch to Editing
+          </button>
+        </div>
+      )}
       <div className="flex-1 min-h-0 flex">
         {isOutlineOpen && editor && <OutlineSidebar editor={editor} onClose={onToggleOutline} />}
-        <PageCanvas editor={editor} plan={plan} pageSetup={pageSetup} zoom={zoom} />
+        <PageCanvas editor={editor} plan={plan} pageSetup={pageSetup} zoom={zoom} showLineNumbers={showLineNumbers} />
       </div>
-      {editor && <TableContextToolbar editor={editor} />}
-      {editor && (
+      {!isViewOnly && editor && <TableContextToolbar editor={editor} />}
+      {!isViewOnly && editor && (
         <ImageContextToolbar editor={editor} currentFolderId={currentFolderId} resolveDefaultFolderId={resolveDefaultFolderId} />
       )}
     </AppShell>

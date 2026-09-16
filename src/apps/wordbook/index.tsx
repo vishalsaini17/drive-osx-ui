@@ -39,7 +39,19 @@ import TableGridPicker from './components/TableGridPicker';
 import DrawingModal from './components/DrawingModal';
 import ChartModal, { ChartType, DataRow } from './components/ChartModal';
 import { extractChartRowsFromSheet, parseWorkbookContent } from './editor/chartFromSheet';
-import { downloadAsTxt, downloadAsHtml, downloadAsMarkdown, downloadAsDocx, downloadAsPdf } from './export/exportDocument';
+import {
+  downloadAsTxt,
+  downloadAsHtml,
+  downloadAsMarkdown,
+  downloadAsDocx,
+  downloadAsPdf,
+  buildTxtBlob,
+  buildHtmlBlob,
+  buildMarkdownBlob,
+  buildDocxBlob,
+  buildPdfBlob,
+} from './export/exportDocument';
+import ShareToChatModal, { ShareFormat } from './components/ShareToChatModal';
 import { uploadAndInsertImage } from './editor/insertImage';
 import { promptForLink } from './editor/linkActions';
 import { BUILDING_BLOCKS, SIGNATURE_LINE_CONTENT } from './editor/buildingBlocks';
@@ -47,6 +59,9 @@ import DateChipModal from './components/DateChipModal';
 import PeopleChipModal from './components/PeopleChipModal';
 import CalendarEventChipModal from './components/CalendarEventChipModal';
 import DropdownChipModal from './components/DropdownChipModal';
+import CitationsModal from './components/CitationsModal';
+import DictionaryModal from './components/DictionaryModal';
+import PreferencesModal from './components/PreferencesModal';
 import { MessagingService, DirectoryUser } from '../../platform/messaging/MessagingService';
 import { CalendarEvent } from '../../platform/types';
 import { getAppForFile } from '../../platform/registry/EditorRegistry';
@@ -131,6 +146,7 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
   const [findShowReplace, setFindShowReplace] = useState(false);
   const [isOutlineOpen, setIsOutlineOpen] = useState(false);
   const [isShareOpen, setIsShareOpen] = useState(false);
+  const [isShareToChatOpen, setIsShareToChatOpen] = useState(false);
   const [isPropertiesOpen, setIsPropertiesOpen] = useState(false);
   const [isVersionHistoryOpen, setIsVersionHistoryOpen] = useState(false);
   const [isPageSetupOpen, setIsPageSetupOpen] = useState(false);
@@ -149,6 +165,19 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
   // clicked — rendered with the same `MenuPanel` the app's own menus use
   // (see WindowMenu.tsx) rather than a second popover implementation.
   const [openDropdownPicker, setOpenDropdownPicker] = useState<{ items: MenuItem[]; placement: Placement } | null>(null);
+  const [isCitationsOpen, setIsCitationsOpen] = useState(false);
+  const [isDictionaryOpen, setIsDictionaryOpen] = useState(false);
+  const [dictionaryInitialTerm, setDictionaryInitialTerm] = useState('');
+  const [isPreferencesOpen, setIsPreferencesOpen] = useState(false);
+  const [isVoiceTypingOn, setIsVoiceTypingOn] = useState(false);
+  const voiceRecognitionRef = useRef<any>(null);
+  // Lifted out of RibbonToolbar (which used to own it as local state) so
+  // Tools > Spelling and grammar > Spelling and grammar check and
+  // Tools > Preferences can toggle the same single source of truth the
+  // ribbon's own spellcheck button does.
+  const [spellcheckOn, setSpellcheckOn] = useState(true);
+  const [showLineNumbers, setShowLineNumbers] = useState(false);
+  const [isViewOnly, setIsViewOnly] = useState(false);
 
   // Opens whatever a File smart chip points at, in a *new* window — never
   // reusing/replacing the current wordbook window's own open document, which
@@ -247,6 +276,9 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
               openAppWindow('contacts');
             } else if (chipType === 'event') {
               openAppWindow('calendar');
+            } else if (chipType === 'citation') {
+              const text = chipEl.getAttribute('data-citation-text');
+              if (text) alert(text);
             }
             // A date chip has nothing to open — swallowing the click still
             // keeps it from doing anything stranger than nothing (it's an
@@ -667,6 +699,71 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
     repaginateNow(editor.view, paginationOptions);
   }, [editor, paginationOptions]);
 
+  const toggleSpellcheck = useCallback(() => {
+    if (!editor) return;
+    const next = !spellcheckOn;
+    editor.view.dom.setAttribute('spellcheck', String(next));
+    setSpellcheckOn(next);
+  }, [editor, spellcheckOn]);
+
+  const toggleLineNumbers = useCallback(() => setShowLineNumbers((v) => !v), []);
+
+  // A plain, honest `setEditable` toggle — not a real "Viewing" collaborator
+  // role with its own permission check, just a local read-only switch for
+  // whoever has this window open.
+  useEffect(() => {
+    editor?.setEditable(!isViewOnly);
+  }, [editor, isViewOnly]);
+
+  const showDictionary = useCallback(() => {
+    if (!editor) return;
+    const { from, to } = editor.state.selection;
+    const selected = from === to ? '' : editor.state.doc.textBetween(from, to, ' ').trim();
+    setDictionaryInitialTerm(selected);
+    setIsDictionaryOpen(true);
+  }, [editor]);
+
+  // Web Speech API — a real browser capability (Chrome/Edge), not a fake
+  // stub — with no server-side speech-to-text of its own to fall back on.
+  // Unsupported browsers get a clear message instead of a silently dead menu
+  // item.
+  const toggleVoiceTyping = useCallback(() => {
+    if (isVoiceTypingOn) {
+      voiceRecognitionRef.current?.stop();
+      return;
+    }
+    const SpeechRecognitionCtor = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognitionCtor) {
+      alert('Voice typing is not supported in this browser. Try Chrome or Edge.');
+      return;
+    }
+    const recognition = new SpeechRecognitionCtor();
+    recognition.continuous = true;
+    recognition.interimResults = false;
+    recognition.lang = 'en-US';
+    recognition.onresult = (event: any) => {
+      let finalText = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        if (event.results[i].isFinal) finalText += event.results[i][0].transcript;
+      }
+      const trimmed = finalText.trim();
+      if (trimmed) editor?.chain().focus().insertContent(`${trimmed} `).run();
+    };
+    recognition.onerror = (event: any) => {
+      console.error('Voice typing error:', event.error);
+      if (event.error !== 'no-speech') alert(`Voice typing stopped: ${event.error}`);
+    };
+    recognition.onend = () => {
+      setIsVoiceTypingOn(false);
+      voiceRecognitionRef.current = null;
+    };
+    recognition.start();
+    voiceRecognitionRef.current = recognition;
+    setIsVoiceTypingOn(true);
+  }, [isVoiceTypingOn, editor]);
+
+  useEffect(() => () => voiceRecognitionRef.current?.stop(), []);
+
   // Shared by the File-menu "Rename…" prompt and the title bar's
   // click-to-edit field. A document with no `currentFileId` yet (never
   // saved) still accepts a new title — it just isn't persisted anywhere
@@ -816,7 +913,22 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
     [editor, paginationOptions]
   );
 
-  const currentFileItem = currentFileId ? files.find((f) => f.id === currentFileId) ?? null : null;
+  // `files` is the OS-wide file list — populated as folders get listed, not
+  // guaranteed to already contain a file wordbook itself just created (e.g.
+  // a brand-new document saved for the first time, before anything ever
+  // lists its parent folder). `ShareModal`/`PropertiesModal` silently render
+  // nothing when handed a null `fileItem` — this fallback is what was
+  // missing: a document that's actually been saved (`currentFileId` is set)
+  // always gets a real, if minimal, `FileItem` to work with instead.
+  const currentFileItem: FileItem | null = currentFileId
+    ? files.find((f) => f.id === currentFileId) ?? {
+        id: currentFileId,
+        name: docTitle.endsWith(BOOK_EXTENSION) ? docTitle : `${docTitle}${BOOK_EXTENSION}`,
+        type: 'file',
+        parentId: currentFolderId,
+        createdAt: new Date().toISOString(),
+      }
+    : null;
 
   const [folderPathString, setFolderPathString] = useState('My Drive');
   useEffect(() => {
@@ -901,6 +1013,43 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
     }
   }, [editor, paginationOptions, plan, docTitle]);
 
+  // Builds the attachment for Share to Chat — the same conversion logic
+  // Download already uses (`buildXBlob` in exportDocument.ts), just handed
+  // back as a Blob instead of saved to disk. `.book` needs its own branch
+  // since it isn't one of that module's formats — it's this app's own
+  // native save format (`toBookDocument`/`serializeBookFile`, the same pair
+  // `handleSave` itself calls).
+  const buildShareBlob = useCallback(
+    async (format: ShareFormat): Promise<{ blob: Blob; filename: string }> => {
+      if (!editor) throw new Error('The document is not ready yet.');
+      if (format === 'book') {
+        repaginateNow(editor.view, paginationOptions);
+        const book = toBookDocument(editor.getJSON(), bookMeta, pageSetup);
+        return {
+          blob: new Blob([serializeBookFile(book)], { type: BOOK_MIME_TYPE }),
+          filename: docTitle.endsWith(BOOK_EXTENSION) ? docTitle : `${docTitle}${BOOK_EXTENSION}`,
+        };
+      }
+      if (format === 'docx') {
+        return { blob: await buildDocxBlob(editor.getJSON()), filename: `${docTitle}.docx` };
+      }
+      if (format === 'pdf') {
+        repaginateNow(editor.view, paginationOptions);
+        const freshPlan = getPaginationPlan(editor.view) ?? plan;
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        return { blob: await buildPdfBlob(freshPlan), filename: `${docTitle}.pdf` };
+      }
+      if (format === 'txt') {
+        return { blob: buildTxtBlob(editor.getText()), filename: `${docTitle}.txt` };
+      }
+      if (format === 'html') {
+        return { blob: buildHtmlBlob(editor.getHTML(), docTitle), filename: `${docTitle}.html` };
+      }
+      return { blob: buildMarkdownBlob(editor.getHTML()), filename: `${docTitle}.md` };
+    },
+    [editor, bookMeta, pageSetup, paginationOptions, plan, docTitle]
+  );
+
   // After a version restore, the file's *stored* content has changed under
   // the currently-open editor — reload it the same way opening the file
   // fresh would, rather than trying to reconcile the live in-memory doc
@@ -966,11 +1115,14 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
       } else if (event.key.toLowerCase() === 'k') {
         event.preventDefault();
         if (editor) promptForLink(editor);
+      } else if (event.key.toLowerCase() === 'y' && event.shiftKey) {
+        event.preventDefault();
+        showDictionary();
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [handleSaveClick, beginSaveAs, handleNew, pasteWithoutFormatting, editor]);
+  }, [handleSaveClick, beginSaveAs, handleNew, pasteWithoutFormatting, editor, showDictionary]);
 
   useAppMenu(windowId, [
     {
@@ -985,6 +1137,7 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
         { id: 'make-copy', label: 'Make a Copy', disabled: !currentFileId, onSelect: () => void handleMakeCopy() },
         separator(),
         { id: 'share', label: 'Share…', disabled: !currentFileId, onSelect: () => setIsShareOpen(true) },
+        { id: 'share-to-chat', label: 'Share to Chat…', disabled: !currentFileId, onSelect: () => setIsShareToChatOpen(true) },
         {
           kind: 'submenu',
           id: 'download',
@@ -1190,11 +1343,32 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
     {
       id: 'tools',
       label: 'Tools',
-      // No keyboard shortcut bound — Ctrl+Shift+C is reserved by most
-      // browsers for DevTools' element inspector, so claiming it here would
-      // either silently lose to the browser or misleadingly label a
-      // shortcut that doesn't actually work.
-      items: [{ id: 'word-count', label: 'Word Count…', onSelect: showWordCount }],
+      items: [
+        {
+          kind: 'submenu',
+          id: 'spelling-grammar',
+          label: 'Spelling and grammar',
+          // Only one real, working item: the browser's own native spellcheck
+          // toggle. Docs' "show spelling/grammar suggestions" sub-toggles and
+          // "personal dictionary" all assume a grammar engine and a custom
+          // wordlist this app doesn't have — native browser spellcheck is a
+          // single on/off with no API to split or extend it further.
+          items: [{ id: 'spellcheck-check', label: 'Spelling and grammar check', checked: spellcheckOn, onSelect: toggleSpellcheck }],
+        },
+        // No keyboard shortcut bound — Ctrl+Shift+C is reserved by most
+        // browsers for DevTools' element inspector, so claiming it here would
+        // either silently lose to the browser or misleadingly label a
+        // shortcut that doesn't actually work.
+        { id: 'word-count', label: 'Word Count…', onSelect: showWordCount },
+        separator(),
+        { id: 'citations', label: 'Citations…', onSelect: () => setIsCitationsOpen(true) },
+        { id: 'line-numbers', label: 'Line numbers', checked: showLineNumbers, onSelect: toggleLineNumbers },
+        { id: 'dictionary', label: 'Dictionary…', shortcut: 'Ctrl+Shift+Y', onSelect: showDictionary },
+        separator(),
+        { id: 'voice-typing', label: 'Voice typing', checked: isVoiceTypingOn, onSelect: toggleVoiceTyping },
+        separator(),
+        { id: 'preferences', label: 'Preferences…', onSelect: () => setIsPreferencesOpen(true) },
+      ],
     },
   ]);
 
@@ -1217,6 +1391,14 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
         onToggleStar={() => void handleToggleStar()}
         isOutlineOpen={isOutlineOpen}
         onToggleOutline={() => setIsOutlineOpen((v) => !v)}
+        spellcheckOn={spellcheckOn}
+        onToggleSpellcheck={toggleSpellcheck}
+        showLineNumbers={showLineNumbers}
+        isViewOnly={isViewOnly}
+        onSetViewOnly={setIsViewOnly}
+        canShare={!!currentFileId}
+        onShare={() => setIsShareOpen(true)}
+        onShareToChat={() => setIsShareToChatOpen(true)}
       />
       <OpenBookModal
         isOpen={isOpenModalOpen}
@@ -1234,6 +1416,7 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
         onClose={() => setIsShareOpen(false)}
         onSharedChanged={(fileId, shared) => setFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, isShared: shared } : f)))}
       />
+      <ShareToChatModal isOpen={isShareToChatOpen} onClose={() => setIsShareToChatOpen(false)} docTitle={docTitle} onGetBlob={buildShareBlob} />
       <PropertiesModal
         item={currentFileItem}
         isOpen={isPropertiesOpen}
@@ -1297,6 +1480,24 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
           onClose={() => setOpenDropdownPicker(null)}
           placement={openDropdownPicker.placement}
         />
+      )}
+      <CitationsModal isOpen={isCitationsOpen} onClose={() => setIsCitationsOpen(false)} editor={editor} />
+      <DictionaryModal isOpen={isDictionaryOpen} onClose={() => setIsDictionaryOpen(false)} initialTerm={dictionaryInitialTerm} />
+      <PreferencesModal
+        isOpen={isPreferencesOpen}
+        onClose={() => setIsPreferencesOpen(false)}
+        spellcheckOn={spellcheckOn}
+        onToggleSpellcheck={toggleSpellcheck}
+        showLineNumbers={showLineNumbers}
+        onToggleLineNumbers={toggleLineNumbers}
+      />
+      {isVoiceTypingOn && (
+        <div className="fixed bottom-6 right-6 z-[9999] flex items-center gap-2 bg-red-600 text-white text-xs font-medium px-3 py-2 rounded-full shadow-lg">
+          <span className="w-2 h-2 rounded-full bg-white animate-pulse" /> Listening…
+          <button onClick={toggleVoiceTyping} className="ml-1 underline cursor-pointer">
+            Stop
+          </button>
+        </div>
       )}
       <input
         ref={insertImageFileInputRef}

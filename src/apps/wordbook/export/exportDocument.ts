@@ -34,12 +34,22 @@ function triggerDownload(blob: Blob, filename: string): void {
   URL.revokeObjectURL(url);
 }
 
+// Each format below is split into a `buildXBlob` (the actual conversion,
+// used by both "Download" and "Share to Chat" — see ShareToChatModal.tsx,
+// which attaches the same blob to a message instead of saving it to disk)
+// and a thin `downloadAsX` wrapper that just hands that blob to
+// `triggerDownload`.
+
+export function buildTxtBlob(text: string): Blob {
+  return new Blob([text], { type: 'text/plain;charset=utf-8' });
+}
+
 export function downloadAsTxt(text: string, baseName: string): void {
-  triggerDownload(new Blob([text], { type: 'text/plain;charset=utf-8' }), `${baseName}.txt`);
+  triggerDownload(buildTxtBlob(text), `${baseName}.txt`);
 }
 
 /** Wraps `editor.getHTML()` in a minimal standalone document — the editor's own fragment has no `<html>/<head>`, so opened on its own in a browser it would render unstyled and title-less. */
-export function downloadAsHtml(bodyHtml: string, docTitle: string): void {
+export function buildHtmlBlob(bodyHtml: string, docTitle: string): Blob {
   const html = `<!DOCTYPE html>
 <html>
 <head>
@@ -56,7 +66,11 @@ export function downloadAsHtml(bodyHtml: string, docTitle: string): void {
 ${bodyHtml}
 </body>
 </html>`;
-  triggerDownload(new Blob([html], { type: 'text/html;charset=utf-8' }), `${docTitle}.html`);
+  return new Blob([html], { type: 'text/html;charset=utf-8' });
+}
+
+export function downloadAsHtml(bodyHtml: string, docTitle: string): void {
+  triggerDownload(buildHtmlBlob(bodyHtml, docTitle), `${docTitle}.html`);
 }
 
 function escapeHtml(s: string): string {
@@ -64,10 +78,14 @@ function escapeHtml(s: string): string {
 }
 
 /** Markdown export goes HTML → Markdown via Turndown rather than walking ProseMirror JSON directly — reusing `editor.getHTML()` means every mark TipTap already knows how to render (color, highlight, links, tables) is handled by Turndown's own rules instead of a second hand-written conversion. */
-export function downloadAsMarkdown(bodyHtml: string, baseName: string): void {
+export function buildMarkdownBlob(bodyHtml: string): Blob {
   const turndown = new TurndownService({ headingStyle: 'atx', bulletListMarker: '-' });
   const markdown = turndown.turndown(bodyHtml);
-  triggerDownload(new Blob([markdown], { type: 'text/markdown;charset=utf-8' }), `${baseName}.md`);
+  return new Blob([markdown], { type: 'text/markdown;charset=utf-8' });
+}
+
+export function downloadAsMarkdown(bodyHtml: string, baseName: string): void {
+  triggerDownload(buildMarkdownBlob(bodyHtml), `${baseName}.md`);
 }
 
 // --------------------------------------------------------------------------
@@ -185,13 +203,16 @@ function docBlockToElements(node: PMJSONNode): (Paragraph | Table)[] {
   return blockToParagraphs(node);
 }
 
-export async function downloadAsDocx(editorJSON: PMJSONNode, docTitle: string): Promise<void> {
+export async function buildDocxBlob(editorJSON: PMJSONNode): Promise<Blob> {
   const elements = (editorJSON.content ?? []).flatMap((node) => docBlockToElements(node));
   const doc = new Document({
     sections: [{ children: elements.length > 0 ? elements : [new Paragraph({})] }],
   });
-  const blob = await Packer.toBlob(doc);
-  triggerDownload(blob, `${docTitle}.docx`);
+  return Packer.toBlob(doc);
+}
+
+export async function downloadAsDocx(editorJSON: PMJSONNode, docTitle: string): Promise<void> {
+  triggerDownload(await buildDocxBlob(editorJSON), `${docTitle}.docx`);
 }
 
 // --------------------------------------------------------------------------
@@ -214,7 +235,7 @@ export async function downloadAsDocx(editorJSON: PMJSONNode, docTitle: string): 
 // bundle cost is only ever paid by someone who actually exports a PDF.
 // --------------------------------------------------------------------------
 
-export async function downloadAsPdf(plan: PageBreakPlan, docTitle: string): Promise<void> {
+export async function buildPdfBlob(plan: PageBreakPlan): Promise<Blob> {
   const pageStackEl = document.querySelector<HTMLElement>('[data-wb-page-stack]');
   if (!pageStackEl || plan.pages.length === 0) {
     throw new Error('The document is not ready to export yet — try again in a moment.');
@@ -258,5 +279,9 @@ export async function downloadAsPdf(plan: PageBreakPlan, docTitle: string): Prom
     pdf.addImage(sliceCanvas.toDataURL('image/jpeg', 0.92), 'JPEG', 0, 0, page.pageSetup.widthMm, page.pageSetup.heightMm);
   });
 
-  pdf.save(`${docTitle}.pdf`);
+  return pdf.output('blob');
+}
+
+export async function downloadAsPdf(plan: PageBreakPlan, docTitle: string): Promise<void> {
+  triggerDownload(await buildPdfBlob(plan), `${docTitle}.pdf`);
 }

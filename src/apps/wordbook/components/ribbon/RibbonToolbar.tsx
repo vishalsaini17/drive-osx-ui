@@ -28,8 +28,9 @@ import {
   Paintbrush,
   RemoveFormatting,
   PanelLeft,
+  ChevronDown,
 } from 'lucide-react';
-import { RibbonDivider, RibbonButton, RibbonSelect, RibbonColorPicker, RibbonStepper } from './RibbonPrimitives';
+import { RibbonDivider, RibbonButton, RibbonSelect, RibbonColorPicker, RibbonStepper, RibbonDropdown } from './RibbonPrimitives';
 import { uploadAndInsertImage } from '../../editor/insertImage';
 import { promptForLink } from '../../editor/linkActions';
 
@@ -110,6 +111,45 @@ function withCurrentValue(presets: string[], value: string): string[] {
   return presets.includes(value) ? presets : [...presets, value].sort((a, b) => parseFloat(a) - parseFloat(b));
 }
 
+const ZOOM_PRESETS = [0.5, 0.75, 0.9, 1, 1.25, 1.5, 2];
+
+const BULLET_STYLES: { id: string; preview: [string, string, string] }[] = [
+  { id: 'default', preview: ['●', '○', '▪'] },
+  { id: 'diamond', preview: ['❖', '➢', '▪'] },
+  { id: 'boxes', preview: ['▪', '▫', '▣'] },
+  { id: 'arrow', preview: ['➤', '◆', '▪'] },
+  { id: 'star', preview: ['★', '○', '▪'] },
+  { id: 'arrow2', preview: ['➤', '○', '▪'] },
+];
+
+const NUMBER_STYLES: { id: string; preview: [string, string, string] }[] = [
+  { id: 'default', preview: ['1.', 'a.', 'i.'] },
+  { id: 'parens', preview: ['1)', 'a)', 'i)'] },
+  { id: 'legal', preview: ['1.', '1.1.', '1.2.1.'] },
+  { id: 'upperAlpha', preview: ['A.', 'a.', 'i.'] },
+  { id: 'upperRoman', preview: ['I.', 'A.', '1.'] },
+  { id: 'zeroPadded', preview: ['01.', 'a.', 'i.'] },
+];
+
+const CHECKLIST_VARIANTS = [
+  { id: 'square', label: 'Square' },
+  { id: 'round', label: 'Round' },
+];
+
+/** A 3-row mini preview matching how Docs shows each list-style option — a marker glyph per nesting depth beside a placeholder line, indented to suggest the nesting. */
+function ListStylePreview({ preview }: { preview: [string, string, string] }) {
+  return (
+    <div className="flex flex-col gap-1">
+      {preview.map((glyph, i) => (
+        <div key={i} className="flex items-center gap-1" style={{ paddingLeft: i * 8 }}>
+          <span className="text-[10px] w-4 text-zinc-600">{glyph}</span>
+          <span className="h-1 flex-1 rounded bg-zinc-300" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 const HEADING_STYLES = [
   { value: 'paragraph', label: 'Normal text' },
   { value: 'h1', label: 'Heading 1' },
@@ -128,6 +168,8 @@ interface RibbonToolbarProps {
   resolveDefaultFolderId: (name: string) => string | null;
   isOutlineOpen: boolean;
   onToggleOutline: () => void;
+  spellcheckOn: boolean;
+  onToggleSpellcheck: () => void;
 }
 
 export default function RibbonToolbar({
@@ -138,9 +180,10 @@ export default function RibbonToolbar({
   resolveDefaultFolderId,
   isOutlineOpen,
   onToggleOutline,
+  spellcheckOn,
+  onToggleSpellcheck,
 }: RibbonToolbarProps) {
   const imageInputRef = useRef<HTMLInputElement>(null);
-  const [spellcheckOn, setSpellcheckOn] = useState(true);
 
   // "Paint format": captures the mark set at the cursor, then applies it to
   // whatever the *next* non-empty selection turns out to be, one time. Kept
@@ -239,12 +282,6 @@ export default function RibbonToolbar({
     setPaintFormatActive(true);
   };
 
-  const toggleSpellcheck = () => {
-    const next = !spellcheckOn;
-    editor.view.dom.setAttribute('spellcheck', String(next));
-    setSpellcheckOn(next);
-  };
-
   // Unlike Word, this editor does not auto-continue numbering across an
   // interrupting paragraph — every new ordered list starts fresh at 1 (its
   // own attribute default). So the useful direction here is "continue from
@@ -268,6 +305,24 @@ export default function RibbonToolbar({
     if (continuation !== null) {
       editor.chain().focus().updateAttributes('orderedList', { start: continuation }).run();
     }
+  };
+
+  // Turning a list *on* (toggleBulletList/toggleOrderedList/toggleTaskList)
+  // when it's already the active type would toggle it *off* instead — these
+  // only do that the first time, then just restyle whichever list is there.
+  const applyBulletStyle = (bulletStyle: string) => {
+    if (!editor.isActive('bulletList')) editor.chain().focus().toggleBulletList().run();
+    editor.chain().focus().updateAttributes('bulletList', { bulletStyle }).run();
+  };
+
+  const applyNumberStyle = (numberStyle: string) => {
+    if (!editor.isActive('orderedList')) editor.chain().focus().toggleOrderedList().run();
+    editor.chain().focus().updateAttributes('orderedList', { numberStyle }).run();
+  };
+
+  const applyChecklistVariant = (checklistVariant: string) => {
+    if (!editor.isActive('taskList')) editor.chain().focus().toggleTaskList().run();
+    editor.chain().focus().updateAttributes('taskList', { checklistVariant }).run();
   };
 
   const insertImageFromFile = async (file: File) => {
@@ -302,7 +357,7 @@ export default function RibbonToolbar({
         <RibbonButton title="Print" onClick={() => window.print()}>
           <Printer className="w-3.5 h-3.5" />
         </RibbonButton>
-        <RibbonButton title={spellcheckOn ? 'Spellcheck: on' : 'Spellcheck: off'} active={spellcheckOn} onClick={toggleSpellcheck}>
+        <RibbonButton title={spellcheckOn ? 'Spellcheck: on' : 'Spellcheck: off'} active={spellcheckOn} onClick={onToggleSpellcheck}>
           <SpellCheck className="w-3.5 h-3.5" />
         </RibbonButton>
         <RibbonButton title="Paint format — copy formatting, then click or select text to apply it" active={paintFormatActive} onClick={startPaintFormat}>
@@ -314,15 +369,49 @@ export default function RibbonToolbar({
         <RibbonButton title="Zoom out" disabled={zoom <= 0.5} onClick={() => onZoomChange(Math.max(0.5, Math.round((zoom - 0.1) * 10) / 10))}>
           <ZoomOut className="w-3.5 h-3.5" />
         </RibbonButton>
-        <button
-          type="button"
-          title="Reset zoom"
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={() => onZoomChange(1)}
-          className="text-xs text-zinc-600 tabular-nums w-10 text-center cursor-pointer hover:text-zinc-900"
+        <RibbonDropdown
+          title="Zoom"
+          widthClass="w-24"
+          trigger={
+            <>
+              <span className="text-xs text-zinc-700 tabular-nums w-10 text-center">{Math.round(zoom * 100)}%</span>
+              <ChevronDown className="w-3 h-3 text-zinc-500" />
+            </>
+          }
         >
-          {Math.round(zoom * 100)}%
-        </button>
+          <button
+            type="button"
+            onClick={() => {
+              const container = document.querySelector<HTMLElement>('[data-testid="wb-scroll-container"]');
+              const pageEl = document.querySelector<HTMLElement>('[data-wb-page-stack]');
+              if (!container || !pageEl) return;
+              // The page element's own width is already zoom-scaled (a CSS
+              // `transform`, not a layout change) — dividing back out by the
+              // *current* zoom recovers its true, zoom-independent width, the
+              // same reasoning `PageCanvas.tsx`'s own zoom comment relies on.
+              const unzoomedPageWidth = pageEl.getBoundingClientRect().width / zoom;
+              const available = container.clientWidth - 48;
+              const fit = Math.min(2, Math.max(0.3, Math.round((available / unzoomedPageWidth) * 100) / 100));
+              onZoomChange(fit);
+            }}
+            className="w-full text-left px-2 py-1 rounded hover:bg-zinc-100 text-xs text-zinc-700 cursor-pointer"
+          >
+            Fit
+          </button>
+          <div className="border-t border-zinc-200 my-1" />
+          {ZOOM_PRESETS.map((preset) => (
+            <button
+              key={preset}
+              type="button"
+              onClick={() => onZoomChange(preset)}
+              className={`w-full text-left px-2 py-1 rounded hover:bg-zinc-100 text-xs cursor-pointer ${
+                Math.round(zoom * 100) === Math.round(preset * 100) ? 'bg-purple-50 text-purple-700 font-medium' : 'text-zinc-700'
+              }`}
+            >
+              {Math.round(preset * 100)}%
+            </button>
+          ))}
+        </RibbonDropdown>
         <RibbonButton title="Zoom in" disabled={zoom >= 2} onClick={() => onZoomChange(Math.min(2, Math.round((zoom + 0.1) * 10) / 10))}>
           <ZoomIn className="w-3.5 h-3.5" />
         </RibbonButton>
@@ -425,12 +514,59 @@ export default function RibbonToolbar({
         <RibbonButton title="Checklist" active={editor.isActive('taskList')} onClick={() => editor.chain().focus().toggleTaskList().run()}>
           <ListChecks className="w-3.5 h-3.5" />
         </RibbonButton>
+        <RibbonDropdown title="Checklist style" widthClass="w-28" trigger={<ChevronDown className="w-3 h-3 text-zinc-500" />}>
+          <div className="grid grid-cols-2 gap-1">
+            {CHECKLIST_VARIANTS.map((variant) => (
+              <button
+                key={variant.id}
+                type="button"
+                onClick={() => applyChecklistVariant(variant.id)}
+                className="flex flex-col items-center gap-1 p-2 rounded border border-zinc-200 hover:border-purple-300 hover:bg-purple-50/50 cursor-pointer"
+              >
+                <span
+                  className={`w-3.5 h-3.5 border border-zinc-500 ${variant.id === 'round' ? 'rounded-full' : 'rounded-sm'}`}
+                />
+                <span className="text-[10px] text-zinc-600">{variant.label}</span>
+              </button>
+            ))}
+          </div>
+        </RibbonDropdown>
+
         <RibbonButton title="Bulleted list" active={editor.isActive('bulletList')} onClick={() => editor.chain().focus().toggleBulletList().run()}>
           <List className="w-3.5 h-3.5" />
         </RibbonButton>
+        <RibbonDropdown title="Bullet list style" widthClass="w-52" trigger={<ChevronDown className="w-3 h-3 text-zinc-500" />}>
+          <div className="grid grid-cols-3 gap-1.5">
+            {BULLET_STYLES.map((style) => (
+              <button
+                key={style.id}
+                type="button"
+                onClick={() => applyBulletStyle(style.id)}
+                className="p-1.5 rounded border border-zinc-200 hover:border-purple-300 hover:bg-purple-50/50 cursor-pointer"
+              >
+                <ListStylePreview preview={style.preview} />
+              </button>
+            ))}
+          </div>
+        </RibbonDropdown>
+
         <RibbonButton title="Numbered list" active={editor.isActive('orderedList')} onClick={() => editor.chain().focus().toggleOrderedList().run()}>
           <ListOrdered className="w-3.5 h-3.5" />
         </RibbonButton>
+        <RibbonDropdown title="Numbered list style" widthClass="w-52" trigger={<ChevronDown className="w-3 h-3 text-zinc-500" />}>
+          <div className="grid grid-cols-3 gap-1.5">
+            {NUMBER_STYLES.map((style) => (
+              <button
+                key={style.id}
+                type="button"
+                onClick={() => applyNumberStyle(style.id)}
+                className="p-1.5 rounded border border-zinc-200 hover:border-purple-300 hover:bg-purple-50/50 cursor-pointer"
+              >
+                <ListStylePreview preview={style.preview} />
+              </button>
+            ))}
+          </div>
+        </RibbonDropdown>
         <RibbonButton
           title="Decrease indent (Shift+Tab in a list)"
           disabled={!editor.can().liftListItem('listItem')}

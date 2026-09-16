@@ -1,5 +1,40 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { ChevronDown } from 'lucide-react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { ChevronDown, Check, Plus, Pipette } from 'lucide-react';
+
+const POPOVER_VIEWPORT_MARGIN = 8;
+
+/**
+ * Pulls a fixed-position popover back inside the viewport — flips to open
+ * above the trigger instead of below when it would overflow the bottom, and
+ * aligns to the trigger's right edge instead of its left when it would
+ * overflow the right (the ribbon's controls run close to the window's own
+ * right edge, so a wide popover opening flush-left of its trigger easily
+ * runs past it). Shared by every ribbon popover rather than reimplemented
+ * per one, the same way `RibbonDropdown` itself is shared.
+ */
+function clampPopoverPosition(
+  triggerRect: DOMRect,
+  popoverSize: { width: number; height: number },
+  preferred: { top: number; left: number }
+): { top: number; left: number } {
+  const viewportW = window.innerWidth;
+  const viewportH = window.innerHeight;
+
+  let left = preferred.left;
+  if (left + popoverSize.width > viewportW - POPOVER_VIEWPORT_MARGIN) {
+    left = triggerRect.right - popoverSize.width;
+  }
+  left = Math.max(POPOVER_VIEWPORT_MARGIN, Math.min(left, viewportW - popoverSize.width - POPOVER_VIEWPORT_MARGIN));
+
+  let top = preferred.top;
+  if (top + popoverSize.height > viewportH - POPOVER_VIEWPORT_MARGIN) {
+    top = triggerRect.top - popoverSize.height - 4;
+  }
+  top = Math.max(POPOVER_VIEWPORT_MARGIN, Math.min(top, viewportH - popoverSize.height - POPOVER_VIEWPORT_MARGIN));
+
+  return { top, left };
+}
 
 /** A ribbon group: a row of controls with a Word-style caption underneath. */
 export function RibbonGroup({ label, children }: { label: string; children: React.ReactNode }) {
@@ -165,12 +200,33 @@ export function RibbonStepper({
   );
 }
 
-const SWATCHES = [
-  '#18181b', '#71717a', '#dc2626', '#ea580c', '#d97706', '#65a30d',
-  '#16a34a', '#0891b2', '#2563eb', '#7c3aed', '#c026d3', '#db2777',
+/** The standard Google Docs/Sheets 10×8 font/highlight color grid — grayscale, the 10 base hues, then 6 lighter-to-darker shade rows of each. */
+const COLOR_PALETTE: string[][] = [
+  ['#000000', '#434343', '#666666', '#999999', '#b7b7b7', '#cccccc', '#d9d9d9', '#efefef', '#f3f3f3', '#ffffff'],
+  ['#980000', '#ff0000', '#ff9900', '#ffff00', '#00ff00', '#00ffff', '#4a86e8', '#0000ff', '#9900ff', '#ff00ff'],
+  ['#e6b8af', '#f4cccc', '#fce5cd', '#fff2cc', '#d9ead3', '#d0e0e3', '#c9daf8', '#cfe2f3', '#d9d2e9', '#ead1dc'],
+  ['#dd7e6b', '#ea9999', '#f9cb9c', '#ffe599', '#b6d7a8', '#a2c4c9', '#a4c2f4', '#9fc5e8', '#b4a7d6', '#d5a6bd'],
+  ['#cc4125', '#e06666', '#f6b26b', '#ffd966', '#93c47d', '#76a5af', '#6d9eeb', '#6fa8dc', '#8e7cc3', '#c27ba0'],
+  ['#a61c00', '#cc0000', '#e69138', '#f1c232', '#6aa84f', '#45818e', '#3c78d8', '#3d85c6', '#674ea7', '#a64d79'],
+  ['#85200c', '#990000', '#b45f06', '#bf9000', '#38761d', '#134f5c', '#1155cc', '#0b5394', '#351c75', '#741b47'],
+  ['#5b0f00', '#660000', '#783f04', '#7f6000', '#274e13', '#0c343d', '#1c4587', '#073763', '#20124d', '#4c1130'],
 ];
 
-/** A color button that pops a swatch grid + a native color input for anything custom. */
+/** Perceived-luminance check — decides whether a swatch's selected-checkmark should render white or dark to stay visible against it. */
+function isLightColor(hex: string): boolean {
+  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  if (!m) return true;
+  const [r, g, b] = [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)];
+  return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.6;
+}
+
+/**
+ * A color button that pops a swatch grid + a native color input for anything
+ * custom. Portaled to `document.body` with fixed positioning — see
+ * `RibbonDropdown`'s doc comment just below for why a plain `position:
+ * absolute` popover inside the ribbon's scrollable row gets clipped instead
+ * of shown.
+ */
 export function RibbonColorPicker({
   title,
   icon,
@@ -185,24 +241,85 @@ export function RibbonColorPicker({
   onClear: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const customInputRef = useRef<HTMLInputElement>(null);
+  // Session-only, per-picker (text color and highlight each keep their own)
+  // — there's no per-document or per-user "recent colors" store to persist
+  // this into, the same reasoning the other curated-not-exhaustive pickers
+  // in this app (Symbols, Emoji) already follow.
+  const [customColors, setCustomColors] = useState<string[]>([]);
+
+  const addCustomColor = (color: string) => {
+    setCustomColors((prev) => (prev.includes(color) ? prev : [color, ...prev].slice(0, 10)));
+  };
+
+  const pickWithEyedropper = async () => {
+    const EyeDropperCtor = (window as any).EyeDropper;
+    if (!EyeDropperCtor) {
+      alert('Eyedropper is not supported in this browser. Try Chrome or Edge.');
+      return;
+    }
+    try {
+      const result = await new EyeDropperCtor().open();
+      if (result?.sRGBHex) {
+        addCustomColor(result.sRGBHex);
+        onPick(result.sRGBHex);
+        setOpen(false);
+      }
+    } catch {
+      // User cancelled the eyedropper — nothing to do.
+    }
+  };
+
+  const triggerRectRef = useRef<DOMRect | null>(null);
+
+  const openPicker = () => {
+    const rect = buttonRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    triggerRectRef.current = rect;
+    setPosition({ top: rect.bottom + 4, left: rect.left });
+    setOpen(true);
+  };
+
+  // Corrects the preferred position once the 80-swatch-plus-custom-row
+  // popover has its real size — see `RibbonDropdown`'s identical effect for
+  // why this can't be computed up front.
+  useLayoutEffect(() => {
+    if (!open || !position || !popoverRef.current || !triggerRectRef.current) return;
+    const size = popoverRef.current.getBoundingClientRect();
+    const clamped = clampPopoverPosition(triggerRectRef.current, { width: size.width, height: size.height }, position);
+    if (clamped.top !== position.top || clamped.left !== position.left) setPosition(clamped);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, position]);
 
   useEffect(() => {
     if (!open) return;
+    const close = () => setOpen(false);
     const onPointerDown = (e: PointerEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      if (buttonRef.current?.contains(target) || popoverRef.current?.contains(target)) return;
+      setOpen(false);
     };
     document.addEventListener('pointerdown', onPointerDown, true);
-    return () => document.removeEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+    };
   }, [open]);
 
   return (
-    <div className="relative" ref={rootRef}>
+    <>
       <button
+        ref={buttonRef}
         type="button"
         title={title}
         onMouseDown={(e) => e.preventDefault()}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => (open ? setOpen(false) : openPicker())}
         className="h-7 min-w-7 px-1.5 rounded flex flex-col items-center justify-center gap-0 text-zinc-700 hover:bg-zinc-200/70 cursor-pointer"
       >
         {icon}
@@ -211,47 +328,214 @@ export function RibbonColorPicker({
           style={{ background: currentColor ?? '#18181b' }}
         />
       </button>
-      {open && (
-        <div className="absolute z-20 top-full left-0 mt-1 bg-white border border-zinc-200 rounded-lg shadow-lg p-2 w-40">
-          <div className="grid grid-cols-6 gap-1 mb-2">
-            {SWATCHES.map((c) => (
+      {open &&
+        position &&
+        createPortal(
+          <div
+            ref={popoverRef}
+            onPointerDown={(e) => e.stopPropagation()}
+            style={{ position: 'fixed', top: position.top, left: position.left, zIndex: 100000 }}
+            className="bg-white border border-zinc-200 rounded-lg shadow-lg p-2.5 w-64"
+          >
+            <div className="space-y-1 mb-2">
+              {COLOR_PALETTE.map((row, rowIndex) => (
+                <div key={rowIndex} className="flex gap-1">
+                  {row.map((c) => {
+                    const selected = currentColor?.toLowerCase() === c.toLowerCase();
+                    return (
+                      <button
+                        key={c}
+                        type="button"
+                        title={c}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => {
+                          onPick(c);
+                          setOpen(false);
+                        }}
+                        className="w-5 h-5 rounded-full border border-black/10 cursor-pointer flex items-center justify-center shrink-0 hover:scale-110 transition-transform"
+                        style={{ background: c }}
+                      >
+                        {selected && <Check className="w-3 h-3" style={{ color: isLightColor(c) ? '#18181b' : '#ffffff' }} />}
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+
+            <div className="border-t border-zinc-200 pt-2">
+              <div className="text-[10px] font-semibold tracking-wide text-zinc-500 mb-1">CUSTOM</div>
+              <div className="flex flex-wrap items-center gap-1">
+                {customColors.map((c) => {
+                  const selected = currentColor?.toLowerCase() === c.toLowerCase();
+                  return (
+                    <button
+                      key={c}
+                      type="button"
+                      title={c}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => {
+                        onPick(c);
+                        setOpen(false);
+                      }}
+                      className="w-5 h-5 rounded-full border border-black/10 cursor-pointer flex items-center justify-center shrink-0"
+                      style={{ background: c }}
+                    >
+                      {selected && <Check className="w-3 h-3" style={{ color: isLightColor(c) ? '#18181b' : '#ffffff' }} />}
+                    </button>
+                  );
+                })}
+                <button
+                  type="button"
+                  title="Add a custom color"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => customInputRef.current?.click()}
+                  className="w-5 h-5 rounded-full border border-zinc-300 flex items-center justify-center text-zinc-500 hover:bg-zinc-100 cursor-pointer shrink-0"
+                >
+                  <Plus className="w-3 h-3" />
+                </button>
+                <input
+                  ref={customInputRef}
+                  type="color"
+                  defaultValue={currentColor ?? '#18181b'}
+                  onChange={(e) => {
+                    addCustomColor(e.target.value);
+                    onPick(e.target.value);
+                    setOpen(false);
+                  }}
+                  className="sr-only"
+                  title="Custom color"
+                />
+                <button
+                  type="button"
+                  title="Pick a color from your screen"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={pickWithEyedropper}
+                  className="w-5 h-5 rounded-full border border-zinc-300 flex items-center justify-center text-zinc-500 hover:bg-zinc-100 cursor-pointer shrink-0"
+                >
+                  <Pipette className="w-3 h-3" />
+                </button>
+              </div>
+            </div>
+
+            <div className="border-t border-zinc-200 mt-2 pt-1.5">
               <button
-                key={c}
                 type="button"
-                title={c}
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => {
-                  onPick(c);
+                  onClear();
                   setOpen(false);
                 }}
-                className="w-5 h-5 rounded border border-black/10 cursor-pointer"
-                style={{ background: c }}
-              />
-            ))}
-          </div>
-          <div className="flex items-center gap-2">
-            <input
-              type="color"
-              defaultValue={currentColor ?? '#18181b'}
-              onChange={(e) => onPick(e.target.value)}
-              className="w-6 h-6 rounded cursor-pointer border border-zinc-300"
-              title="Custom color"
-            />
-            <button
-              type="button"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => {
-                onClear();
-                setOpen(false);
-              }}
-              className="text-[11px] text-zinc-600 hover:text-zinc-900 cursor-pointer"
-            >
-              Clear
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
+                className="text-[11px] text-zinc-600 hover:text-zinc-900 cursor-pointer"
+              >
+                Clear
+              </button>
+            </div>
+          </div>,
+          document.body
+        )}
+    </>
+  );
+}
+
+/**
+ * A button that pops open arbitrary content (a style grid, a preset list).
+ *
+ * Portaled to `document.body` with fixed positioning computed from the
+ * trigger's own `getBoundingClientRect()` — the same reasoning
+ * `WindowMenu.tsx`'s `MenuPanel` documents for doing the same thing: the
+ * ribbon row is horizontally scrollable (`overflow-x-auto`), and per the CSS
+ * spec, giving `overflow-x` any value but `visible` forces `overflow-y` to
+ * compute as `auto` too — so a plain `position: absolute` popover nested
+ * inside that row gets silently clipped below the row's own height instead
+ * of floating over the page underneath it.
+ */
+export function RibbonDropdown({
+  title,
+  trigger,
+  children,
+  widthClass = 'w-44',
+}: {
+  title: string;
+  trigger: React.ReactNode;
+  children: React.ReactNode;
+  widthClass?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const triggerRectRef = useRef<DOMRect | null>(null);
+
+  const openDropdown = () => {
+    const rect = buttonRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    triggerRectRef.current = rect;
+    setPosition({ top: rect.bottom + 4, left: rect.left });
+    setOpen(true);
+  };
+
+  // Corrects the *actual* rendered position after the popover has its real
+  // size — its content (a 6×10 color grid vs. a short menu) isn't known
+  // until it mounts, so an overflow check has to happen post-render, not
+  // when `openDropdown` merely guesses a preferred spot.
+  useLayoutEffect(() => {
+    if (!open || !position || !popoverRef.current || !triggerRectRef.current) return;
+    const size = popoverRef.current.getBoundingClientRect();
+    const clamped = clampPopoverPosition(triggerRectRef.current, { width: size.width, height: size.height }, position);
+    if (clamped.top !== position.top || clamped.left !== position.left) setPosition(clamped);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, position]);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    const onPointerDown = (e: PointerEvent) => {
+      const target = e.target as Node;
+      if (buttonRef.current?.contains(target) || popoverRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    // Capture phase — see WindowMenu.tsx's identical listener for why:
+    // AppWindow's own pointerdown handler (window-focus) calls
+    // stopPropagation() on every click inside the window, which would
+    // otherwise stop this listener from ever seeing the click.
+    document.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+    };
+  }, [open]);
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        title={title}
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => (open ? setOpen(false) : openDropdown())}
+        className="h-7 px-1 rounded flex items-center gap-0.5 text-zinc-700 hover:bg-zinc-200/70 cursor-pointer"
+      >
+        {trigger}
+      </button>
+      {open &&
+        position &&
+        createPortal(
+          <div
+            ref={popoverRef}
+            onClick={() => setOpen(false)}
+            onPointerDown={(e) => e.stopPropagation()}
+            style={{ position: 'fixed', top: position.top, left: position.left, zIndex: 100000 }}
+            className={`bg-white border border-zinc-200 rounded-lg shadow-lg p-2 ${widthClass}`}
+          >
+            {children}
+          </div>,
+          document.body
+        )}
+    </>
   );
 }
 
