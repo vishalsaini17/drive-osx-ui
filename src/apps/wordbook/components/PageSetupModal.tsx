@@ -118,22 +118,29 @@ export default function PageSetupModal({ isOpen, onClose, pageSetup, onApply }: 
 
         <div className="flex flex-col gap-1">
           <span className="font-medium text-zinc-600">Margins (inches)</span>
-          <div className="grid grid-cols-2 gap-2">
-            <label className="flex items-center gap-1.5">
-              <span className="w-10 text-zinc-500">Top</span>
-              <input type="number" step="0.1" min="0" value={marginTop} onChange={(e) => setMarginTop(e.target.value)} className="flex-1 h-8 px-2 border border-zinc-300 rounded text-xs" />
+          {/*
+            One field per row rather than a 2-column grid: "Bottom" is wider
+            than the label column a side-by-side layout had room for, and a
+            CSS grid item's default `min-width: auto` let that overflow
+            spill past the modal's edge instead of wrapping or shrinking —
+            a single column has no width budget to run out of.
+          */}
+          <div className="flex flex-col gap-2">
+            <label className="flex items-center gap-2">
+              <span className="w-14 shrink-0 text-zinc-500">Top</span>
+              <input type="number" step="0.1" min="0" value={marginTop} onChange={(e) => setMarginTop(e.target.value)} className="flex-1 min-w-0 h-8 px-2 border border-zinc-300 rounded text-xs" />
             </label>
-            <label className="flex items-center gap-1.5">
-              <span className="w-10 text-zinc-500">Bottom</span>
-              <input type="number" step="0.1" min="0" value={marginBottom} onChange={(e) => setMarginBottom(e.target.value)} className="flex-1 h-8 px-2 border border-zinc-300 rounded text-xs" />
+            <label className="flex items-center gap-2">
+              <span className="w-14 shrink-0 text-zinc-500">Bottom</span>
+              <input type="number" step="0.1" min="0" value={marginBottom} onChange={(e) => setMarginBottom(e.target.value)} className="flex-1 min-w-0 h-8 px-2 border border-zinc-300 rounded text-xs" />
             </label>
-            <label className="flex items-center gap-1.5">
-              <span className="w-10 text-zinc-500">Left</span>
-              <input type="number" step="0.1" min="0" value={marginLeft} onChange={(e) => setMarginLeft(e.target.value)} className="flex-1 h-8 px-2 border border-zinc-300 rounded text-xs" />
+            <label className="flex items-center gap-2">
+              <span className="w-14 shrink-0 text-zinc-500">Left</span>
+              <input type="number" step="0.1" min="0" value={marginLeft} onChange={(e) => setMarginLeft(e.target.value)} className="flex-1 min-w-0 h-8 px-2 border border-zinc-300 rounded text-xs" />
             </label>
-            <label className="flex items-center gap-1.5">
-              <span className="w-10 text-zinc-500">Right</span>
-              <input type="number" step="0.1" min="0" value={marginRight} onChange={(e) => setMarginRight(e.target.value)} className="flex-1 h-8 px-2 border border-zinc-300 rounded text-xs" />
+            <label className="flex items-center gap-2">
+              <span className="w-14 shrink-0 text-zinc-500">Right</span>
+              <input type="number" step="0.1" min="0" value={marginRight} onChange={(e) => setMarginRight(e.target.value)} className="flex-1 min-w-0 h-8 px-2 border border-zinc-300 rounded text-xs" />
             </label>
           </div>
         </div>

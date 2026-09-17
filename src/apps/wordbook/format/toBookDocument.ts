@@ -2,20 +2,22 @@ import {
   BOOK_FORMAT_VERSION,
   BookDocument,
   BookMetadata,
+  BookSection,
   generateBookId,
 } from '../../../platform/documents/book/bookFormat';
 import { a4PageSetup, PageSetup } from '../../../platform/documents/book/pageSetup';
 
 /**
- * Wraps the editor's `getJSON()` output into the `.book` file shape.
+ * Wraps a Document tabs section list into the `.book` file shape.
  *
- * Phase 1 only ever produces one implicit section (a literal multi-section
- * ProseMirror schema is deferred until the UI actually needs to create a
- * second one — see the Phase 1 plan's document-model note), so this is a
- * straightforward single-entry wrap rather than a real splitting pass.
+ * `sections` must already carry every tab's up-to-date content — the caller
+ * owns syncing the currently-active tab's live editor content into its
+ * section entry first (see `tabsWithLiveContent` in index.tsx), since only
+ * the active tab's content actually lives in the editor at any moment; the
+ * rest is exactly what's already in state.
  */
 export function toBookDocument(
-  editorJSON: unknown,
+  sections: BookSection[],
   existing: Pick<BookDocument, 'metadata' | 'defaultPageSetup' | 'headers' | 'footers' | 'assets'> | null,
   /** The page setup actually in effect right now — takes priority over `existing`'s, since the live editor state (e.g. after a Page Setup change) is always more current than whatever was last loaded/saved, including for a brand-new document that has no `existing` at all yet. */
   currentPageSetup?: PageSetup,
@@ -29,15 +31,7 @@ export function toBookDocument(
     formatVersion: BOOK_FORMAT_VERSION,
     metadata,
     defaultPageSetup: currentPageSetup ?? existing?.defaultPageSetup ?? a4PageSetup('portrait'),
-    sections: [
-      {
-        id: 'main',
-        pageSetup: {},
-        headerRef: null,
-        footerRef: null,
-        content: editorJSON,
-      },
-    ],
+    sections,
     headers: existing?.headers ?? {},
     footers: existing?.footers ?? {},
     assets: existing?.assets ?? {},

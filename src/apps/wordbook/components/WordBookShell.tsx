@@ -7,8 +7,12 @@ import TableContextToolbar from './ribbon/TableContextToolbar';
 import ImageContextToolbar from './ribbon/ImageContextToolbar';
 import PageCanvas from './PageCanvas';
 import OutlineSidebar from './OutlineSidebar';
+import DocumentTabsSidebar, { DocumentTabsApi } from './DocumentTabsSidebar';
+import EquationToolbar from './EquationToolbar';
 import { PageBreakPlan } from '../../../platform/documents/pagination/types';
 import { PageSetup } from '../../../platform/documents/book/pageSetup';
+
+export type SidebarPanel = 'none' | 'outline' | 'tabs';
 
 interface WordBookShellProps {
   windowId: string;
@@ -25,8 +29,9 @@ interface WordBookShellProps {
   isStarred: boolean;
   onRenameTitle: (newTitle: string) => void;
   onToggleStar: () => void;
-  isOutlineOpen: boolean;
-  onToggleOutline: () => void;
+  sidebarPanel: SidebarPanel;
+  onSetSidebarPanel: (panel: SidebarPanel) => void;
+  tabsApi: DocumentTabsApi;
   spellcheckOn: boolean;
   onToggleSpellcheck: () => void;
   showLineNumbers: boolean;
@@ -35,6 +40,11 @@ interface WordBookShellProps {
   canShare: boolean;
   onShare: () => void;
   onShareToChat: () => void;
+  onOpenLinkModal: () => void;
+  showRuler: boolean;
+  printLayoutOn: boolean;
+  showEquationToolbar: boolean;
+  showNonPrintingChars: boolean;
 }
 
 export default function WordBookShell({
@@ -52,8 +62,9 @@ export default function WordBookShell({
   isStarred,
   onRenameTitle,
   onToggleStar,
-  isOutlineOpen,
-  onToggleOutline,
+  sidebarPanel,
+  onSetSidebarPanel,
+  tabsApi,
   spellcheckOn,
   onToggleSpellcheck,
   showLineNumbers,
@@ -62,7 +73,15 @@ export default function WordBookShell({
   canShare,
   onShare,
   onShareToChat,
+  onOpenLinkModal,
+  showRuler,
+  printLayoutOn,
+  showEquationToolbar,
+  showNonPrintingChars,
 }: WordBookShellProps) {
+  const isOutlineOpen = sidebarPanel === 'outline';
+  const toggleOutline = () => onSetSidebarPanel(isOutlineOpen ? 'none' : 'outline');
+
   return (
     <AppShell className="bg-[#d8d9de] text-zinc-900">
       <TitleBar
@@ -85,15 +104,17 @@ export default function WordBookShell({
           worse signal of "read-only" than the row simply not being there. */}
       {!isViewOnly && (
         <RibbonToolbar
+          windowId={windowId}
           editor={editor}
           zoom={zoom}
           onZoomChange={onZoomChange}
           currentFolderId={currentFolderId}
           resolveDefaultFolderId={resolveDefaultFolderId}
           isOutlineOpen={isOutlineOpen}
-          onToggleOutline={onToggleOutline}
+          onToggleOutline={toggleOutline}
           spellcheckOn={spellcheckOn}
           onToggleSpellcheck={onToggleSpellcheck}
+          onOpenLinkModal={onOpenLinkModal}
         />
       )}
       {isViewOnly && (
@@ -104,9 +125,22 @@ export default function WordBookShell({
           </button>
         </div>
       )}
+      {!isViewOnly && showEquationToolbar && <EquationToolbar editor={editor} />}
       <div className="flex-1 min-h-0 flex">
-        {isOutlineOpen && editor && <OutlineSidebar editor={editor} onClose={onToggleOutline} />}
-        <PageCanvas editor={editor} plan={plan} pageSetup={pageSetup} zoom={zoom} showLineNumbers={showLineNumbers} />
+        {sidebarPanel === 'outline' && editor && (
+          <OutlineSidebar editor={editor} onClose={toggleOutline} onShowTabs={() => onSetSidebarPanel('tabs')} tabCount={tabsApi.tabs.length} />
+        )}
+        {sidebarPanel === 'tabs' && <DocumentTabsSidebar {...tabsApi} onBack={() => onSetSidebarPanel('outline')} />}
+        <PageCanvas
+          editor={editor}
+          plan={plan}
+          pageSetup={pageSetup}
+          zoom={zoom}
+          showLineNumbers={showLineNumbers}
+          showRuler={showRuler}
+          printLayoutOn={printLayoutOn}
+          showNonPrintingChars={showNonPrintingChars}
+        />
       </div>
       {!isViewOnly && editor && <TableContextToolbar editor={editor} />}
       {!isViewOnly && editor && (

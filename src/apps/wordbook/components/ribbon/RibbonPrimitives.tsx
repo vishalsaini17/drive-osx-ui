@@ -13,7 +13,7 @@ const POPOVER_VIEWPORT_MARGIN = 8;
  * runs past it). Shared by every ribbon popover rather than reimplemented
  * per one, the same way `RibbonDropdown` itself is shared.
  */
-function clampPopoverPosition(
+export function clampPopoverPosition(
   triggerRect: DOMRect,
   popoverSize: { width: number; height: number },
   preferred: { top: number; left: number }
@@ -196,6 +196,173 @@ export function RibbonStepper({
       >
         +
       </button>
+    </div>
+  );
+}
+
+const DEFAULT_FONT_SIZE_PRESETS = [8, 9, 10, 11, 12, 14, 18, 24, 30, 36, 48, 60, 72, 96];
+
+/**
+ * `RibbonStepper` plus a Docs-style preset list: clicking (focusing) the
+ * number opens a dropdown of common sizes, while the field stays a real
+ * input the whole time — typing a custom value and pressing Enter still
+ * works exactly like the plain stepper. Portaled + clamped the same way
+ * every other ribbon popover is (see `clampPopoverPosition`).
+ */
+export function RibbonFontSizeStepper({
+  value,
+  onChange,
+  min = 1,
+  max = 400,
+  title,
+  presets = DEFAULT_FONT_SIZE_PRESETS,
+}: {
+  value: number;
+  onChange: (value: number) => void;
+  min?: number;
+  max?: number;
+  title: string;
+  presets?: number[];
+}) {
+  const [text, setText] = useState(String(value));
+  const lastCommitted = useRef(value);
+  useEffect(() => {
+    if (value !== lastCommitted.current) setText(String(value));
+  }, [value]);
+
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const triggerRectRef = useRef<DOMRect | null>(null);
+
+  const openDropdown = () => {
+    const rect = inputRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    triggerRectRef.current = rect;
+    setPosition({ top: rect.bottom + 4, left: rect.left });
+    setOpen(true);
+  };
+
+  useLayoutEffect(() => {
+    if (!open || !position || !popoverRef.current || !triggerRectRef.current) return;
+    const size = popoverRef.current.getBoundingClientRect();
+    const clamped = clampPopoverPosition(triggerRectRef.current, { width: size.width, height: size.height }, position);
+    if (clamped.top !== position.top || clamped.left !== position.left) setPosition(clamped);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, position]);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    const onPointerDown = (e: PointerEvent) => {
+      const target = e.target as Node;
+      if (inputRef.current?.contains(target) || popoverRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+    };
+  }, [open]);
+
+  const commit = (raw: string) => {
+    const parsed = parseFloat(raw);
+    if (Number.isFinite(parsed)) {
+      const clamped = Math.min(max, Math.max(min, parsed));
+      lastCommitted.current = clamped;
+      setText(String(clamped));
+      onChange(clamped);
+    } else {
+      setText(String(value));
+    }
+    setOpen(false);
+  };
+
+  const step = (delta: number) => {
+    const next = Math.min(max, Math.max(min, value + delta));
+    lastCommitted.current = next;
+    setText(String(next));
+    onChange(next);
+  };
+
+  const pickPreset = (preset: number) => {
+    lastCommitted.current = preset;
+    setText(String(preset));
+    onChange(preset);
+    setOpen(false);
+  };
+
+  return (
+    <div className="flex items-center h-7 border border-zinc-300 rounded bg-white">
+      <button
+        type="button"
+        title="Decrease"
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => step(-1)}
+        className="w-5 h-full flex items-center justify-center text-zinc-600 hover:bg-zinc-100 cursor-pointer rounded-l"
+      >
+        −
+      </button>
+      <input
+        ref={inputRef}
+        type="text"
+        inputMode="decimal"
+        title={title}
+        aria-label={title}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onFocus={openDropdown}
+        onBlur={(e) => commit(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            commit(e.currentTarget.value);
+            e.currentTarget.blur();
+          } else if (e.key === 'Escape') {
+            setOpen(false);
+          }
+        }}
+        className="w-8 h-full text-center text-xs outline-none"
+      />
+      <button
+        type="button"
+        title="Increase"
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => step(1)}
+        className="w-5 h-full flex items-center justify-center text-zinc-600 hover:bg-zinc-100 cursor-pointer rounded-r"
+      >
+        +
+      </button>
+
+      {open &&
+        position &&
+        createPortal(
+          <div
+            ref={popoverRef}
+            onPointerDown={(e) => e.stopPropagation()}
+            style={{ position: 'fixed', top: position.top, left: position.left, zIndex: 100000 }}
+            className="bg-white border border-zinc-200 rounded-lg shadow-lg py-1 w-16 max-h-72 overflow-y-auto"
+          >
+            {presets.map((preset) => (
+              <button
+                key={preset}
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => pickPreset(preset)}
+                className={`w-full text-center px-2 py-1 text-xs cursor-pointer ${
+                  preset === value ? 'bg-zinc-100 font-medium text-zinc-900' : 'text-zinc-700 hover:bg-zinc-50'
+                }`}
+              >
+                {preset}
+              </button>
+            ))}
+          </div>,
+          document.body
+        )}
     </div>
   );
 }

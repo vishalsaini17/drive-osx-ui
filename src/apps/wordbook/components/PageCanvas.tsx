@@ -2,6 +2,7 @@ import React from 'react';
 import { EditorContent, Editor } from '@tiptap/react';
 import { PageBreakPlan } from '../../../platform/documents/pagination/types';
 import { contentAreaMm, mmToPx, PageSetup } from '../../../platform/documents/book/pageSetup';
+import PageRuler from './PageRuler';
 
 interface PageCanvasProps {
   editor: Editor | null;
@@ -9,6 +10,9 @@ interface PageCanvasProps {
   pageSetup: PageSetup;
   zoom: number;
   showLineNumbers?: boolean;
+  showRuler?: boolean;
+  printLayoutOn?: boolean;
+  showNonPrintingChars?: boolean;
 }
 
 /**
@@ -22,7 +26,16 @@ interface PageCanvasProps {
  * needs to be part of the editable DOM tree, so it's plain React, not
  * ProseMirror decorations.
  */
-export default function PageCanvas({ editor, plan, pageSetup, zoom, showLineNumbers }: PageCanvasProps) {
+export default function PageCanvas({
+  editor,
+  plan,
+  pageSetup,
+  zoom,
+  showLineNumbers,
+  showRuler,
+  printLayoutOn = true,
+  showNonPrintingChars,
+}: PageCanvasProps) {
   const pageWidthPx = mmToPx(pageSetup.widthMm);
   const content = contentAreaMm(pageSetup);
   const contentWidthPx = mmToPx(content.widthMm);
@@ -36,7 +49,12 @@ export default function PageCanvas({ editor, plan, pageSetup, zoom, showLineNumb
     pages.length > 0 ? pages[pages.length - 1].topOffsetPx + pages[pages.length - 1].heightPx : mmToPx(pageSetup.heightMm);
 
   return (
-    <div className={`flex-1 min-h-0 overflow-auto bg-[#e9eaee] ${showLineNumbers ? 'wb-line-numbers' : ''}`} data-testid="wb-scroll-container">
+    <div
+      className={`flex-1 min-h-0 overflow-auto bg-[#e9eaee] ${showLineNumbers ? 'wb-line-numbers' : ''} ${
+        showNonPrintingChars ? 'wb-nonprinting' : ''
+      }`}
+      data-testid="wb-scroll-container"
+    >
       <style>{`
         .wb-prosemirror { outline: none; }
         .wb-prosemirror p { margin: 0 0 10px 0; }
@@ -191,12 +209,94 @@ export default function PageCanvas({ editor, plan, pageSetup, zoom, showLineNumb
           color: #a1a1aa;
           user-select: none;
         }
-        .wb-prosemirror a { cursor: text; }
+        .wb-prosemirror a { color: #2563eb; text-decoration: underline; cursor: pointer; }
         .wb-search-match { background: #fef08a; border-radius: 2px; }
         .wb-search-match-current { background: #fb923c; }
+
+        /*
+          View > Show non-printing characters. A real pilcrow-per-paragraph
+          marker, not a full formatting-marks engine (that would also need
+          visible dots for spaces and arrows for tabs, which means walking
+          and re-rendering text nodes rather than a CSS-only rule) — this
+          still shows exactly where each block ends, the most useful part of
+          the feature for catching stray empty paragraphs.
+        */
+        .wb-nonprinting .wb-prosemirror > p::after,
+        .wb-nonprinting .wb-prosemirror > h1::after,
+        .wb-nonprinting .wb-prosemirror > h2::after,
+        .wb-nonprinting .wb-prosemirror > h3::after,
+        .wb-nonprinting .wb-prosemirror > h4::after,
+        .wb-nonprinting .wb-prosemirror > h5::after,
+        .wb-nonprinting .wb-prosemirror > h6::after,
+        .wb-nonprinting .wb-prosemirror li::after {
+          content: '¶';
+          color: #93c5fd;
+          margin-left: 3px;
+          font-size: 0.85em;
+          user-select: none;
+        }
+
+        /*
+          Print's default target is the whole browser tab — which for this
+          app means the entire OS simulation (desktop, taskbar, other open
+          app windows), not just this document. The "hide everything, then
+          re-reveal one subtree" trick is what actually scopes it: setting
+          \`visibility\` (not \`display\`) on the page stack's descendants lets
+          them override their now-hidden ancestors, and \`position: fixed\`
+          detaches it from wherever that (invisible but still laid-out)
+          ancestor chain happens to be scrolled to, so the page always starts
+          at the printed sheet's own top-left rather than leaving a blank
+          run of pages first.
+        */
+        /*
+          Chrome (and most browsers) add their own header (page title, URL)
+          and footer (date, page number) around printed content by default —
+          that's the "date, drive OSX, link" chrome, not anything this app
+          drew. There's no direct CSS switch to turn that off, but browsers
+          only draw it into the page's own margin area — a zero \`@page\`
+          margin leaves no room for it, so it simply doesn't render. Sized to
+          this document's actual page setup so the browser paginates against
+          the same physical page size our own layout was computed for,
+          instead of guessing at a generic default.
+        */
+        @page {
+          size: ${pageSetup.widthMm}mm ${pageSetup.heightMm}mm;
+          margin: 0;
+        }
+
+        @media print {
+          body * { visibility: hidden; }
+          [data-wb-page-stack], [data-wb-page-stack] * { visibility: visible; }
+          [data-wb-page-stack] {
+            position: fixed !important;
+            top: 0 !important;
+            left: 0 !important;
+            transform: none !important;
+          }
+          /* Aligns the browser's own print pagination with this app's page
+             breaks — otherwise the printer would paginate the continuous
+             editable surface at whatever height a sheet of paper happens to
+             be, ignoring where our own layout actually ends a page. */
+          .wb-page-gap-spacer {
+            break-after: page;
+            page-break-after: always;
+          }
+        }
       `}</style>
 
-      <div className="flex justify-center py-10">
+      <div className="flex flex-col items-center py-10">
+        {/*
+          View > Show ruler. Lives in normal document flow (scrolls with the
+          page) rather than sticking to the viewport top — a sticky ruler
+          would need to track the scroll container's own scroll position,
+          which isn't otherwise observed here and isn't verifiable without a
+          live browser to test the interaction in.
+        */}
+        {showRuler && (
+          <div className="mb-1">
+            <PageRuler pageSetup={pageSetup} zoom={zoom} />
+          </div>
+        )}
         {/*
           The zoom transform below scales paint only, not layout — this
           outer box reserves the actual on-screen (zoomed) footprint so the
@@ -220,21 +320,35 @@ export default function PageCanvas({ editor, plan, pageSetup, zoom, showLineNumb
             className="absolute top-0 left-0"
             style={{ width: pageWidthPx, height: stackHeightPx, transform: `scale(${zoom})`, transformOrigin: 'top left' }}
           >
-          {/* Decorative page chrome — behind the content column. */}
-          {pages.map((page) => (
-            <div
-              key={page.pageIndex}
-              className="absolute left-0 bg-white border border-black/10 shadow-[0_1px_4px_rgba(0,0,0,0.12)]"
-              style={{ top: page.topOffsetPx, width: pageWidthPx, height: page.heightPx, zIndex: 0 }}
-            >
-              <div
-                className="absolute left-0 right-0 text-center text-[10px] text-zinc-400 select-none"
-                style={{ bottom: mmToPx(page.pageSetup.marginBottomMm) / 2 - 6 }}
-              >
-                Page {page.pageIndex + 1} of {pages.length}
-              </div>
-            </div>
-          ))}
+          {/*
+            Decorative page chrome — behind the content column. View > Show
+            print layout off swaps the per-sheet borders/shadows/page-number
+            chrome for one continuous white surface spanning the whole
+            stack — a "web layout" look. The actual content still breaks at
+            the same vertical offsets (that's the pagination engine's own
+            live decorations inside the editable surface, not this layer),
+            since reflowing content independent of page breaks would mean
+            changing the pagination engine itself, a much larger change than
+            this decorative toggle.
+          */}
+          {printLayoutOn
+            ? pages.map((page) => (
+                <div
+                  key={page.pageIndex}
+                  className="absolute left-0 bg-white border border-black/10 shadow-[0_1px_4px_rgba(0,0,0,0.12)]"
+                  style={{ top: page.topOffsetPx, width: pageWidthPx, height: page.heightPx, zIndex: 0 }}
+                >
+                  <div
+                    className="absolute left-0 right-0 text-center text-[10px] text-zinc-400 select-none"
+                    style={{ bottom: mmToPx(page.pageSetup.marginBottomMm) / 2 - 6 }}
+                  >
+                    Page {page.pageIndex + 1} of {pages.length}
+                  </div>
+                </div>
+              ))
+            : (
+                <div className="absolute left-0 top-0 bg-white" style={{ width: pageWidthPx, height: stackHeightPx, zIndex: 0 }} />
+              )}
 
           {/* The one continuous editable surface. */}
           <div

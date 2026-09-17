@@ -16,23 +16,25 @@ import { PageBreakPlan } from '../../platform/documents/pagination/types';
 import { a4PageSetup, PageSetup } from '../../platform/documents/book/pageSetup';
 import {
   BookDocument,
+  BookSection,
   BOOK_EXTENSION,
   BOOK_MIME_TYPE,
 } from '../../platform/documents/book/bookFormat';
 import { toBookDocument } from './format/toBookDocument';
 import {
   blankBookDocument,
-  editorContentFromBookDocument,
   parseBookFile,
   serializeBookFile,
 } from './format/fromBookDocument';
+import { firstRootTab, makeBlankTab, duplicateTabSubtree, removeTabSubtree, moveSibling, moveIntoParent, descendantIds } from './documentTabs';
 
-import WordBookShell from './components/WordBookShell';
+import WordBookShell, { SidebarPanel } from './components/WordBookShell';
 import OpenBookModal from './components/OpenBookModal';
 import FindReplaceBar from './components/FindReplaceBar';
 import PageSetupModal from './components/PageSetupModal';
 import VersionHistoryModal from './components/VersionHistoryModal';
 import CharacterGridModal from './components/CharacterGridModal';
+import { DocumentTabsApi } from './components/DocumentTabsSidebar';
 import EquationModal from './components/EquationModal';
 import { SPECIAL_CHARACTER_GROUPS, EMOJI_GROUPS } from './editor/characterData';
 import TableGridPicker from './components/TableGridPicker';
@@ -53,7 +55,7 @@ import {
 } from './export/exportDocument';
 import ShareToChatModal, { ShareFormat } from './components/ShareToChatModal';
 import { uploadAndInsertImage } from './editor/insertImage';
-import { promptForLink } from './editor/linkActions';
+import LinkModal from './components/LinkModal';
 import { BUILDING_BLOCKS, SIGNATURE_LINE_CONTENT } from './editor/buildingBlocks';
 import DateChipModal from './components/DateChipModal';
 import PeopleChipModal from './components/PeopleChipModal';
@@ -144,9 +146,18 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
   const [isOpenModalOpen, setIsOpenModalOpen] = useState(false);
   const [isFindOpen, setIsFindOpen] = useState(false);
   const [findShowReplace, setFindShowReplace] = useState(false);
-  const [isOutlineOpen, setIsOutlineOpen] = useState(false);
+  const [sidebarPanel, setSidebarPanel] = useState<SidebarPanel>('none');
+  // Document tabs: each entry is an independent chunk of document content
+  // (`BookSection.content`), only one of which — `activeTabId` — actually
+  // lives in the live `editor` at any moment; the rest sit in this array
+  // until switched to. See `documentTabs.ts` for the tree operations and
+  // `tabsWithLiveContent` below for how the two are reconciled.
+  const [tabs, setTabs] = useState<BookSection[]>(() => blankBookDocument('Untitled Document').sections);
+  const [activeTabId, setActiveTabId] = useState<string>('main');
+  const [emojiPickerForTabId, setEmojiPickerForTabId] = useState<string | null>(null);
   const [isShareOpen, setIsShareOpen] = useState(false);
   const [isShareToChatOpen, setIsShareToChatOpen] = useState(false);
+  const [isLinkModalOpen, setIsLinkModalOpen] = useState(false);
   const [isPropertiesOpen, setIsPropertiesOpen] = useState(false);
   const [isVersionHistoryOpen, setIsVersionHistoryOpen] = useState(false);
   const [isPageSetupOpen, setIsPageSetupOpen] = useState(false);
@@ -178,6 +189,30 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
   const [spellcheckOn, setSpellcheckOn] = useState(true);
   const [showLineNumbers, setShowLineNumbers] = useState(false);
   const [isViewOnly, setIsViewOnly] = useState(false);
+  // View menu display toggles (View > Show ruler / print layout / equation
+  // toolbar / non-printing characters), each a plain screen-preview
+  // setting — none of them touch document content or persist per-document.
+  const [showRuler, setShowRuler] = useState(false);
+  const [printLayoutOn, setPrintLayoutOn] = useState(true);
+  const [showEquationToolbar, setShowEquationToolbar] = useState(false);
+  const [showNonPrintingChars, setShowNonPrintingChars] = useState(false);
+  const [isFullScreen, setIsFullScreen] = useState(false);
+
+  // Keeps the menu's checkmark in sync when the user leaves fullscreen via
+  // Esc or the browser's own UI rather than this menu item.
+  useEffect(() => {
+    const handleFullscreenChange = () => setIsFullScreen(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
+
+  const toggleFullScreen = useCallback(() => {
+    if (document.fullscreenElement) {
+      void document.exitFullscreen();
+    } else {
+      void document.documentElement.requestFullscreen();
+    }
+  }, []);
 
   // Opens whatever a File smart chip points at, in a *new* window — never
   // reusing/replacing the current wordbook window's own open document, which
@@ -254,12 +289,22 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
             }
             return true;
           }
+          // A plain click follows the link — like a real, rendered hyperlink
+          // rather than an editing convenience that requires a modifier key.
+          // (To place the cursor inside link text instead — e.g. to fix a
+          // typo — click just before/after it and use the arrow keys, or
+          // select outward from adjacent plain text.)
           const linkEl = target.closest('a[href]') as HTMLAnchorElement | null;
-          if (linkEl && (event.ctrlKey || event.metaKey)) {
+          if (linkEl) {
             const href = linkEl.getAttribute('href') || '';
             if (href.startsWith('#bookmark:')) {
               const bookmarkTarget = view.dom.querySelector(`[data-bookmark-id="${CSS.escape(href.slice('#bookmark:'.length))}"]`);
               bookmarkTarget?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            } else if (href.startsWith('#heading:')) {
+              const headingTarget = view.dom.querySelector(`[data-heading-id="${CSS.escape(href.slice('#heading:'.length))}"]`);
+              headingTarget?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            } else if (href.startsWith('#tab:')) {
+              switchToTabRef.current(href.slice('#tab:'.length));
             } else {
               window.open(href, '_blank', 'noopener,noreferrer');
             }
@@ -333,7 +378,11 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
       setCurrentFolderId(folderId);
       setPageSetupState(book.defaultPageSetup ?? a4PageSetup('portrait'));
       setIsDirty(false);
-      editor?.commands.setContent(editorContentFromBookDocument(book) as never);
+      const sections = book.sections.length > 0 ? book.sections : blankBookDocument(name).sections;
+      const initialTab = firstRootTab(sections) ?? sections[0];
+      setTabs(sections);
+      setActiveTabId(initialTab.id);
+      editor?.commands.setContent(initialTab.content as never);
       // A freshly-loaded document needs its own first layout pass; the
       // pagination plugin's own mount-time pass ran against the *previous*
       // content.
@@ -348,6 +397,155 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
     if (isDirty && !confirm('Discard unsaved changes and start a new document?')) return;
     loadBook(blankBookDocument('Untitled Document'), null, 'Untitled Document', null);
   }, [isDirty, loadBook]);
+
+  // Every tab's `content` in `tabs` state is authoritative *except* the
+  // currently-active one, which lives in the live `editor` instead (kept
+  // there rather than mirrored into state on every keystroke, the same
+  // reasoning the rest of this file already applies to `editor.getJSON()`
+  // elsewhere). Anything that needs every tab's true content — duplicating
+  // one, or serializing the whole document to save/export — reads through
+  // this first.
+  const tabsWithLiveContent = useCallback((): BookSection[] => {
+    if (!editor) return tabs;
+    return tabs.map((t) => (t.id === activeTabId ? { ...t, content: editor.getJSON() } : t));
+  }, [tabs, activeTabId, editor]);
+
+  const switchToTab = useCallback(
+    (id: string) => {
+      if (!editor || id === activeTabId) return;
+      const target = tabs.find((t) => t.id === id);
+      if (!target) return;
+      const snapshot = editor.getJSON();
+      setTabs((prev) => prev.map((t) => (t.id === activeTabId ? { ...t, content: snapshot } : t)));
+      editor.commands.setContent(target.content as never);
+      setActiveTabId(id);
+      requestAnimationFrame(() => {
+        if (editor) repaginateNow(editor.view, paginationOptions);
+      });
+    },
+    [editor, activeTabId, tabs, paginationOptions]
+  );
+
+  // `handleClick` (in `editorProps` below) is built once when `useEditor`
+  // first mounts and never rebuilt (its deps array is just `[extensions]`),
+  // so a `#tab:` link inside the document has to reach the *current*
+  // `switchToTab` through a ref rather than closing over it directly — the
+  // same indirection `AppMenuContext.tsx`'s `bindHandlers` uses for exactly
+  // this "closure captured once, state keeps changing" problem.
+  const switchToTabRef = useRef(switchToTab);
+  useEffect(() => {
+    switchToTabRef.current = switchToTab;
+  }, [switchToTab]);
+
+  const addTab = useCallback(
+    (parentId: string | null = null) => {
+      if (!editor) return;
+      const newTab = makeBlankTab(`Tab ${tabs.length + 1}`, parentId, tabs);
+      const snapshot = editor.getJSON();
+      setTabs((prev) => [...prev.map((t) => (t.id === activeTabId ? { ...t, content: snapshot } : t)), newTab]);
+      editor.commands.setContent(newTab.content as never);
+      setActiveTabId(newTab.id);
+      setIsDirty(true);
+      requestAnimationFrame(() => {
+        if (editor) repaginateNow(editor.view, paginationOptions);
+      });
+    },
+    [editor, activeTabId, tabs, paginationOptions]
+  );
+
+  const addSubtab = useCallback((parentId: string) => addTab(parentId), [addTab]);
+
+  const deleteTab = useCallback(
+    (id: string) => {
+      const tab = tabs.find((t) => t.id === id);
+      if (!tab) return;
+      const hasChildren = tabs.some((t) => t.parentId === id);
+      if (!confirm(`Delete "${tab.title}"${hasChildren ? ' and its subtabs' : ''}? This can't be undone.`)) return;
+      const next = removeTabSubtree(tabs, id);
+      if (!next) return; // the document's last remaining tab — never leave it with zero
+      setTabs(next);
+      setIsDirty(true);
+      if (editor && descendantIds(tabs, id).has(activeTabId)) {
+        // The active tab (or its parent) was just removed — land on the
+        // first remaining root tab rather than keep showing content that no
+        // longer has a tab of its own.
+        const fallback = firstRootTab(next) ?? next[0];
+        editor.commands.setContent(fallback.content as never);
+        setActiveTabId(fallback.id);
+        requestAnimationFrame(() => {
+          repaginateNow(editor.view, paginationOptions);
+        });
+      }
+    },
+    [tabs, activeTabId, editor, paginationOptions]
+  );
+
+  const duplicateTab = useCallback(
+    (id: string) => {
+      const fresh = tabsWithLiveContent();
+      setTabs((prev) => [...prev, ...duplicateTabSubtree(fresh, id)]);
+      setIsDirty(true);
+    },
+    [tabsWithLiveContent]
+  );
+
+  const renameTab = useCallback((id: string, title: string) => {
+    const trimmed = title.trim();
+    if (!trimmed) return;
+    setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, title: trimmed } : t)));
+    setIsDirty(true);
+  }, []);
+
+  const setTabEmoji = useCallback((id: string, emoji: string | null) => {
+    setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, emoji } : t)));
+    setIsDirty(true);
+  }, []);
+
+  const copyTabLink = useCallback(
+    (id: string) => {
+      void navigator.clipboard.writeText(`#tab:${id}`);
+      addNotification({ sender: 'Word Book', text: 'Tab link copied — paste it as a Link URL to jump here.', type: 'success' });
+    },
+    [addNotification]
+  );
+
+  const showOutlineForTab = useCallback(
+    (id: string) => {
+      if (id !== activeTabId) switchToTab(id);
+      setSidebarPanel('outline');
+    },
+    [activeTabId, switchToTab]
+  );
+
+  const moveTabUp = useCallback((id: string) => {
+    setTabs((prev) => moveSibling(prev, id, 'up'));
+    setIsDirty(true);
+  }, []);
+  const moveTabDown = useCallback((id: string) => {
+    setTabs((prev) => moveSibling(prev, id, 'down'));
+    setIsDirty(true);
+  }, []);
+  const moveTabInto = useCallback((id: string, newParentId: string | null) => {
+    setTabs((prev) => moveIntoParent(prev, id, newParentId));
+    setIsDirty(true);
+  }, []);
+
+  const tabsApi: DocumentTabsApi = {
+    tabs,
+    activeTabId,
+    onSelectTab: switchToTab,
+    onAddTab: () => addTab(null),
+    onAddSubtab: addSubtab,
+    onDeleteTab: deleteTab,
+    onDuplicateTab: duplicateTab,
+    onRenameTab: renameTab,
+    onChooseEmoji: (id: string) => setEmojiPickerForTabId(id),
+    onCopyLink: copyTabLink,
+    onShowOutline: showOutlineForTab,
+    onMoveUp: moveTabUp,
+    onMoveDown: moveTabDown,
+    onMoveInto: moveTabInto,
+  };
 
   // A .doc/.docx file's content lands here as HTML (via Mammoth), not a
   // BookDocument — never linked to the original file's id, since Save only
@@ -493,7 +691,7 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
       // Manual mode had left the live view deferred.
       repaginateNow(editor.view, paginationOptions);
 
-      const book = toBookDocument(editor.getJSON(), bookMeta, pageSetup);
+      const book = toBookDocument(tabsWithLiveContent(), bookMeta, pageSetup);
       const content = serializeBookFile(book);
       const targetTitle = overrides?.nameOverride ?? docTitle;
       const name = targetTitle.endsWith(BOOK_EXTENSION) ? targetTitle : `${targetTitle}${BOOK_EXTENSION}`;
@@ -546,7 +744,7 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
         alert('Failed to save the document. Please try again.');
       }
     },
-    [bookMeta, currentFileId, currentFolderId, docTitle, editor, pageSetup, paginationOptions, resolveDefaultFolderId, setFiles]
+    [bookMeta, currentFileId, currentFolderId, docTitle, editor, pageSetup, paginationOptions, resolveDefaultFolderId, setFiles, tabsWithLiveContent]
   );
 
   // "Save"/"Save As…" both ask *where* to save through the real File
@@ -1024,7 +1222,7 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
       if (!editor) throw new Error('The document is not ready yet.');
       if (format === 'book') {
         repaginateNow(editor.view, paginationOptions);
-        const book = toBookDocument(editor.getJSON(), bookMeta, pageSetup);
+        const book = toBookDocument(tabsWithLiveContent(), bookMeta, pageSetup);
         return {
           blob: new Blob([serializeBookFile(book)], { type: BOOK_MIME_TYPE }),
           filename: docTitle.endsWith(BOOK_EXTENSION) ? docTitle : `${docTitle}${BOOK_EXTENSION}`,
@@ -1047,7 +1245,7 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
       }
       return { blob: buildMarkdownBlob(editor.getHTML()), filename: `${docTitle}.md` };
     },
-    [editor, bookMeta, pageSetup, paginationOptions, plan, docTitle]
+    [editor, bookMeta, pageSetup, paginationOptions, plan, docTitle, tabsWithLiveContent]
   );
 
   // After a version restore, the file's *stored* content has changed under
@@ -1114,7 +1312,7 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
         void pasteWithoutFormatting();
       } else if (event.key.toLowerCase() === 'k') {
         event.preventDefault();
-        if (editor) promptForLink(editor);
+        setIsLinkModalOpen(true);
       } else if (event.key.toLowerCase() === 'y' && event.shiftKey) {
         event.preventDefault();
         showDictionary();
@@ -1122,7 +1320,7 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [handleSaveClick, beginSaveAs, handleNew, pasteWithoutFormatting, editor, showDictionary]);
+  }, [handleSaveClick, beginSaveAs, handleNew, pasteWithoutFormatting, showDictionary]);
 
   useAppMenu(windowId, [
     {
@@ -1186,6 +1384,11 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
             setIsFindOpen(true);
           },
         },
+        separator(),
+        // Same command, same modal state as File > Page Setup… — just a
+        // second, more discoverable entry point for it, not a second
+        // implementation.
+        { id: 'page-setup-edit', label: 'Page Setup…', onSelect: () => setIsPageSetupOpen(true) },
       ],
     },
     {
@@ -1244,7 +1447,7 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
             { id: 'chip-dropdown', label: 'Dropdown', onSelect: () => setIsDropdownChipOpen(true) },
           ],
         },
-        { id: 'link', label: 'Link…', shortcut: 'Ctrl+K', onSelect: () => editor && promptForLink(editor) },
+        { id: 'link', label: 'Link…', shortcut: 'Ctrl+K', onSelect: () => setIsLinkModalOpen(true) },
         { id: 'drawing', label: 'Drawing…', onSelect: () => setIsDrawingOpen(true) },
         {
           kind: 'submenu',
@@ -1320,6 +1523,32 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
       items: [
         {
           kind: 'submenu',
+          id: 'view-mode',
+          label: 'Mode',
+          items: [
+            { id: 'mode-editing', label: 'Editing', selected: !isViewOnly, onSelect: () => setIsViewOnly(false) },
+            // Suggesting mode needs real track-changes infrastructure (proposed
+            // edits stored separately from the document, per-author, with
+            // accept/reject) this app doesn't have yet — listed and disabled
+            // rather than silently omitted, so it reads as "not built" and not
+            // "forgotten".
+            { id: 'mode-suggesting', label: 'Suggesting', disabled: true, onSelect: () => {} },
+            { id: 'mode-viewing', label: 'Viewing', selected: isViewOnly, onSelect: () => setIsViewOnly(true) },
+          ],
+        },
+        // Real comments need anchored, per-range comment threads (storage,
+        // resolve/reply, a sidebar) — none of that exists yet, so this is
+        // listed-but-disabled rather than a menu that opens onto nothing.
+        { id: 'view-comments', label: 'Comments', disabled: true, onSelect: () => {} },
+        {
+          id: 'toggle-outline',
+          label: sidebarPanel === 'outline' ? 'Collapse outline sidebar' : 'Show outline sidebar',
+          onSelect: () => setSidebarPanel((p) => (p === 'outline' ? 'none' : 'outline')),
+        },
+        { id: 'document-tabs', label: 'Document tabs', onSelect: () => setSidebarPanel('tabs') },
+        separator(),
+        {
+          kind: 'submenu',
           id: 'pagination-mode',
           label: 'Pagination',
           items: [
@@ -1338,6 +1567,23 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
           ],
         },
         { id: 'repaginate', label: 'Repaginate Now', onSelect: handleRepaginateNow },
+        separator(),
+        { id: 'show-print-layout', label: 'Show print layout', checked: printLayoutOn, onSelect: () => setPrintLayoutOn((v) => !v) },
+        { id: 'show-ruler', label: 'Show ruler', checked: showRuler, onSelect: () => setShowRuler((v) => !v) },
+        {
+          id: 'show-equation-toolbar',
+          label: 'Show equation toolbar',
+          checked: showEquationToolbar,
+          onSelect: () => setShowEquationToolbar((v) => !v),
+        },
+        {
+          id: 'show-nonprinting',
+          label: 'Show non-printing characters',
+          checked: showNonPrintingChars,
+          onSelect: () => setShowNonPrintingChars((v) => !v),
+        },
+        separator(),
+        { id: 'full-screen', label: 'Full screen', checked: isFullScreen, onSelect: toggleFullScreen },
       ],
     },
     {
@@ -1389,8 +1635,9 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
         isStarred={isStarred}
         onRenameTitle={commitTitleChange}
         onToggleStar={() => void handleToggleStar()}
-        isOutlineOpen={isOutlineOpen}
-        onToggleOutline={() => setIsOutlineOpen((v) => !v)}
+        sidebarPanel={sidebarPanel}
+        onSetSidebarPanel={setSidebarPanel}
+        tabsApi={tabsApi}
         spellcheckOn={spellcheckOn}
         onToggleSpellcheck={toggleSpellcheck}
         showLineNumbers={showLineNumbers}
@@ -1399,6 +1646,11 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
         canShare={!!currentFileId}
         onShare={() => setIsShareOpen(true)}
         onShareToChat={() => setIsShareToChatOpen(true)}
+        onOpenLinkModal={() => setIsLinkModalOpen(true)}
+        showRuler={showRuler}
+        printLayoutOn={printLayoutOn}
+        showEquationToolbar={showEquationToolbar}
+        showNonPrintingChars={showNonPrintingChars}
       />
       <OpenBookModal
         isOpen={isOpenModalOpen}
@@ -1417,6 +1669,7 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
         onSharedChanged={(fileId, shared) => setFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, isShared: shared } : f)))}
       />
       <ShareToChatModal isOpen={isShareToChatOpen} onClose={() => setIsShareToChatOpen(false)} docTitle={docTitle} onGetBlob={buildShareBlob} />
+      <LinkModal isOpen={isLinkModalOpen} onClose={() => setIsLinkModalOpen(false)} editor={editor} />
       <PropertiesModal
         item={currentFileItem}
         isOpen={isPropertiesOpen}
@@ -1447,6 +1700,16 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
         groups={SPECIAL_CHARACTER_GROUPS}
       />
       <CharacterGridModal isOpen={isEmojiOpen} onClose={() => setIsEmojiOpen(false)} editor={editor} title="Insert emoji" groups={EMOJI_GROUPS} />
+      <CharacterGridModal
+        isOpen={emojiPickerForTabId !== null}
+        onClose={() => setEmojiPickerForTabId(null)}
+        editor={null}
+        title="Choose tab emoji"
+        groups={EMOJI_GROUPS}
+        onSelect={(char) => {
+          if (emojiPickerForTabId) setTabEmoji(emojiPickerForTabId, char);
+        }}
+      />
       <EquationModal
         isOpen={isEquationOpen}
         onClose={() => setIsEquationOpen(false)}

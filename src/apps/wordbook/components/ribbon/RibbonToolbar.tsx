@@ -30,9 +30,9 @@ import {
   PanelLeft,
   ChevronDown,
 } from 'lucide-react';
-import { RibbonDivider, RibbonButton, RibbonSelect, RibbonColorPicker, RibbonStepper, RibbonDropdown } from './RibbonPrimitives';
+import { RibbonDivider, RibbonButton, RibbonSelect, RibbonColorPicker, RibbonFontSizeStepper, RibbonDropdown } from './RibbonPrimitives';
 import { uploadAndInsertImage } from '../../editor/insertImage';
-import { promptForLink } from '../../editor/linkActions';
+import MenuSearch from '../MenuSearch';
 
 const FONT_FAMILIES = [
   { value: '', label: 'Default' },
@@ -161,6 +161,7 @@ const HEADING_STYLES = [
 ];
 
 interface RibbonToolbarProps {
+  windowId: string;
   editor: Editor | null;
   zoom: number;
   onZoomChange: (zoom: number) => void;
@@ -170,9 +171,11 @@ interface RibbonToolbarProps {
   onToggleOutline: () => void;
   spellcheckOn: boolean;
   onToggleSpellcheck: () => void;
+  onOpenLinkModal: () => void;
 }
 
 export default function RibbonToolbar({
+  windowId,
   editor,
   zoom,
   onZoomChange,
@@ -182,6 +185,7 @@ export default function RibbonToolbar({
   onToggleOutline,
   spellcheckOn,
   onToggleSpellcheck,
+  onOpenLinkModal,
 }: RibbonToolbarProps) {
   const imageInputRef = useRef<HTMLInputElement>(null);
 
@@ -334,8 +338,6 @@ export default function RibbonToolbar({
     }
   };
 
-  const insertLink = () => promptForLink(editor);
-
   return (
     <div className="shrink-0 bg-[#f3f2f6] border-b border-zinc-300 select-none">
       <div className="flex items-center gap-0.5 min-h-11 px-2 py-1 overflow-x-auto whitespace-nowrap">
@@ -426,7 +428,7 @@ export default function RibbonToolbar({
           onChange={(v) => (v ? editor.chain().focus().setFontFamily(v).run() : editor.chain().focus().unsetFontFamily().run())}
           options={FONT_FAMILIES.map((f) => ({ value: f.value, label: f.label, style: f.value ? { fontFamily: f.value } : undefined }))}
         />
-        <RibbonStepper
+        <RibbonFontSizeStepper
           title="Font size (pt)"
           value={Math.round(currentFontSizePt * 10) / 10}
           min={1}
@@ -462,7 +464,7 @@ export default function RibbonToolbar({
 
         <RibbonDivider />
 
-        <RibbonButton title="Insert link" active={editor.isActive('link')} onClick={insertLink}>
+        <RibbonButton title="Insert link" active={editor.isActive('link')} onClick={onOpenLinkModal}>
           <LinkIcon className="w-3.5 h-3.5" />
         </RibbonButton>
         <RibbonButton title="Insert image" onClick={() => imageInputRef.current?.click()}>
@@ -601,6 +603,10 @@ export default function RibbonToolbar({
         <RibbonButton title="Clear formatting" onClick={() => editor.chain().focus().unsetAllMarks().clearNodes().run()}>
           <RemoveFormatting className="w-3.5 h-3.5" />
         </RibbonButton>
+
+        <RibbonDivider />
+
+        <MenuSearch windowId={windowId} />
       </div>
     </div>
   );

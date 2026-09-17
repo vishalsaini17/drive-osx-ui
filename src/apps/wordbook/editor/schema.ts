@@ -130,6 +130,18 @@ const KeepWithNext = Extension.create({
             parseHTML: (element) => element.getAttribute('data-keep-with-next') !== 'false',
             renderHTML: (attributes) => ({ 'data-keep-with-next': attributes.keepWithNext ? 'true' : 'false' }),
           },
+          /**
+           * A stable jump target for the Link dialog's "Headings, bookmarks,
+           * and tabs" list (LinkModal.tsx) — assigned lazily the first time a
+           * link is actually made to this heading (see `ensureHeadingId` in
+           * that file), not up front for every heading, so a document with
+           * no internal links stays free of ids nobody uses.
+           */
+          headingId: {
+            default: null,
+            parseHTML: (element) => element.getAttribute('data-heading-id'),
+            renderHTML: (attributes) => (attributes.headingId ? { 'data-heading-id': attributes.headingId } : {}),
+          },
         },
       },
     ];
@@ -212,7 +224,15 @@ export function wordBookExtensions() {
     Subscript,
     Superscript,
     Highlight.configure({ multicolor: true }),
-    Link.configure({ openOnClick: false, HTMLAttributes: { title: 'Ctrl+Click to open', rel: 'noopener noreferrer' } }),
+    // `inclusive` (whether typing right at a mark's end boundary keeps
+    // extending it) defaults to following the `autolink` option in this
+    // version of the extension — which is on by default — so without this
+    // override, typing immediately after a link silently kept adding new
+    // characters to it instead of starting normal text.
+    Link.extend({ inclusive: () => false }).configure({
+      openOnClick: false,
+      HTMLAttributes: { title: 'Click to open', rel: 'noopener noreferrer' },
+    }),
     TextAlign.configure({ types: ['heading', 'paragraph'] }),
     Table.configure({ resizable: true }),
     TableRow,
