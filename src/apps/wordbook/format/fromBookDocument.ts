@@ -12,18 +12,15 @@ export function serializeBookFile(book: BookDocument): string {
   return JSON.stringify(book, null, 2);
 }
 
-/** The TipTap/ProseMirror JSON to load into the editor for this document's (only, in Phase 1) section. */
-export function editorContentFromBookDocument(book: BookDocument): unknown {
-  return book.sections[0]?.content ?? EMPTY_DOC;
-}
-
 export function blankBookDocument(title: string): BookDocument {
   const now = new Date().toISOString();
   return {
     formatVersion: 1,
     metadata: { title, author: '', createdAt: now, modifiedAt: now },
     defaultPageSetup: a4PageSetup('portrait'),
-    sections: [{ id: 'main', pageSetup: {}, headerRef: null, footerRef: null, content: EMPTY_DOC }],
+    sections: [
+      { id: 'main', title: 'Tab 1', emoji: null, parentId: null, order: 0, pageSetup: {}, headerRef: null, footerRef: null, content: EMPTY_DOC },
+    ],
     headers: {},
     footers: {},
     assets: {},

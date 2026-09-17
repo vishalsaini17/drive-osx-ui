@@ -100,37 +100,57 @@ export function computePageBreaks(
       }
     }
 
-    let remaining = available - used;
+    if (block.heightPx <= available - used) {
+      used += block.heightPx;
+      return;
+    }
 
-    if (block.heightPx <= remaining) {
+    // Doesn't fit in what's left of the current page. Move it to a fresh
+    // page whole first — the same thing that already happens for a
+    // non-splittable block (image/table) — rather than immediately hunting
+    // for an internal split point. A block only ever gets split *within*
+    // itself below, once it's alone on a brand-new, fully empty page and
+    // still doesn't fit even then (a paragraph/table taller than a full
+    // page, genuinely rare). Splitting eagerly instead of as this last
+    // resort means every ordinary paragraph moves as one atomic unit, using
+    // the plain "next sibling" spacer decoration already proven to render
+    // correctly — never the mid-paragraph `display:block` widget trick,
+    // which reflows unreliably inside a live contenteditable surface.
+    if (used > 0) {
+      pushPage(block.pos, undefined);
+      startNewPage(block.pos, undefined);
+    }
+
+    if (block.heightPx <= available) {
       used += block.heightPx;
       return;
     }
 
     if (block.splittable && block.splitPoints.length > 0) {
-      // A block may be taller than a whole page (a very long paragraph or a
-      // huge table) — loop so it can spill across more than one boundary.
       let cursorPos = block.pos;
       let consumedHeight = 0;
 
       while (consumedHeight < block.heightPx) {
-        remaining = available - used;
+        const remaining = available - used;
+        if (block.heightPx - consumedHeight <= remaining) break;
+
         const candidates = block.splitPoints.filter(
           (p) => p.pos > cursorPos && p.heightBeforePx - consumedHeight <= remaining
         );
         const best = candidates.length > 0 ? candidates[candidates.length - 1] : undefined;
 
         if (best && best.heightBeforePx > consumedHeight) {
+          // Credit the chunk of the block up to the split point to the page
+          // being closed *before* snapshotting it via pushPage — otherwise
+          // the finished page's recorded contentUsedHeightPx comes out as
+          // whatever it was before this block started (often 0), which
+          // throws off the trailing-gap math anything downstream derives
+          // from it (the inter-page spacer decorations, print/export).
+          used += best.heightBeforePx - consumedHeight;
           pushPage(best.pos, best.pos);
           startNewPage(best.pos, best.pos);
-          used += 0; // fresh page; the consumed chunk stays behind on the finished page
           consumedHeight = best.heightBeforePx;
           cursorPos = best.pos;
-        } else if (used > 0) {
-          // Nothing of this block fits in what's left — move the remainder
-          // to a fresh page and try again there.
-          pushPage(cursorPos, cursorPos === block.pos ? undefined : cursorPos);
-          startNewPage(cursorPos, cursorPos === block.pos ? undefined : cursorPos);
         } else {
           // Fresh page and still doesn't fit further — the rest of the
           // block simply runs long on this page rather than losing content.
@@ -142,12 +162,8 @@ export function computePageBreaks(
       return;
     }
 
-    // Non-splittable (image, table without row granularity yet, etc.) or no
-    // usable split point: move the whole block to a fresh page.
-    if (used > 0) {
-      pushPage(block.pos, undefined);
-      startNewPage(block.pos, undefined);
-    }
+    // Non-splittable and still doesn't fit even alone on a fresh page —
+    // runs long on this page rather than losing content.
     used += block.heightPx;
   }
 }

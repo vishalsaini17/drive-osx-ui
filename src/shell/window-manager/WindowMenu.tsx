@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, ChevronRight, Menu as MenuIcon } from 'lucide-react';
-import { MenuItem, isAction, isHeading, isSeparator, isSubmenu } from '../../platform/menus/types';
+import { MenuItem, isAction, isCustom, isHeading, isSeparator, isSubmenu } from '../../platform/menus/types';
 import { themeFamily } from '../../platform/theme/themes';
 
 interface WindowMenuProps {
@@ -38,7 +38,7 @@ function themeClasses(theme: string) {
   };
 }
 
-interface Placement {
+export interface Placement {
   left: number;
   top: number;
   maxHeight: number;
@@ -48,7 +48,7 @@ interface Placement {
  * Positions a panel next to an anchor in viewport coordinates, flipping to the
  * other side and clamping vertically when it would leave the screen.
  */
-function placePanel(anchor: DOMRect, mode: 'below' | 'beside'): Placement {
+export function placePanel(anchor: DOMRect, mode: 'below' | 'beside'): Placement {
   const viewportW = window.innerWidth;
   const viewportH = window.innerHeight;
 
@@ -70,7 +70,7 @@ function placePanel(anchor: DOMRect, mode: 'below' | 'beside'): Placement {
   return { left, top, maxHeight };
 }
 
-interface PanelProps {
+export interface PanelProps {
   items: MenuItem[];
   theme: string;
   onClose: () => void;
@@ -88,7 +88,7 @@ interface PanelProps {
  * every panel is mounted on `document.body` and positioned in viewport
  * coordinates instead of being nested inside its parent.
  */
-function MenuPanel({ items, theme, onClose, placement, onPointerEnter, onPointerLeave }: PanelProps) {
+export function MenuPanel({ items, theme, onClose, placement, onPointerEnter, onPointerLeave }: PanelProps) {
   const styles = themeClasses(theme);
   const [openSubmenu, setOpenSubmenu] = useState<{ id: string; placement: Placement } | null>(null);
   const closeTimer = useRef<number | null>(null);
@@ -173,6 +173,8 @@ function MenuPanel({ items, theme, onClose, placement, onPointerEnter, onPointer
                 type="button"
                 disabled={item.disabled}
                 onClick={(event) => {
+                  // See the action-item button's onClick for why this matters.
+                  event.stopPropagation();
                   if (item.disabled) return;
                   const rect = (event.currentTarget.parentElement as HTMLElement).getBoundingClientRect();
                   setOpenSubmenu(isOpen ? null : { id: item.id, placement: placePanel(rect, 'beside') });
@@ -205,13 +207,27 @@ function MenuPanel({ items, theme, onClose, placement, onPointerEnter, onPointer
           );
         }
 
+        if (isCustom(item)) {
+          return <div key={item.id}>{item.render({ onClose })}</div>;
+        }
+
         if (isAction(item)) {
           return (
             <button
               key={item.id}
               type="button"
               disabled={item.disabled}
-              onClick={() => {
+              onClick={(event) => {
+                // This panel is a portal (mounted on `document.body`), but
+                // React bubbles synthetic events through the *component*
+                // tree, not the physical DOM tree — so without this, the
+                // click still reaches the calling app's own `AppWindow`
+                // click handler (which re-focuses that app on every click
+                // inside it). For an action that opens another window as a
+                // side effect (e.g. a file/folder picker), that refocus runs
+                // *after* the new window was just focused, silently burying
+                // it behind the app that opened it.
+                event.stopPropagation();
                 if (item.disabled) return;
                 item.onSelect();
                 onClose();
