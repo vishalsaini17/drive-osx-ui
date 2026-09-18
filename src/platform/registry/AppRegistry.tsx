@@ -15,6 +15,7 @@ import {
   Video,
   Trash2,
   Calculator as CalculatorIcon,
+  Scale,
   FileSpreadsheet,
   Tv,
   Users,
@@ -37,6 +38,7 @@ import {
   MeetingApp,
   MailApp,
   CalculatorApp,
+  ConverterApp,
   SpreadsheetApp,
   PresentationApp,
   PDFViewerApp,
@@ -447,6 +449,23 @@ const registry: Record<string, AppRegistryEntry> = {
       </div>
     )
   },
+  converter: {
+    manifest: {
+      id: 'converter',
+      title: 'Converter',
+      iconName: 'Scale',
+      category: 'utilities',
+      defaultWindow: { w: 680, h: 500, minW: 440, minH: 360, x: 250, y: 120 },
+      permissions: [],
+    },
+    component: ConverterApp,
+    renderIcon: (className = "w-full h-full") => (
+      <div className={`${className} bg-gradient-to-tr from-violet-600 to-purple-700 rounded-[22%] flex items-center justify-center relative border border-white/20 shadow-md overflow-hidden group`}>
+        <div className="absolute inset-0 bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity duration-200" />
+        <Scale className="w-[52%] h-[52%] text-white" strokeWidth={2.2} />
+      </div>
+    )
+  },
   spreadsheet: {
     manifest: {
       id: 'spreadsheet',
@@ -577,6 +596,7 @@ const appRoutes: Record<string, string> = {
   trash: 'trash',
   mail: 'mail',
   calculator: 'calculator',
+  converter: 'converter',
   spreadsheet: 'spreadsheet',
   presentation: 'presentation',
   'pdf-viewer': 'pdf-viewer',
