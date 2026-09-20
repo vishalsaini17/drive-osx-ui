@@ -1,4 +1,4 @@
-export type ConverterCategory = 'length' | 'weight' | 'temperature' | 'currency' | 'storage';
+export type ConverterCategory = 'length' | 'weight' | 'temperature' | 'currency' | 'storage'|'encryption';
 
 export interface UnitDefinition {
   id: string;
