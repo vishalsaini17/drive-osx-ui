@@ -309,7 +309,7 @@ export default function UnitConverter() {
       ref={containerRef}
       className="flex-1 flex flex-col p-4 gap-4 max-w-2xl mx-auto w-full select-none overflow-y-auto"
     >
-      <div
+      {/* <div
         className={`grid ${isCompact ? "grid-cols-2" : "grid-cols-5"} gap-1.5 p-1.5 bg-zinc-100 dark:bg-zinc-800/60 rounded-2xl border border-zinc-200 dark:border-zinc-800 text-xs`}
       >
         {CATEGORIES.map((item) => (
@@ -325,6 +325,43 @@ export default function UnitConverter() {
             {item.name}
           </button>
         ))}
+      </div> */}
+      <div
+        className="
+    flex items-center gap-1.5
+    p-1.5
+    bg-zinc-100 dark:bg-zinc-800/60
+    rounded-2xl
+    border border-zinc-200 dark:border-zinc-800
+    text-xs
+  "
+      >
+        {CATEGORIES.filter((item) => item.id !== "encryption").map((item) => (
+          <button
+            key={item.id}
+            onClick={() => handleCategoryChange(item.id)}
+            className={`flex-1 py-2 px-2 rounded-xl font-bold cursor-pointer transition-all text-center whitespace-nowrap ${
+              category === item.id
+                ? "bg-purple-600 text-white shadow-xs"
+                : "text-zinc-600 dark:text-zinc-300 hover:bg-zinc-200/60 dark:hover:bg-zinc-700/50"
+            }`}
+          >
+            {item.name}
+          </button>
+        ))}
+
+        <div className="w-px h-7 bg-zinc-300 dark:bg-zinc-700 mx-1 shrink-0" />
+
+        <button
+          onClick={() => handleCategoryChange("encryption")}
+          className={`flex-1 py-2 px-2 rounded-xl font-bold cursor-pointer transition-all text-center whitespace-nowrap ${
+            category === "encryption"
+              ? "bg-purple-600 text-white shadow-xs"
+              : "text-zinc-600 dark:text-zinc-300 hover:bg-zinc-200/60 dark:hover:bg-zinc-700/50"
+          }`}
+        >
+          Encrypt / Decrypt
+        </button>
       </div>
 
       <div className="p-5 rounded-2xl bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 shadow-md flex flex-col gap-4">
@@ -570,13 +607,32 @@ export default function UnitConverter() {
           </>
         )}
 
-        <div className="p-3 rounded-xl bg-zinc-50 dark:bg-zinc-800/40 border border-zinc-200 dark:border-zinc-800 text-xs flex items-center gap-2 text-zinc-500 dark:text-zinc-400">
+        {/* <div className="p-3 rounded-xl bg-zinc-50 dark:bg-zinc-800/40 border border-zinc-200 dark:border-zinc-800 text-xs flex items-center gap-2 text-zinc-500 dark:text-zinc-400">
           <Info className="w-4 h-4 shrink-0 text-purple-500" />
           <span>
             Conversion: {displayedInput} {fromUnitId} = {convertedResult}{" "}
             {toUnitId}
           </span>
-        </div>
+        </div> */}
+        {isEncryption ? (
+          <div className="p-3 rounded-xl bg-zinc-50 dark:bg-zinc-800/40 border border-zinc-200 dark:border-zinc-800 text-xs flex items-center gap-2 text-zinc-500 dark:text-zinc-400">
+            <Info className="w-4 h-4 shrink-0 text-purple-500" />
+
+            <span>
+              {encryptionMethod === "BASE64"
+                ? "Base64 encodes and decodes data; no password is used."
+                : "AES-256-GCM uses your password to encrypt and decrypt the text securely."}
+            </span>
+          </div>
+        ) : (
+          <div className="p-3 rounded-xl bg-zinc-50 dark:bg-zinc-800/40 border border-zinc-200 dark:border-zinc-800 text-xs flex items-center gap-2 text-zinc-500 dark:text-zinc-400">
+            <Info className="w-4 h-4 shrink-0 text-purple-500" />
+            <span>
+              Conversion: {displayedInput} {fromUnitId} = {convertedResult}{" "}
+              {toUnitId}
+            </span>
+          </div>
+        )}
       </div>
     </div>
   );
