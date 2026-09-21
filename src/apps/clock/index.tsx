@@ -93,6 +93,28 @@ export default function ClockApp() {
   const [activeTab, setActiveTab] = useState<'world' | 'alarms' | 'stopwatch' | 'timer'>('world');
   const [now, setNow] = useState<Date>(new Date());
 
+  // Tracks this window's own rendered width, not the viewport — the clock
+  // window's default/minimum size (520/500px, see AppRegistry) is already
+  // close to a phone's viewport width, so the same narrow layout is right
+  // whether the app is maximized on a phone or just sitting at its ordinary
+  // size on desktop. The four-tab header (World/Alarms/Stopwatch/Timer,
+  // each with a label) needs ~440px to fit uncompressed and was overflowing
+  // off the right edge — undiscoverable and unusable — below that; below
+  // `isCompactWindow` the tabs drop their labels down to icon-only instead.
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [containerWidth, setContainerWidth] = useState<number>(520);
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setContainerWidth(entry.contentRect.width);
+      }
+    });
+    observer.observe(containerRef.current);
+    return () => observer.disconnect();
+  }, []);
+  const isCompactWindow = containerWidth < 460;
+
   // System Store World Clock Integration
   const settings = useSystemStore((state) => state.settings);
   const worldCities = useSystemStore((state) => state.worldCities);
@@ -388,9 +410,9 @@ export default function ClockApp() {
   };
 
   return (
-    <div className="h-full flex flex-col bg-[#f8f9fa] text-slate-800 font-sans select-none relative overflow-hidden">
+    <div ref={containerRef} className="h-full flex flex-col bg-[#f8f9fa] text-slate-800 font-sans select-none relative overflow-hidden">
       {/* ================= HEADER / TOP BAR ================= */}
-      <div className="h-12 px-4 flex items-center justify-between border-b border-slate-200/80 bg-white/70 backdrop-blur-md">
+      <div className={`h-12 flex items-center justify-between border-b border-slate-200/80 bg-white/70 backdrop-blur-md ${isCompactWindow ? 'px-2' : 'px-4'}`}>
         {/* Left Action Button (+ for Add) */}
         <div>
           {activeTab === 'world' && (
@@ -414,51 +436,34 @@ export default function ClockApp() {
           {(activeTab === 'stopwatch' || activeTab === 'timer') && <div className="w-8" />}
         </div>
 
-        {/* Center Tab Switcher Navigation */}
-        <div className="flex items-center gap-1 bg-slate-100/90 p-1 rounded-2xl border border-slate-200/70 shadow-inner">
-          <button
-            onClick={() => setActiveTab('world')}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${activeTab === 'world'
-                ? 'bg-white text-slate-900 shadow-sm'
-                : 'text-slate-600 hover:text-slate-900'
-              }`}
-          >
-            <Globe size={14} className={activeTab === 'world' ? 'text-blue-500' : ''} />
-            <span>World</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('alarms')}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${activeTab === 'alarms'
-                ? 'bg-white text-slate-900 shadow-sm'
-                : 'text-slate-600 hover:text-slate-900'
-              }`}
-          >
-            <AlarmClock size={14} className={activeTab === 'alarms' ? 'text-blue-500' : ''} />
-            <span>Alarms</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('stopwatch')}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${activeTab === 'stopwatch'
-                ? 'bg-white text-slate-900 shadow-sm'
-                : 'text-slate-600 hover:text-slate-900'
-              }`}
-          >
-            <StopwatchIcon size={14} className={activeTab === 'stopwatch' ? 'text-blue-500' : ''} />
-            <span>Stopwatch</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('timer')}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${activeTab === 'timer'
-                ? 'bg-white text-slate-900 shadow-sm'
-                : 'text-slate-600 hover:text-slate-900'
-              }`}
-          >
-            <Hourglass size={14} className={activeTab === 'timer' ? 'text-blue-500' : ''} />
-            <span>Timer</span>
-          </button>
+        {/* Center Tab Switcher Navigation — labels drop below `isCompactWindow`
+            (see its declaration) so the four tabs fit an ~390px phone
+            window without spilling the last one off the right edge. */}
+        <div className={`flex items-center bg-slate-100/90 p-1 rounded-2xl border border-slate-200/70 shadow-inner ${isCompactWindow ? 'gap-0.5' : 'gap-1'}`}>
+          {(
+            [
+              { id: 'world', label: 'World', icon: Globe },
+              { id: 'alarms', label: 'Alarms', icon: AlarmClock },
+              { id: 'stopwatch', label: 'Stopwatch', icon: StopwatchIcon },
+              { id: 'timer', label: 'Timer', icon: Hourglass },
+            ] as const
+          ).map((tab) => {
+            const isActive = activeTab === tab.id;
+            const TabIcon = tab.icon;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                title={isCompactWindow ? tab.label : undefined}
+                className={`flex items-center gap-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                  isCompactWindow ? 'px-2.5 py-1.5' : 'px-3.5 py-1.5'
+                } ${isActive ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
+              >
+                <TabIcon size={14} className={isActive ? 'text-blue-500' : ''} />
+                {!isCompactWindow && <span>{tab.label}</span>}
+              </button>
+            );
+          })}
         </div>
 
         {/* Right Menu Controls */}
@@ -474,7 +479,7 @@ export default function ClockApp() {
 
       {/* ================= TAB 1: WORLD CLOCKS ================= */}
       {activeTab === 'world' && (
-        <div className="flex-1 p-6 sm:p-10 flex flex-col items-center justify-start overflow-y-auto custom-scrollbar">
+        <div className={`flex-1 flex flex-col items-center justify-start overflow-y-auto custom-scrollbar ${isCompactWindow ? 'p-3' : 'p-6 sm:p-10'}`}>
           <div className="w-full max-w-lg bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden divide-y divide-slate-100">
             {worldCities
               .filter((city) => !city.isCurrentLocation && city.desc !== 'Current location')
@@ -484,20 +489,25 @@ export default function ClockApp() {
                 return (
                   <div
                     key={city.id}
-                    className="p-4 px-6 flex items-center justify-between hover:bg-slate-50/60 transition-colors group"
+                    className={`flex items-center justify-between gap-2 hover:bg-slate-50/60 transition-colors group ${isCompactWindow ? 'p-3 px-4' : 'p-4 px-6'}`}
                   >
-                    <div>
-                      <h3 className="text-base font-bold text-slate-900 leading-snug">
+                    {/* `min-w-0` lets this truncate instead of wrapping and
+                        squeezing the time pill onto two lines — the failure
+                        mode a long city name hit at phone width. */}
+                    <div className="min-w-0">
+                      <h3 className="text-base font-bold text-slate-900 leading-snug truncate">
                         {city.name}
                       </h3>
-                      <p className="text-xs font-medium text-slate-400">
+                      <p className="text-xs font-medium text-slate-400 truncate">
                         {city.desc}
                       </p>
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 shrink-0">
                       <div
-                        className={`px-4 py-1.5 rounded-full text-2xl font-mono font-semibold tracking-tight shadow-xs ${city.pillColor === 'blue'
+                        className={`rounded-full font-mono font-semibold tracking-tight shadow-xs whitespace-nowrap ${
+                          isCompactWindow ? 'px-2.5 py-1 text-base' : 'px-4 py-1.5 text-2xl'
+                        } ${city.pillColor === 'blue'
                             ? 'bg-blue-100/90 text-blue-700'
                             : 'bg-amber-100/90 text-amber-800'
                           }`}
@@ -508,7 +518,7 @@ export default function ClockApp() {
                       {!city.isCurrentLocation && (
                         <button
                           onClick={() => handleRemoveCity(city.id)}
-                          className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-rose-500 transition-all cursor-pointer"
+                          className={`p-1 text-slate-400 hover:text-rose-500 transition-all cursor-pointer ${isCompactWindow ? '' : 'opacity-0 group-hover:opacity-100'}`}
                           title="Remove City"
                         >
                           <XCircle size={18} />

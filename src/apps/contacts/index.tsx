@@ -31,6 +31,7 @@ import {
   Building,
   Filter,
   Loader2,
+  Menu,
   WifiOff,
   AlertTriangle,
   X
@@ -128,6 +129,12 @@ export default function ContactsApp() {
     category: 'all',
     searchQuery: '',
   });
+
+  // Groups sidebar shown as an overlay drawer when the window is too narrow for it
+  const [groupsOpen, setGroupsOpen] = useState(false);
+  useEffect(() => {
+    if (showGroups) setGroupsOpen(false);
+  }, [showGroups]);
 
   // Modals State
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -432,11 +439,29 @@ export default function ContactsApp() {
       )}
 
       {/* Main Container Layout */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Left Navigation Sidebar — the first pane to go when space is short. */}
+      <div className="flex-1 flex overflow-hidden relative">
+        {!showGroups && groupsOpen && (
+          <div className="absolute inset-0 z-20 bg-black/40" onClick={() => setGroupsOpen(false)} />
+        )}
+
+        {/* Left Navigation Sidebar — inline when there is room, otherwise an
+            overlay drawer opened from the menu button in the list header. */}
         <div
-          className={`w-60 border-r flex-col shrink-0 ${showGroups ? 'flex' : 'hidden'} ${
-            isLight ? 'bg-slate-50 border-slate-200' : 'bg-zinc-900/90 border-zinc-800'
+          onClick={(e) => {
+            if (!showGroups && (e.target as HTMLElement).closest('button')) setGroupsOpen(false);
+          }}
+          className={`w-60 border-r flex-col ${
+            showGroups
+              ? 'flex shrink-0'
+              : groupsOpen
+                ? 'flex absolute inset-y-0 left-0 z-30 max-w-[85%] shadow-2xl'
+                : 'hidden'
+          } ${
+            isLight
+              ? 'bg-slate-50 border-slate-200'
+              : showGroups
+                ? 'bg-zinc-900/90 border-zinc-800'
+                : 'bg-zinc-900 border-zinc-800'
           }`}
         >
           {/* Top Header */}
@@ -591,6 +616,20 @@ export default function ContactsApp() {
           {/* Search Box */}
           <div className="p-3 border-b border-inherit space-y-2">
             <div className="flex items-center gap-2">
+              {!showGroups && (
+                <button
+                  onClick={() => setGroupsOpen(true)}
+                  className={`shrink-0 p-2 rounded-xl border transition-all cursor-pointer ${
+                    isLight
+                      ? 'bg-white hover:bg-slate-100 border-slate-300 text-slate-700'
+                      : 'bg-zinc-800 hover:bg-zinc-700 border-zinc-700 text-zinc-200'
+                  }`}
+                  title="Groups, labels and companies"
+                  aria-label="Open groups and labels"
+                >
+                  <Menu size={15} />
+                </button>
+              )}
               <div className="relative flex-1 min-w-0">
                 <Search className="w-4 h-4 absolute left-3 top-2.5 text-zinc-400" />
                 <input
@@ -632,17 +671,17 @@ export default function ContactsApp() {
               )}
             </div>
 
-            {/* Same reasoning for the group filters: reduced to a scrolling row
-                of chips rather than dropped. */}
+            {/* Quick filters. Everything else (labels, companies) lives in the
+                drawer, so the row never needs to scroll or clip. */}
             {!showGroups && (
-              <div className="flex gap-1.5 overflow-x-auto custom-scrollbar pb-0.5">
+              <div className="flex gap-1.5 min-w-0">
                 {([
                   { id: 'all', label: 'All' },
                   { id: 'favorites', label: 'Favourites' },
                 ] as const).map(({ id, label }) => (
                   <button
                     key={id}
-                    onClick={() => setFilterState({ ...filterState, category: id, selectedLabel: undefined })}
+                    onClick={() => setFilterState({ ...filterState, category: id, selectedLabel: undefined, selectedCompany: undefined })}
                     className={`shrink-0 px-2.5 py-1 rounded-lg text-[11px] font-semibold cursor-pointer transition-colors ${
                       filterState.category === id
                         ? 'bg-indigo-600 text-white'
@@ -654,23 +693,15 @@ export default function ContactsApp() {
                     {label}
                   </button>
                 ))}
-                {availableLabels.map((label) => (
+                {(filterState.category === 'label' || filterState.category === 'company') && (
                   <button
-                    key={label}
-                    onClick={() =>
-                      setFilterState({ ...filterState, category: 'label', selectedLabel: label })
-                    }
-                    className={`shrink-0 px-2.5 py-1 rounded-lg text-[11px] font-semibold cursor-pointer transition-colors ${
-                      filterState.category === 'label' && filterState.selectedLabel === label
-                        ? 'bg-indigo-600 text-white'
-                        : isLight
-                          ? 'bg-slate-100 hover:bg-slate-200 text-slate-600'
-                          : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300'
-                    }`}
+                    onClick={() => setGroupsOpen(true)}
+                    title="Change group"
+                    className="min-w-0 max-w-[12rem] truncate px-2.5 py-1 rounded-lg text-[11px] font-semibold cursor-pointer bg-indigo-600 text-white"
                   >
-                    {label}
+                    {filterState.category === 'label' ? filterState.selectedLabel : filterState.selectedCompany}
                   </button>
-                ))}
+                )}
               </div>
             )}
           </div>
@@ -863,12 +894,12 @@ export default function ContactsApp() {
                     <img
                       src={activeContact.photo}
                       alt={activeContact.firstName}
-                      className="w-24 h-24 rounded-full object-cover border-4 border-indigo-500/30 shadow-xl"
+                      className="w-24 h-24 shrink-0 rounded-full object-cover border-4 border-indigo-500/30 shadow-xl"
                       referrerPolicy="no-referrer"
                     />
                   ) : (
                     <div
-                      className={`w-24 h-24 rounded-full ${
+                      className={`w-24 h-24 shrink-0 rounded-full ${
                         activeContact.avatarBg || 'bg-gradient-to-br from-indigo-500 to-purple-600'
                       } flex items-center justify-center text-white font-extrabold text-3xl shadow-xl`}
                     >

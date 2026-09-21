@@ -29,8 +29,18 @@ import {
   RemoveFormatting,
   PanelLeft,
   ChevronDown,
+  MoreHorizontal,
 } from 'lucide-react';
-import { RibbonDivider, RibbonButton, RibbonSelect, RibbonColorPicker, RibbonFontSizeStepper, RibbonDropdown } from './RibbonPrimitives';
+import {
+  RibbonDivider,
+  RibbonButton,
+  RibbonSelect,
+  RibbonColorPicker,
+  RibbonFontSizeStepper,
+  RibbonDropdown,
+  RibbonMoreMenu,
+  RibbonMoreMenuSection,
+} from './RibbonPrimitives';
 import { uploadAndInsertImage } from '../../editor/insertImage';
 import MenuSearch from '../MenuSearch';
 
@@ -189,6 +199,29 @@ export default function RibbonToolbar({
 }: RibbonToolbarProps) {
   const imageInputRef = useRef<HTMLInputElement>(null);
 
+  // The real device viewport, not this window's own rendered width — Word
+  // Book's *default* window (980px, see AppRegistry) is itself narrower
+  // than the full ribbon's ~1300px, and even narrower than a landscape
+  // tablet, so comparing against this component's own container would put
+  // every desktop user's ordinary-sized window into compact mode too.
+  // `window.innerWidth` is what actually distinguishes "phone/tablet" from
+  // "desktop with a normal window size" — the same reasoning
+  // `PageCanvas.tsx`'s auto-fit-zoom and the OS shell's own
+  // `isTabletOrNarrower` (Dock.tsx) follow for the identical ambiguity.
+  // Below `isCompact` only a small set of the most-used controls (undo/
+  // redo, bold/italic/underline, bullet/numbered list) stay in the row;
+  // everything else moves into the "More options" menu (`RibbonMoreMenu`)
+  // instead of off the visible edge — the full ribbon was already
+  // scrollable rather than clipped, but a control someone doesn't know to
+  // scroll for is effectively hidden.
+  const [windowWidth, setWindowWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 1300);
+  useEffect(() => {
+    const handleResize = () => setWindowWidth(window.innerWidth);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+  const isCompact = windowWidth < 1024;
+
   // "Paint format": captures the mark set at the cursor, then applies it to
   // whatever the *next* non-empty selection turns out to be, one time. Kept
   // as a one-shot listener rather than always-on so it never fires on a
@@ -338,6 +371,256 @@ export default function RibbonToolbar({
     }
   };
 
+  // Each is the exact JSX the desktop ribbon has always rendered inline —
+  // extracted to a variable purely so `isCompact` can place the identical
+  // controls in a second location (`RibbonMoreMenu`) instead of forking
+  // them into two maintained copies.
+  const documentToolsGroup = (
+    <>
+      <RibbonButton title="Print" onClick={() => window.print()}>
+        <Printer className="w-3.5 h-3.5" />
+      </RibbonButton>
+      <RibbonButton title={spellcheckOn ? 'Spellcheck: on' : 'Spellcheck: off'} active={spellcheckOn} onClick={onToggleSpellcheck}>
+        <SpellCheck className="w-3.5 h-3.5" />
+      </RibbonButton>
+      <RibbonButton title="Paint format — copy formatting, then click or select text to apply it" active={paintFormatActive} onClick={startPaintFormat}>
+        <Paintbrush className="w-3.5 h-3.5" />
+      </RibbonButton>
+    </>
+  );
+
+  const zoomGroup = (
+    <>
+      <RibbonButton title="Zoom out" disabled={zoom <= 0.5} onClick={() => onZoomChange(Math.max(0.5, Math.round((zoom - 0.1) * 10) / 10))}>
+        <ZoomOut className="w-3.5 h-3.5" />
+      </RibbonButton>
+      <RibbonDropdown
+        title="Zoom"
+        widthClass="w-24"
+        trigger={
+          <>
+            <span className="text-xs text-zinc-700 tabular-nums w-10 text-center">{Math.round(zoom * 100)}%</span>
+            <ChevronDown className="w-3 h-3 text-zinc-500" />
+          </>
+        }
+      >
+        <button
+          type="button"
+          onClick={() => {
+            const container = document.querySelector<HTMLElement>('[data-testid="wb-scroll-container"]');
+            const pageEl = document.querySelector<HTMLElement>('[data-wb-page-stack]');
+            if (!container || !pageEl) return;
+            // The page element's own width is already zoom-scaled (a CSS
+            // `transform`, not a layout change) — dividing back out by the
+            // *current* zoom recovers its true, zoom-independent width, the
+            // same reasoning `PageCanvas.tsx`'s own zoom comment relies on.
+            const unzoomedPageWidth = pageEl.getBoundingClientRect().width / zoom;
+            const available = container.clientWidth - 48;
+            const fit = Math.min(2, Math.max(0.3, Math.round((available / unzoomedPageWidth) * 100) / 100));
+            onZoomChange(fit);
+          }}
+          className="w-full text-left px-2 py-1 rounded hover:bg-zinc-100 text-xs text-zinc-700 cursor-pointer"
+        >
+          Fit
+        </button>
+        <div className="border-t border-zinc-200 my-1" />
+        {ZOOM_PRESETS.map((preset) => (
+          <button
+            key={preset}
+            type="button"
+            onClick={() => onZoomChange(preset)}
+            className={`w-full text-left px-2 py-1 rounded hover:bg-zinc-100 text-xs cursor-pointer ${
+              Math.round(zoom * 100) === Math.round(preset * 100) ? 'bg-purple-50 text-purple-700 font-medium' : 'text-zinc-700'
+            }`}
+          >
+            {Math.round(preset * 100)}%
+          </button>
+        ))}
+      </RibbonDropdown>
+      <RibbonButton title="Zoom in" disabled={zoom >= 2} onClick={() => onZoomChange(Math.min(2, Math.round((zoom + 0.1) * 10) / 10))}>
+        <ZoomIn className="w-3.5 h-3.5" />
+      </RibbonButton>
+    </>
+  );
+
+  const textStyleGroup = (
+    <>
+      <RibbonSelect title="Paragraph style" widthClass="w-28" value={activeHeading} onChange={setHeading} options={HEADING_STYLES} />
+      <RibbonSelect
+        title="Font family"
+        widthClass="w-32"
+        value={currentFontFamily}
+        onChange={(v) => (v ? editor.chain().focus().setFontFamily(v).run() : editor.chain().focus().unsetFontFamily().run())}
+        options={FONT_FAMILIES.map((f) => ({ value: f.value, label: f.label, style: f.value ? { fontFamily: f.value } : undefined }))}
+      />
+      <RibbonFontSizeStepper
+        title="Font size (pt)"
+        value={Math.round(currentFontSizePt * 10) / 10}
+        min={1}
+        max={400}
+        onChange={(v) => editor.chain().focus().setFontSize(`${v}pt`).run()}
+      />
+    </>
+  );
+
+  const colorGroup = (
+    <>
+      <RibbonColorPicker
+        title="Text color"
+        icon={<Baseline className="w-3.5 h-3.5" />}
+        currentColor={currentColor}
+        onPick={(c) => editor.chain().focus().setColor(c).run()}
+        onClear={() => editor.chain().focus().unsetColor().run()}
+      />
+      <RibbonColorPicker
+        title="Highlight"
+        icon={<Highlighter className="w-3.5 h-3.5" />}
+        currentColor={currentHighlight}
+        onPick={(c) => editor.chain().focus().setHighlight({ color: c }).run()}
+        onClear={() => editor.chain().focus().unsetHighlight().run()}
+      />
+    </>
+  );
+
+  const insertGroup = (
+    <>
+      <RibbonButton title="Insert link" active={editor.isActive('link')} onClick={onOpenLinkModal}>
+        <LinkIcon className="w-3.5 h-3.5" />
+      </RibbonButton>
+      <RibbonButton title="Insert image" onClick={() => imageInputRef.current?.click()}>
+        <ImageIcon className="w-3.5 h-3.5" />
+      </RibbonButton>
+    </>
+  );
+
+  const alignGroup = (
+    <>
+      <RibbonButton title="Align left" active={editor.isActive({ textAlign: 'left' })} onClick={() => editor.chain().focus().setTextAlign('left').run()}>
+        <AlignLeft className="w-3.5 h-3.5" />
+      </RibbonButton>
+      <RibbonButton title="Align center" active={editor.isActive({ textAlign: 'center' })} onClick={() => editor.chain().focus().setTextAlign('center').run()}>
+        <AlignCenter className="w-3.5 h-3.5" />
+      </RibbonButton>
+      <RibbonButton title="Align right" active={editor.isActive({ textAlign: 'right' })} onClick={() => editor.chain().focus().setTextAlign('right').run()}>
+        <AlignRight className="w-3.5 h-3.5" />
+      </RibbonButton>
+      <RibbonButton title="Justify" active={editor.isActive({ textAlign: 'justify' })} onClick={() => editor.chain().focus().setTextAlign('justify').run()}>
+        <AlignJustify className="w-3.5 h-3.5" />
+      </RibbonButton>
+      <RibbonSelect
+        title="Line spacing"
+        widthClass="w-14"
+        value={currentLineSpacing}
+        onChange={(v) => applyBlockSpacing({ lineHeight: v })}
+        options={lineSpacingOptions.map((s) => ({ value: s, label: s }))}
+      />
+      <RibbonSelect
+        title="Space after paragraph"
+        widthClass="w-16"
+        value={currentSpacingAfter}
+        onChange={(v) => applyBlockSpacing({ spacingAfter: v })}
+        options={spacingAfterOptions.map((s) => ({ value: s, label: s }))}
+      />
+    </>
+  );
+
+  const checklistGroup = (
+    <>
+      <RibbonButton title="Checklist" active={editor.isActive('taskList')} onClick={() => editor.chain().focus().toggleTaskList().run()}>
+        <ListChecks className="w-3.5 h-3.5" />
+      </RibbonButton>
+      <RibbonDropdown title="Checklist style" widthClass="w-28" trigger={<ChevronDown className="w-3 h-3 text-zinc-500" />}>
+        <div className="grid grid-cols-2 gap-1">
+          {CHECKLIST_VARIANTS.map((variant) => (
+            <button
+              key={variant.id}
+              type="button"
+              onClick={() => applyChecklistVariant(variant.id)}
+              className="flex flex-col items-center gap-1 p-2 rounded border border-zinc-200 hover:border-purple-300 hover:bg-purple-50/50 cursor-pointer"
+            >
+              <span
+                className={`w-3.5 h-3.5 border border-zinc-500 ${variant.id === 'round' ? 'rounded-full' : 'rounded-sm'}`}
+              />
+              <span className="text-[10px] text-zinc-600">{variant.label}</span>
+            </button>
+          ))}
+        </div>
+      </RibbonDropdown>
+    </>
+  );
+
+  const bulletStyleGroup = (
+    <RibbonDropdown title="Bullet list style" widthClass="w-52" trigger={<ChevronDown className="w-3 h-3 text-zinc-500" />}>
+      <div className="grid grid-cols-3 gap-1.5">
+        {BULLET_STYLES.map((style) => (
+          <button
+            key={style.id}
+            type="button"
+            onClick={() => applyBulletStyle(style.id)}
+            className="p-1.5 rounded border border-zinc-200 hover:border-purple-300 hover:bg-purple-50/50 cursor-pointer"
+          >
+            <ListStylePreview preview={style.preview} />
+          </button>
+        ))}
+      </div>
+    </RibbonDropdown>
+  );
+
+  const numberExtrasGroup = (
+    <>
+      <RibbonDropdown title="Numbered list style" widthClass="w-52" trigger={<ChevronDown className="w-3 h-3 text-zinc-500" />}>
+        <div className="grid grid-cols-3 gap-1.5">
+          {NUMBER_STYLES.map((style) => (
+            <button
+              key={style.id}
+              type="button"
+              onClick={() => applyNumberStyle(style.id)}
+              className="p-1.5 rounded border border-zinc-200 hover:border-purple-300 hover:bg-purple-50/50 cursor-pointer"
+            >
+              <ListStylePreview preview={style.preview} />
+            </button>
+          ))}
+        </div>
+      </RibbonDropdown>
+      <RibbonButton
+        title="Decrease indent (Shift+Tab in a list)"
+        disabled={!editor.can().liftListItem('listItem')}
+        onClick={() => editor.chain().focus().liftListItem('listItem').run()}
+      >
+        <Outdent className="w-3.5 h-3.5" />
+      </RibbonButton>
+      <RibbonButton
+        title="Increase indent / nest list (Tab in a list)"
+        disabled={!editor.can().sinkListItem('listItem')}
+        onClick={() => editor.chain().focus().sinkListItem('listItem').run()}
+      >
+        <Indent className="w-3.5 h-3.5" />
+      </RibbonButton>
+      <RibbonButton
+        title="Continue numbering from the previous list"
+        disabled={!editor.isActive('orderedList')}
+        onClick={continueNumbering}
+      >
+        <ListPlus className="w-3.5 h-3.5" />
+      </RibbonButton>
+      <RibbonButton
+        title="Restart numbering at 1"
+        disabled={!editor.isActive('orderedList')}
+        onClick={() => editor.chain().focus().updateAttributes('orderedList', { start: 1 }).run()}
+      >
+        <ListRestart className="w-3.5 h-3.5" />
+      </RibbonButton>
+    </>
+  );
+
+  const clearGroup = (
+    <RibbonButton title="Clear formatting" onClick={() => editor.chain().focus().unsetAllMarks().clearNodes().run()}>
+      <RemoveFormatting className="w-3.5 h-3.5" />
+    </RibbonButton>
+  );
+
+  const searchGroup = <MenuSearch windowId={windowId} />;
+
   return (
     <div className="shrink-0 bg-[#f3f2f6] border-b border-zinc-300 select-none">
       <div className="flex items-center gap-0.5 min-h-11 px-2 py-1 overflow-x-auto whitespace-nowrap">
@@ -356,87 +639,16 @@ export default function RibbonToolbar({
 
         <RibbonDivider />
 
-        <RibbonButton title="Print" onClick={() => window.print()}>
-          <Printer className="w-3.5 h-3.5" />
-        </RibbonButton>
-        <RibbonButton title={spellcheckOn ? 'Spellcheck: on' : 'Spellcheck: off'} active={spellcheckOn} onClick={onToggleSpellcheck}>
-          <SpellCheck className="w-3.5 h-3.5" />
-        </RibbonButton>
-        <RibbonButton title="Paint format — copy formatting, then click or select text to apply it" active={paintFormatActive} onClick={startPaintFormat}>
-          <Paintbrush className="w-3.5 h-3.5" />
-        </RibbonButton>
-
-        <RibbonDivider />
-
-        <RibbonButton title="Zoom out" disabled={zoom <= 0.5} onClick={() => onZoomChange(Math.max(0.5, Math.round((zoom - 0.1) * 10) / 10))}>
-          <ZoomOut className="w-3.5 h-3.5" />
-        </RibbonButton>
-        <RibbonDropdown
-          title="Zoom"
-          widthClass="w-24"
-          trigger={
-            <>
-              <span className="text-xs text-zinc-700 tabular-nums w-10 text-center">{Math.round(zoom * 100)}%</span>
-              <ChevronDown className="w-3 h-3 text-zinc-500" />
-            </>
-          }
-        >
-          <button
-            type="button"
-            onClick={() => {
-              const container = document.querySelector<HTMLElement>('[data-testid="wb-scroll-container"]');
-              const pageEl = document.querySelector<HTMLElement>('[data-wb-page-stack]');
-              if (!container || !pageEl) return;
-              // The page element's own width is already zoom-scaled (a CSS
-              // `transform`, not a layout change) — dividing back out by the
-              // *current* zoom recovers its true, zoom-independent width, the
-              // same reasoning `PageCanvas.tsx`'s own zoom comment relies on.
-              const unzoomedPageWidth = pageEl.getBoundingClientRect().width / zoom;
-              const available = container.clientWidth - 48;
-              const fit = Math.min(2, Math.max(0.3, Math.round((available / unzoomedPageWidth) * 100) / 100));
-              onZoomChange(fit);
-            }}
-            className="w-full text-left px-2 py-1 rounded hover:bg-zinc-100 text-xs text-zinc-700 cursor-pointer"
-          >
-            Fit
-          </button>
-          <div className="border-t border-zinc-200 my-1" />
-          {ZOOM_PRESETS.map((preset) => (
-            <button
-              key={preset}
-              type="button"
-              onClick={() => onZoomChange(preset)}
-              className={`w-full text-left px-2 py-1 rounded hover:bg-zinc-100 text-xs cursor-pointer ${
-                Math.round(zoom * 100) === Math.round(preset * 100) ? 'bg-purple-50 text-purple-700 font-medium' : 'text-zinc-700'
-              }`}
-            >
-              {Math.round(preset * 100)}%
-            </button>
-          ))}
-        </RibbonDropdown>
-        <RibbonButton title="Zoom in" disabled={zoom >= 2} onClick={() => onZoomChange(Math.min(2, Math.round((zoom + 0.1) * 10) / 10))}>
-          <ZoomIn className="w-3.5 h-3.5" />
-        </RibbonButton>
-
-        <RibbonDivider />
-
-        <RibbonSelect title="Paragraph style" widthClass="w-28" value={activeHeading} onChange={setHeading} options={HEADING_STYLES} />
-        <RibbonSelect
-          title="Font family"
-          widthClass="w-32"
-          value={currentFontFamily}
-          onChange={(v) => (v ? editor.chain().focus().setFontFamily(v).run() : editor.chain().focus().unsetFontFamily().run())}
-          options={FONT_FAMILIES.map((f) => ({ value: f.value, label: f.label, style: f.value ? { fontFamily: f.value } : undefined }))}
-        />
-        <RibbonFontSizeStepper
-          title="Font size (pt)"
-          value={Math.round(currentFontSizePt * 10) / 10}
-          min={1}
-          max={400}
-          onChange={(v) => editor.chain().focus().setFontSize(`${v}pt`).run()}
-        />
-
-        <RibbonDivider />
+        {!isCompact && (
+          <>
+            {documentToolsGroup}
+            <RibbonDivider />
+            {zoomGroup}
+            <RibbonDivider />
+            {textStyleGroup}
+            <RibbonDivider />
+          </>
+        )}
 
         <RibbonButton title="Bold (Ctrl+B)" active={editor.isActive('bold')} onClick={() => editor.chain().focus().toggleBold().run()}>
           <Bold className="w-3.5 h-3.5" />
@@ -447,29 +659,60 @@ export default function RibbonToolbar({
         <RibbonButton title="Underline (Ctrl+U)" active={editor.isActive('underline')} onClick={() => editor.chain().focus().toggleUnderline().run()}>
           <UnderlineIcon className="w-3.5 h-3.5" />
         </RibbonButton>
-        <RibbonColorPicker
-          title="Text color"
-          icon={<Baseline className="w-3.5 h-3.5" />}
-          currentColor={currentColor}
-          onPick={(c) => editor.chain().focus().setColor(c).run()}
-          onClear={() => editor.chain().focus().unsetColor().run()}
-        />
-        <RibbonColorPicker
-          title="Highlight"
-          icon={<Highlighter className="w-3.5 h-3.5" />}
-          currentColor={currentHighlight}
-          onPick={(c) => editor.chain().focus().setHighlight({ color: c }).run()}
-          onClear={() => editor.chain().focus().unsetHighlight().run()}
-        />
+        {!isCompact && colorGroup}
 
         <RibbonDivider />
 
-        <RibbonButton title="Insert link" active={editor.isActive('link')} onClick={onOpenLinkModal}>
-          <LinkIcon className="w-3.5 h-3.5" />
+        {!isCompact && (
+          <>
+            {insertGroup}
+            <RibbonDivider />
+            {alignGroup}
+            <RibbonDivider />
+            {checklistGroup}
+          </>
+        )}
+
+        <RibbonButton title="Bulleted list" active={editor.isActive('bulletList')} onClick={() => editor.chain().focus().toggleBulletList().run()}>
+          <List className="w-3.5 h-3.5" />
         </RibbonButton>
-        <RibbonButton title="Insert image" onClick={() => imageInputRef.current?.click()}>
-          <ImageIcon className="w-3.5 h-3.5" />
+        {!isCompact && bulletStyleGroup}
+
+        <RibbonButton title="Numbered list" active={editor.isActive('orderedList')} onClick={() => editor.chain().focus().toggleOrderedList().run()}>
+          <ListOrdered className="w-3.5 h-3.5" />
         </RibbonButton>
+        {!isCompact && numberExtrasGroup}
+
+        {!isCompact && (
+          <>
+            <RibbonDivider />
+            {clearGroup}
+            <RibbonDivider />
+            {searchGroup}
+          </>
+        )}
+
+        {isCompact && (
+          <>
+            <RibbonDivider />
+            <RibbonMoreMenu title="More options" trigger={<MoreHorizontal className="w-3.5 h-3.5" />}>
+              <RibbonMoreMenuSection label="Document">{documentToolsGroup}</RibbonMoreMenuSection>
+              <RibbonMoreMenuSection label="Zoom">{zoomGroup}</RibbonMoreMenuSection>
+              <RibbonMoreMenuSection label="Text style">{textStyleGroup}</RibbonMoreMenuSection>
+              <RibbonMoreMenuSection label="Color">{colorGroup}</RibbonMoreMenuSection>
+              <RibbonMoreMenuSection label="Insert">{insertGroup}</RibbonMoreMenuSection>
+              <RibbonMoreMenuSection label="Alignment & spacing">{alignGroup}</RibbonMoreMenuSection>
+              <RibbonMoreMenuSection label="Lists">
+                {checklistGroup}
+                {bulletStyleGroup}
+                {numberExtrasGroup}
+              </RibbonMoreMenuSection>
+              <RibbonMoreMenuSection label="Other">{clearGroup}</RibbonMoreMenuSection>
+              <div className="pt-1 border-t border-zinc-100">{searchGroup}</div>
+            </RibbonMoreMenu>
+          </>
+        )}
+
         <input
           ref={imageInputRef}
           type="file"
@@ -481,132 +724,6 @@ export default function RibbonToolbar({
             e.target.value = '';
           }}
         />
-
-        <RibbonDivider />
-
-        <RibbonButton title="Align left" active={editor.isActive({ textAlign: 'left' })} onClick={() => editor.chain().focus().setTextAlign('left').run()}>
-          <AlignLeft className="w-3.5 h-3.5" />
-        </RibbonButton>
-        <RibbonButton title="Align center" active={editor.isActive({ textAlign: 'center' })} onClick={() => editor.chain().focus().setTextAlign('center').run()}>
-          <AlignCenter className="w-3.5 h-3.5" />
-        </RibbonButton>
-        <RibbonButton title="Align right" active={editor.isActive({ textAlign: 'right' })} onClick={() => editor.chain().focus().setTextAlign('right').run()}>
-          <AlignRight className="w-3.5 h-3.5" />
-        </RibbonButton>
-        <RibbonButton title="Justify" active={editor.isActive({ textAlign: 'justify' })} onClick={() => editor.chain().focus().setTextAlign('justify').run()}>
-          <AlignJustify className="w-3.5 h-3.5" />
-        </RibbonButton>
-        <RibbonSelect
-          title="Line spacing"
-          widthClass="w-14"
-          value={currentLineSpacing}
-          onChange={(v) => applyBlockSpacing({ lineHeight: v })}
-          options={lineSpacingOptions.map((s) => ({ value: s, label: s }))}
-        />
-        <RibbonSelect
-          title="Space after paragraph"
-          widthClass="w-16"
-          value={currentSpacingAfter}
-          onChange={(v) => applyBlockSpacing({ spacingAfter: v })}
-          options={spacingAfterOptions.map((s) => ({ value: s, label: s }))}
-        />
-
-        <RibbonDivider />
-
-        <RibbonButton title="Checklist" active={editor.isActive('taskList')} onClick={() => editor.chain().focus().toggleTaskList().run()}>
-          <ListChecks className="w-3.5 h-3.5" />
-        </RibbonButton>
-        <RibbonDropdown title="Checklist style" widthClass="w-28" trigger={<ChevronDown className="w-3 h-3 text-zinc-500" />}>
-          <div className="grid grid-cols-2 gap-1">
-            {CHECKLIST_VARIANTS.map((variant) => (
-              <button
-                key={variant.id}
-                type="button"
-                onClick={() => applyChecklistVariant(variant.id)}
-                className="flex flex-col items-center gap-1 p-2 rounded border border-zinc-200 hover:border-purple-300 hover:bg-purple-50/50 cursor-pointer"
-              >
-                <span
-                  className={`w-3.5 h-3.5 border border-zinc-500 ${variant.id === 'round' ? 'rounded-full' : 'rounded-sm'}`}
-                />
-                <span className="text-[10px] text-zinc-600">{variant.label}</span>
-              </button>
-            ))}
-          </div>
-        </RibbonDropdown>
-
-        <RibbonButton title="Bulleted list" active={editor.isActive('bulletList')} onClick={() => editor.chain().focus().toggleBulletList().run()}>
-          <List className="w-3.5 h-3.5" />
-        </RibbonButton>
-        <RibbonDropdown title="Bullet list style" widthClass="w-52" trigger={<ChevronDown className="w-3 h-3 text-zinc-500" />}>
-          <div className="grid grid-cols-3 gap-1.5">
-            {BULLET_STYLES.map((style) => (
-              <button
-                key={style.id}
-                type="button"
-                onClick={() => applyBulletStyle(style.id)}
-                className="p-1.5 rounded border border-zinc-200 hover:border-purple-300 hover:bg-purple-50/50 cursor-pointer"
-              >
-                <ListStylePreview preview={style.preview} />
-              </button>
-            ))}
-          </div>
-        </RibbonDropdown>
-
-        <RibbonButton title="Numbered list" active={editor.isActive('orderedList')} onClick={() => editor.chain().focus().toggleOrderedList().run()}>
-          <ListOrdered className="w-3.5 h-3.5" />
-        </RibbonButton>
-        <RibbonDropdown title="Numbered list style" widthClass="w-52" trigger={<ChevronDown className="w-3 h-3 text-zinc-500" />}>
-          <div className="grid grid-cols-3 gap-1.5">
-            {NUMBER_STYLES.map((style) => (
-              <button
-                key={style.id}
-                type="button"
-                onClick={() => applyNumberStyle(style.id)}
-                className="p-1.5 rounded border border-zinc-200 hover:border-purple-300 hover:bg-purple-50/50 cursor-pointer"
-              >
-                <ListStylePreview preview={style.preview} />
-              </button>
-            ))}
-          </div>
-        </RibbonDropdown>
-        <RibbonButton
-          title="Decrease indent (Shift+Tab in a list)"
-          disabled={!editor.can().liftListItem('listItem')}
-          onClick={() => editor.chain().focus().liftListItem('listItem').run()}
-        >
-          <Outdent className="w-3.5 h-3.5" />
-        </RibbonButton>
-        <RibbonButton
-          title="Increase indent / nest list (Tab in a list)"
-          disabled={!editor.can().sinkListItem('listItem')}
-          onClick={() => editor.chain().focus().sinkListItem('listItem').run()}
-        >
-          <Indent className="w-3.5 h-3.5" />
-        </RibbonButton>
-        <RibbonButton
-          title="Continue numbering from the previous list"
-          disabled={!editor.isActive('orderedList')}
-          onClick={continueNumbering}
-        >
-          <ListPlus className="w-3.5 h-3.5" />
-        </RibbonButton>
-        <RibbonButton
-          title="Restart numbering at 1"
-          disabled={!editor.isActive('orderedList')}
-          onClick={() => editor.chain().focus().updateAttributes('orderedList', { start: 1 }).run()}
-        >
-          <ListRestart className="w-3.5 h-3.5" />
-        </RibbonButton>
-
-        <RibbonDivider />
-
-        <RibbonButton title="Clear formatting" onClick={() => editor.chain().focus().unsetAllMarks().clearNodes().run()}>
-          <RemoveFormatting className="w-3.5 h-3.5" />
-        </RibbonButton>
-
-        <RibbonDivider />
-
-        <MenuSearch windowId={windowId} />
       </div>
     </div>
   );

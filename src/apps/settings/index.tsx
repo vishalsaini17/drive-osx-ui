@@ -1,7 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import {
   Search,
   Home,
+  PanelLeft,
+  MoreHorizontal,
   ChevronRight,
   ChevronLeft,
   User as UserIcon,
@@ -53,6 +55,165 @@ import { AppRegistry } from '../../platform/registry/AppRegistry';
 import { globalThemeIsDark } from '../../platform/theme/appTheme';
 import { themeById, themeForMode, themesByFamily } from '../../platform/theme/themes';
 import { wallpapersByGroup } from '../../platform/theme/wallpapers';
+
+const TAB_GAP_PX = 6; // matches `gap-1.5`
+const MORE_BUTTON_PX = 36;
+
+/**
+ * The category's sub-tab pills. On desktop/tablet it is the original single
+ * scrolling row. On a phone the row is measured: as many pills as fit stay
+ * inline and the rest move into a "more" (⋯) menu — neither wrapping onto
+ * extra lines nor scrolling sideways with the scrollbar hidden, which clipped
+ * the last tabs ("Two-fa…") without any hint that they existed.
+ */
+function SettingsSubTabs({
+  tabs,
+  active,
+  onSelect,
+  isMobile,
+  menuClassName,
+}: {
+  tabs: string[];
+  active: string;
+  onSelect: (tab: string) => void;
+  isMobile: boolean;
+  menuClassName: string;
+}) {
+  const barRef = useRef<HTMLDivElement>(null);
+  const measureRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [barWidth, setBarWidth] = useState(0);
+  const [widths, setWidths] = useState<number[]>([]);
+  const [menuOpen, setMenuOpen] = useState(false);
+  // `tabs` is a fresh array each render (the caller rebuilds its category
+  // list inline), so effects must key on its contents, not its identity.
+  const tabsKey = tabs.join('|');
+
+  useEffect(() => {
+    if (!isMobile || !barRef.current) return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) setBarWidth(entry.contentRect.width);
+    });
+    observer.observe(barRef.current);
+    return () => observer.disconnect();
+  }, [isMobile]);
+
+  // Pill widths come from an invisible copy of the row rather than the
+  // live one, since the live row only ever contains the pills that fit.
+  useLayoutEffect(() => {
+    const el = measureRef.current;
+    if (!isMobile || !el) return;
+    const measure = () => setWidths(Array.from(el.children).map((c) => (c as HTMLElement).offsetWidth));
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [isMobile, tabsKey]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown, true);
+    return () => document.removeEventListener('pointerdown', onPointerDown, true);
+  }, [menuOpen]);
+
+  useEffect(() => setMenuOpen(false), [tabsKey, active]);
+
+  const pillClass = (tab: string) =>
+    `px-3 py-1 rounded-full text-xs font-medium cursor-pointer transition-all shrink-0 whitespace-nowrap ${
+      active === tab
+        ? 'bg-purple-600 text-white shadow-xs font-semibold'
+        : 'bg-black/5 dark:bg-white/5 opacity-70 hover:opacity-100'
+    }`;
+
+  if (!isMobile) {
+    return (
+      <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
+        {tabs.map((tab) => (
+          <button key={tab} onClick={() => onSelect(tab)} className={pillClass(tab)}>
+            {tab}
+          </button>
+        ))}
+      </div>
+    );
+  }
+
+  const measured = widths.length === tabs.length && barWidth > 0;
+  const total = widths.reduce((sum, w) => sum + w, 0) + TAB_GAP_PX * Math.max(0, tabs.length - 1);
+  let visible = tabs.map((_, i) => i);
+  if (measured && total > barWidth) {
+    // Greedily keep leading pills while they fit beside the ⋯ button. The
+    // current tab is never allowed into the menu, so its real width is
+    // reserved up front and the others fill what's left — swapping it in
+    // for the last pill afterwards overflowed whenever it was the wider one.
+    const activeIndex = tabs.indexOf(active);
+    const room = barWidth - MORE_BUTTON_PX - TAB_GAP_PX;
+    const reserved = activeIndex >= 0 ? widths[activeIndex] + TAB_GAP_PX : 0;
+    const chosen: number[] = [];
+    let used = reserved;
+    for (let i = 0; i < tabs.length; i++) {
+      if (i === activeIndex) continue;
+      if (used + widths[i] > room) break;
+      used += widths[i] + TAB_GAP_PX;
+      chosen.push(i);
+    }
+    visible = (activeIndex >= 0 ? [...chosen, activeIndex] : chosen).sort((a, b) => a - b);
+    if (visible.length === 0) visible = [0];
+  }
+  const overflow = tabs.filter((_, i) => !visible.includes(i));
+
+  return (
+    <div className="relative">
+      <div
+        ref={measureRef}
+        aria-hidden
+        className="absolute left-0 top-0 invisible pointer-events-none flex gap-1.5 whitespace-nowrap"
+      >
+        {tabs.map((tab) => (
+          <span key={tab} className="px-3 py-1 rounded-full text-xs font-semibold shrink-0">
+            {tab}
+          </span>
+        ))}
+      </div>
+
+      <div ref={barRef} className="flex items-center gap-1.5 pb-1">
+        {visible.map((i) => (
+          <button key={tabs[i]} onClick={() => onSelect(tabs[i])} className={pillClass(tabs[i])}>
+            {tabs[i]}
+          </button>
+        ))}
+        {overflow.length > 0 && (
+          <div ref={menuRef} className="relative shrink-0 ml-auto">
+            <button
+              onClick={() => setMenuOpen((open) => !open)}
+              title="More tabs"
+              className={`px-2.5 py-1 rounded-full cursor-pointer bg-black/5 dark:bg-white/5 hover:opacity-100 ${
+                menuOpen ? 'opacity-100' : 'opacity-70'
+              }`}
+            >
+              <MoreHorizontal className="w-4 h-4" />
+            </button>
+            {menuOpen && (
+              <div className={`absolute right-0 top-full mt-1.5 z-40 min-w-44 max-w-[calc(100vw-2rem)] rounded-xl border p-1 shadow-xl ${menuClassName}`}>
+                {overflow.map((tab) => (
+                  <button
+                    key={tab}
+                    onClick={() => onSelect(tab)}
+                    className="w-full text-left px-3 py-2 rounded-lg text-xs font-medium cursor-pointer hover:bg-purple-500/10"
+                  >
+                    {tab}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export default function Settings() {
   const settings = useSystemStore((state) => state.settings);
@@ -119,10 +280,23 @@ export default function Settings() {
   // Keyboard shortcut search
   const [shortcutFilter, setShortcutFilter] = useState('');
 
+  // The real device viewport, not this window's own width: Settings' default
+  // window (750px) is the same width a portrait tablet's window ends up at
+  // and is itself a normal desktop size, so the window's own width can't
+  // tell the two apart — the same ambiguity File Explorer's sidebar drawer
+  // hit. Below 1024px (phone and tablet) the category sidebar moves into a
+  // drawer opened from the header, giving the settings form the whole
+  // window instead of whatever a fixed 224px column leaves over (~118px on
+  // a phone, which crushed every card and input).
+  const [viewportWidth, setViewportWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 1280);
+  const isCompact = viewportWidth < 1024;
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+
   // Fetch screen resolution
   useEffect(() => {
     const handleResize = () => {
       setResolution(`${window.innerWidth} x ${window.innerHeight}`);
+      setViewportWidth(window.innerWidth);
     };
     handleResize();
     window.addEventListener('resize', handleResize);
@@ -168,6 +342,7 @@ export default function Settings() {
       boldText: 'text-[#211625]',
       border: 'border-black/5',
       sidebar: 'bg-black/5 border-r border-black/5',
+      drawer: 'bg-[#eee6f4] border-r border-black/10',
       categoryItem: 'text-[#211625]/75 hover:bg-black/5',
       categoryActive: 'bg-black/10 font-semibold text-[#211625] shadow-xs',
       input: 'bg-white/70 border-[#211625]/15 focus:ring-2 focus:ring-purple-500/40 text-[#211625] placeholder-[#211625]/40',
@@ -184,6 +359,7 @@ export default function Settings() {
       boldText: 'text-[#f3eef8]',
       border: 'border-white/10',
       sidebar: 'bg-black/25 border-r border-white/10',
+      drawer: 'bg-[#211a2a] border-r border-white/10',
       categoryItem: 'text-[#f3eef8]/80 hover:bg-white/5',
       categoryActive: 'bg-white/10 font-semibold text-[#f3eef8] shadow-xs',
       input: 'bg-black/40 border-white/15 focus:ring-2 focus:ring-purple-500/60 text-[#f3eef8] placeholder-[#f3eef8]/40',
@@ -200,6 +376,7 @@ export default function Settings() {
       boldText: 'text-[#22c55e] font-bold',
       border: 'border-green-500/25',
       sidebar: 'bg-black/50 border-r border-green-500/25',
+      drawer: 'bg-black border-r border-green-500/30',
       categoryItem: 'text-[#22c55e]/80 hover:bg-green-500/10',
       categoryActive: 'bg-green-500/20 font-bold text-green-400',
       input: 'bg-black/70 border-green-500/35 focus:ring-1 focus:ring-green-400 text-[#22c55e] placeholder-green-500/40 font-mono',
@@ -281,11 +458,39 @@ export default function Settings() {
 
   const activeCategoryObj = categories.find(c => c.id === activeCategory);
 
-  return (
-    <div className={`h-full flex text-sm select-none bg-transparent ${ts.text}`}>
+  // Every navigation inside the sidebar also dismisses it when it's a
+  // drawer — a no-op on desktop, where it's a persistent column.
+  const goToCategory = (id: string) => {
+    setActiveCategory(id);
+    if (isCompact) setIsSidebarOpen(false);
+  };
+  const goToSubTab = (sub: string) => {
+    setActiveSubTab(sub);
+    if (isCompact) setIsSidebarOpen(false);
+  };
 
-      {/* 1. SETTINGS CATEGORIES SIDEBAR */}
-      <div className={`w-56 p-3 flex flex-col shrink-0 ${ts.sidebar}`}>
+  return (
+    <div className={`h-full flex text-sm select-none bg-transparent relative overflow-hidden ${ts.text}`}>
+
+      {isCompact && isSidebarOpen && (
+        <div
+          className="absolute inset-0 z-20 bg-black/30"
+          onClick={() => setIsSidebarOpen(false)}
+        />
+      )}
+
+      {/* 1. SETTINGS CATEGORIES SIDEBAR — persistent column on desktop, a
+          slide-in drawer below 1024px (see `isCompact`). The drawer needs
+          its own opaque surface: the desktop sidebar's tint is translucent
+          and only reads correctly sitting beside content, not over it. */}
+      {(!isCompact || isSidebarOpen) && (
+      <div
+        className={`p-3 flex flex-col ${
+          isCompact
+            ? `absolute inset-y-0 left-0 z-30 w-64 max-w-[85%] shadow-2xl ${ts.drawer}`
+            : `w-56 shrink-0 ${ts.sidebar}`
+        }`}
+      >
 
         {/* Sidebar Search section */}
         <div className="flex items-center gap-1.5 mb-3 px-1">
@@ -301,7 +506,7 @@ export default function Settings() {
           </div>
 
           <button
-            onClick={() => setActiveCategory('Account')}
+            onClick={() => goToCategory('Account')}
             className={`p-1.5 rounded-lg hover:bg-black/5 opacity-85 cursor-pointer`}
             title="Account Settings"
           >
@@ -312,7 +517,7 @@ export default function Settings() {
         {/* User Quick Card in Sidebar */}
         {currentUser && (
           <div
-            onClick={() => setActiveCategory('Account')}
+            onClick={() => goToCategory('Account')}
             className={`mb-3 p-2 rounded-xl border ${ts.border} bg-white/5 flex items-center gap-2.5 cursor-pointer hover:opacity-90 transition-opacity`}
           >
             <div className="w-8 h-8 rounded-full bg-purple-500/20 border border-purple-500/40 flex items-center justify-center text-base shrink-0">
@@ -338,7 +543,7 @@ export default function Settings() {
             return (
               <div key={cat.id} className="space-y-0.5">
                 <button
-                  onClick={() => setActiveCategory(cat.id)}
+                  onClick={() => goToCategory(cat.id)}
                   className={`w-full text-left px-2.5 py-1.5 rounded-lg transition-all flex items-center justify-between cursor-pointer ${isActive ? ts.categoryActive : ts.categoryItem
                     }`}
                 >
@@ -355,7 +560,7 @@ export default function Settings() {
                     {cat.subPoints.map((sub) => (
                       <button
                         key={sub}
-                        onClick={() => setActiveSubTab(sub)}
+                        onClick={() => goToSubTab(sub)}
                         className={`w-full text-left px-2 py-1 rounded text-[11px] truncate cursor-pointer transition-colors ${activeSubTab === sub
                           ? 'font-semibold text-purple-600 dark:text-purple-400 bg-purple-500/10'
                           : 'opacity-70 hover:opacity-100'
@@ -371,9 +576,10 @@ export default function Settings() {
           })}
         </div>
       </div>
+      )}
 
       {/* 2. SETTINGS MAIN VIEW AREA */}
-      <div className="flex-1 p-6 overflow-y-auto bg-transparent custom-scrollbar">
+      <div className={`flex-1 min-w-0 overflow-y-auto bg-transparent custom-scrollbar ${isCompact ? 'p-4' : 'p-6'}`}>
 
         {/* Toast Alert Banner */}
         {toastMsg && (
@@ -391,26 +597,31 @@ export default function Settings() {
           <div className="mb-6 pb-3 border-b border-white/10 space-y-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2.5">
+                {/* Directly visible on phone/tablet — the categories live in
+                    a drawer there, and burying the only way to reach them
+                    in a menu wasn't discoverable (see File Explorer). */}
+                {isCompact && (
+                  <button
+                    onClick={() => setIsSidebarOpen((open) => !open)}
+                    className={`p-1.5 rounded-lg cursor-pointer ${ts.categoryItem} ${isSidebarOpen ? ts.categoryActive : ''}`}
+                    title="Settings categories"
+                  >
+                    <PanelLeft className="w-4 h-4" />
+                  </button>
+                )}
                 {React.createElement(activeCategoryObj.icon, { className: "w-5 h-5 text-purple-400" })}
                 <h2 className={ts.title}>{activeCategoryObj.label}</h2>
               </div>
             </div>
 
             {/* Quick sub-points navigation pill bar */}
-            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
-              {activeCategoryObj.subPoints.map((sub) => (
-                <button
-                  key={sub}
-                  onClick={() => setActiveSubTab(sub)}
-                  className={`px-3 py-1 rounded-full text-xs font-medium cursor-pointer transition-all shrink-0 ${activeSubTab === sub
-                    ? 'bg-purple-600 text-white shadow-xs font-semibold'
-                    : 'bg-black/5 dark:bg-white/5 opacity-70 hover:opacity-100'
-                    }`}
-                >
-                  {sub}
-                </button>
-              ))}
-            </div>
+            <SettingsSubTabs
+              tabs={activeCategoryObj.subPoints}
+              active={activeSubTab}
+              onSelect={setActiveSubTab}
+              isMobile={viewportWidth < 640}
+              menuClassName={`${ts.drawer} ${ts.text}`}
+            />
           </div>
         )}
 

@@ -59,6 +59,7 @@ import InviteModal from './components/InviteModal';
 import { themeFamily } from '../../platform/theme/themes';
 import { useMeetingConnection, getSelfUserId, MeetingRealtimeEvent } from './webrtc';
 import { useMeetTheme } from './useMeetTheme';
+import SelectMenu from '../../design-system/components/SelectMenu';
 
 /**
  * Applies one vote (cast or changed) to a poll, keyed by voter so a remote
@@ -2709,32 +2710,30 @@ export default function MeetingApp() {
 
                  <div className="flex flex-col gap-1.5">
                    <span className={`text-[11px] font-bold uppercase tracking-wide ${isLight ? 'text-slate-400' : 'text-zinc-500'}`}>Camera</span>
-                   <select
+                   <SelectMenu
                      value={selectedVideoDeviceId}
-                     onChange={(e) => setSelectedVideoDeviceId(e.target.value)}
-                     className={`text-xs px-3 py-2 rounded-xl border focus:outline-none ${
+                     onChange={setSelectedVideoDeviceId}
+                     options={videoDevices.map((d) => ({ value: d.deviceId, label: d.label || 'Camera' }))}
+                     ariaLabel="Camera"
+                     buttonClassName={`text-xs px-3 py-2 rounded-xl border focus:outline-none ${
                        isLight ? 'bg-slate-100 border-slate-300 text-slate-900' : 'bg-black/30 border-white/15 text-white'
                      }`}
-                   >
-                     {videoDevices.map((d) => (
-                       <option key={d.deviceId} value={d.deviceId}>{d.label || 'Camera'}</option>
-                     ))}
-                   </select>
+                     menuClassName={isLight ? 'bg-white text-slate-800 border-slate-200' : 'bg-zinc-900 text-white border-white/15'}
+                   />
                  </div>
 
                  <div className="flex flex-col gap-1.5">
                    <span className={`text-[11px] font-bold uppercase tracking-wide ${isLight ? 'text-slate-400' : 'text-zinc-500'}`}>Microphone</span>
-                   <select
+                   <SelectMenu
                      value={selectedAudioDeviceId}
-                     onChange={(e) => setSelectedAudioDeviceId(e.target.value)}
-                     className={`text-xs px-3 py-2 rounded-xl border focus:outline-none ${
+                     onChange={setSelectedAudioDeviceId}
+                     options={audioDevices.map((d) => ({ value: d.deviceId, label: d.label || 'Microphone' }))}
+                     ariaLabel="Microphone"
+                     buttonClassName={`text-xs px-3 py-2 rounded-xl border focus:outline-none ${
                        isLight ? 'bg-slate-100 border-slate-300 text-slate-900' : 'bg-black/30 border-white/15 text-white'
                      }`}
-                   >
-                     {audioDevices.map((d) => (
-                       <option key={d.deviceId} value={d.deviceId}>{d.label || 'Microphone'}</option>
-                     ))}
-                   </select>
+                     menuClassName={isLight ? 'bg-white text-slate-800 border-slate-200' : 'bg-zinc-900 text-white border-white/15'}
+                   />
                  </div>
 
                  <div className="flex items-center gap-2">
@@ -4038,7 +4037,7 @@ export default function MeetingApp() {
       {showScheduleModal && (
         <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/50 backdrop-blur-2xs p-4">
           <div
-            className={`w-88 rounded-2xl p-4 shadow-2xl border flex flex-col gap-3 font-sans relative ${
+            className={`w-88 max-w-full rounded-2xl p-4 shadow-2xl border flex flex-col gap-3 font-sans relative ${
               isLight ? 'bg-white border-slate-200 text-slate-800' : 'bg-[#2b2a2f] border-white/15 text-white'
             }`}
           >
@@ -4064,30 +4063,29 @@ export default function MeetingApp() {
             />
 
             <div className="flex items-center gap-2">
-              <select
+              <SelectMenu
+                className="flex-1 min-w-0"
                 value={schedTime}
-                onChange={(e) => setSchedTime(e.target.value)}
-                className={`flex-1 text-xs px-3 py-2 rounded-xl border focus:outline-none ${
+                onChange={setSchedTime}
+                options={['09:00 AM', '10:00 AM', '11:00 AM', '12:00 PM', '02:00 PM', '03:30 PM', '05:00 PM'].map((t) => ({ value: t, label: t }))}
+                ariaLabel="Meeting time"
+                buttonClassName={`text-xs px-3 py-2 rounded-xl border focus:outline-none ${
                   isLight ? 'bg-slate-100 border-slate-300 text-slate-900' : 'bg-black/30 border-white/15 text-white'
                 }`}
-              >
-                {['09:00 AM', '10:00 AM', '11:00 AM', '12:00 PM', '02:00 PM', '03:30 PM', '05:00 PM'].map((t) => (
-                  <option key={t} value={t}>
-                    {t}
-                  </option>
-                ))}
-              </select>
+                menuClassName={isLight ? 'bg-white text-slate-800 border-slate-200' : 'bg-[#2b2a2f] text-white border-white/15'}
+              />
 
-              <select
+              <SelectMenu
+                className="flex-1 min-w-0"
                 value={schedCategory}
-                onChange={(e) => setSchedCategory(e.target.value as 'Work' | 'Personal')}
-                className={`flex-1 text-xs px-3 py-2 rounded-xl border focus:outline-none ${
+                onChange={(v) => setSchedCategory(v as 'Work' | 'Personal')}
+                options={[{ value: 'Work', label: 'Work' }, { value: 'Personal', label: 'Personal' }]}
+                ariaLabel="Category"
+                buttonClassName={`text-xs px-3 py-2 rounded-xl border focus:outline-none ${
                   isLight ? 'bg-slate-100 border-slate-300 text-slate-900' : 'bg-black/30 border-white/15 text-white'
                 }`}
-              >
-                <option value="Work">Work</option>
-                <option value="Personal">Personal</option>
-              </select>
+                menuClassName={isLight ? 'bg-white text-slate-800 border-slate-200' : 'bg-[#2b2a2f] text-white border-white/15'}
+              />
             </div>
 
             {/* Passcode Protection field */}

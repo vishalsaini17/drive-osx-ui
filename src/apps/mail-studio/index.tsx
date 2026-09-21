@@ -58,6 +58,7 @@ import {
   FileCode,
   Sliders,
   MoreVertical,
+  MoreHorizontal,
   RefreshCw
 } from 'lucide-react';
 import { useEditor, EditorContent } from '@tiptap/react';
@@ -80,6 +81,7 @@ import { TaskModal } from './components/TaskModal';
 import { RulesModal } from './components/RulesModal';
 import { ContactsModal } from './components/ContactsModal';
 import { CustomFolderModal } from './components/CustomFolderModal';
+import { useViewportWidth } from '../../platform/layout/useViewportWidth';
 
 /** Escapes plain text and turns line breaks into <br> so it is safe to drop into the rich editor. */
 function textToEditorHtml(text: string): string {
@@ -98,6 +100,74 @@ const MAIL_EDITOR_EXTENSIONS = [
   TiptapTableHeader,
   TiptapTableCell,
 ];
+
+interface ActionMenuItem {
+  key: string;
+  label: string;
+  icon: React.ReactNode;
+  onClick: () => void;
+  tone?: 'danger' | 'warn';
+}
+
+/** Overflow ("⋯") menu for actions that do not fit in a narrow reader header. */
+function ActionMenu({ items, isLight }: { items: ActionMenuItem[]; isLight: boolean }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    // Capture phase: the window shell stops propagation of pointer events that start inside it.
+    const handler = (e: PointerEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', handler, true);
+    return () => document.removeEventListener('pointerdown', handler, true);
+  }, [open]);
+
+  return (
+    <div ref={rootRef} className="relative shrink-0">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className={`p-1.5 rounded-lg border cursor-pointer ${
+          isLight ? 'text-slate-600 hover:bg-slate-100' : 'text-white/80 hover:bg-white/10'
+        } ${open ? (isLight ? 'bg-slate-100' : 'bg-white/10') : ''}`}
+        title="More actions"
+        aria-label="More actions"
+      >
+        <MoreHorizontal size={15} />
+      </button>
+      {open && (
+        <div
+          className={`absolute right-0 top-full mt-1.5 w-60 z-40 rounded-xl border shadow-2xl py-1 ${
+            isLight ? 'bg-white border-slate-200' : 'bg-[#232227] border-white/10'
+          }`}
+        >
+          {items.map((item) => (
+            <button
+              key={item.key}
+              onClick={() => {
+                setOpen(false);
+                item.onClick();
+              }}
+              className={`w-full text-left px-3 py-2.5 text-xs font-semibold flex items-center gap-2.5 cursor-pointer ${
+                item.tone === 'danger'
+                  ? 'text-rose-500 hover:bg-rose-500/10'
+                  : item.tone === 'warn'
+                    ? 'text-amber-500 hover:bg-amber-500/10'
+                    : isLight
+                      ? 'text-slate-700 hover:bg-slate-100'
+                      : 'text-white/85 hover:bg-white/10'
+              }`}
+            >
+              {item.icon}
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function MailApp() {
   const isLight = !useAppTheme('mail').isDark;
@@ -129,6 +199,27 @@ export default function MailApp() {
   }, []);
 
   const isCompact = containerWidth < 600;
+
+  // Phone/tablet viewports (real viewport, so the desktop layout is untouched):
+  // the folder sidebar becomes an overlay drawer, and a tablet window has room
+  // for list + reader side by side once the sidebar no longer eats into it.
+  const viewportWidth = useViewportWidth();
+  const overlaySidebar = viewportWidth < 1024 && !isCompact;
+  const [drawerOpen, setDrawerOpen] = useState<boolean>(false);
+  const singlePane = overlaySidebar ? containerWidth < 700 : containerWidth < 800;
+  const compactActions = isCompact || (overlaySidebar && !singlePane);
+  const sidebarVisible = overlaySidebar ? drawerOpen : isSidebarOpen;
+  const toggleSidebar = () => (overlaySidebar ? setDrawerOpen((v) => !v) : setIsSidebarOpen((v) => !v));
+  const viewBeforeSidebarRef = useRef<'list' | 'reader'>('list');
+  const toggleCompactSidebar = () => {
+    if (compactView === 'sidebar') {
+      setCompactView(viewBeforeSidebarRef.current);
+    } else {
+      viewBeforeSidebarRef.current = compactView;
+      setCompactView('sidebar');
+    }
+  };
+  const closeSidebar = () => (overlaySidebar ? setDrawerOpen(false) : setIsSidebarOpen(false));
 
   const [emails, setEmails] = useState<Email[]>([]);
   const [customFolders, setCustomFolders] = useState<CustomFolder[]>(INITIAL_CUSTOM_FOLDERS);
@@ -719,7 +810,7 @@ export default function MailApp() {
             Navigation
           </span>
           <button
-            onClick={() => setIsSidebarOpen(false)}
+            onClick={closeSidebar}
             className={`p-1 rounded-lg cursor-pointer ${
               isLight ? 'text-slate-400 hover:text-slate-700 hover:bg-slate-200/60' : 'text-slate-400 hover:text-white hover:bg-white/10'
             }`}
@@ -893,12 +984,12 @@ export default function MailApp() {
             </button>
           ) : (
             <button
-              onClick={() => setIsSidebarOpen((prev) => !prev)}
+              onClick={toggleSidebar}
               className={`p-1.5 rounded-lg border cursor-pointer ${
                 isLight ? 'bg-white border-slate-200 text-slate-500 hover:text-slate-800' : 'bg-[#18181b] border-white/10 text-white/70 hover:text-white'
               }`}
             >
-              {isSidebarOpen ? <PanelLeftClose size={15} /> : <PanelLeftOpen size={15} />}
+              {sidebarVisible ? <PanelLeftClose size={15} /> : <PanelLeftOpen size={15} />}
             </button>
           )}
 
@@ -1400,6 +1491,31 @@ export default function MailApp() {
             </button>
 
             {/* Quick Actions */}
+            {compactActions ? (
+              <div className="flex items-center gap-1">
+                <button onClick={() => handleReply(selectedEmail)} className={`p-1.5 rounded-lg border ${isLight ? 'text-slate-600 hover:bg-slate-100' : 'text-white/80 hover:bg-white/10'} cursor-pointer`} title="Reply">
+                  <Reply size={15} />
+                </button>
+                <button onClick={() => handleReply(selectedEmail, true)} className={`p-1.5 rounded-lg border ${isLight ? 'text-slate-600 hover:bg-slate-100' : 'text-white/80 hover:bg-white/10'} cursor-pointer`} title="Reply All">
+                  <ReplyAll size={15} />
+                </button>
+                <button onClick={() => handleMoveFolder(selectedEmail.id, 'trash')} className={`p-1.5 rounded-lg border text-rose-500 ${isLight ? 'hover:bg-rose-50' : 'hover:bg-rose-500/10'} cursor-pointer`} title="Move to Trash">
+                  <Trash2 size={15} />
+                </button>
+                <ActionMenu
+                  isLight={isLight}
+                  items={[
+                    { key: 'fwd', label: 'Forward', icon: <Forward size={15} />, onClick: () => handleForward(selectedEmail) },
+                    { key: 'fwd-att', label: 'Forward as attachment', icon: <FileCode size={15} />, onClick: () => handleForwardAsAttachment(selectedEmail) },
+                    { key: 'cal', label: 'Convert to calendar event', icon: <Calendar size={15} />, onClick: () => setIsCalendarModalOpen(true) },
+                    { key: 'task', label: 'Convert to task', icon: <CheckSquare size={15} />, onClick: () => setIsTaskModalOpen(true) },
+                    { key: 'share', label: 'Share email summary', icon: <Share2 size={15} />, onClick: () => handleShareEmail(selectedEmail) },
+                    { key: 'spam', label: 'Mark as spam', icon: <ShieldAlert size={15} />, onClick: () => handleMoveFolder(selectedEmail.id, 'spam'), tone: 'warn' },
+                    { key: 'block', label: 'Block sender', icon: <Ban size={15} />, onClick: () => handleBlockSender(selectedEmail.senderEmail), tone: 'danger' },
+                  ]}
+                />
+              </div>
+            ) : (
             <div className="flex items-center gap-1 flex-wrap">
               <button onClick={() => handleReply(selectedEmail)} className={`p-1.5 rounded-lg border ${isLight ? 'text-slate-600' : 'text-white/80'} ${isLight ? 'hover:bg-slate-100' : 'hover:bg-white/10'} cursor-pointer`} title="Reply">
                 <Reply size={15} />
@@ -1438,6 +1554,7 @@ export default function MailApp() {
                 <Trash2 size={15} />
               </button>
             </div>
+            )}
           </div>
 
           {/* Email Subject */}
@@ -1487,7 +1604,7 @@ export default function MailApp() {
               for messages that never had one (plain compose, inbound SMTP mail). */}
           {selectedEmail.bodyHtml ? (
             <div
-              className={`prose ${isLight ? '' : 'prose-invert'} max-w-none text-xs leading-relaxed ${isLight ? 'text-slate-800' : 'text-slate-200'} border-b ${isLight ? '' : 'border-white/10'} pb-4 break-words font-sans [&_a]:text-blue-500 [&_a]:underline [&_table]:border-collapse [&_td]:border [&_td]:border-current/20 [&_td]:p-1 [&_th]:border [&_th]:border-current/20 [&_th]:p-1 [&_img]:max-w-full`}
+              className={`prose ${isLight ? '' : 'prose-invert'} max-w-none overflow-x-auto text-xs leading-relaxed ${isLight ? 'text-slate-800' : 'text-slate-200'} border-b ${isLight ? '' : 'border-white/10'} pb-4 break-words font-sans [&_a]:text-blue-500 [&_a]:underline [&_table]:border-collapse [&_td]:border [&_td]:border-current/20 [&_td]:p-1 [&_th]:border [&_th]:border-current/20 [&_th]:p-1 [&_img]:max-w-full`}
               dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(selectedEmail.bodyHtml) }}
             />
           ) : (
@@ -1579,22 +1696,22 @@ export default function MailApp() {
         }`}
       >
         {/* Left: Sidebar toggle, New Mail button, Refresh */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           <button
-            onClick={() => setIsSidebarOpen((prev) => !prev)}
+            onClick={() => (isCompact ? toggleCompactSidebar() : toggleSidebar())}
             className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
-              isSidebarOpen
+              (isCompact ? compactView === 'sidebar' : sidebarVisible)
                 ? isLight ? 'bg-slate-200 text-slate-800' : 'bg-white/20 text-white'
                 : isLight ? 'hover:bg-slate-200 text-slate-600' : 'hover:bg-white/10 text-white/70'
             }`}
             title="Toggle Sidebar"
           >
-            {isSidebarOpen ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
+            {(isCompact ? compactView === 'sidebar' : sidebarVisible) ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
           </button>
           
           <button
             onClick={handleStartCompose}
-            className="px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-2xs transition-transform active:scale-95 cursor-pointer"
+            className="px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-2xs transition-transform active:scale-95 cursor-pointer whitespace-nowrap"
           >
             <Plus size={14} />
             <span>New Mail</span>
@@ -1613,7 +1730,7 @@ export default function MailApp() {
         </div>
 
         {/* Center: Search & Filter Pills */}
-        <div className="flex-1 max-w-md mx-2 flex items-center gap-2">
+        <div className={`flex-1 max-w-md mx-2 items-center gap-2 ${isCompact || overlaySidebar ? 'hidden' : 'flex'}`}>
           <div className="relative flex-1">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 opacity-40" size={13} />
             <input
@@ -1661,7 +1778,7 @@ export default function MailApp() {
         </div>
 
         {/* Right: Modals / Management Actions */}
-        <div className="flex items-center gap-1">
+        <div className={`flex items-center gap-1 shrink-0 ${isCompact || overlaySidebar ? 'ml-auto' : ''}`}>
           <button
             onClick={() => setIsContactsModalOpen(true)}
             className={`p-1.5 rounded-lg transition-colors cursor-pointer flex items-center gap-1 px-2 text-xs font-medium ${
@@ -1721,13 +1838,27 @@ export default function MailApp() {
         ) : (
           /* DESKTOP / MEDIUM MODE */
           <>
-            {isSidebarOpen && (
+            {!overlaySidebar && isSidebarOpen && (
               <div className={`w-52 sm:w-56 shrink-0 flex flex-col overflow-hidden ${isLight ? 'bg-slate-50' : 'bg-[#1a191e]'}`}>
                 {renderSidebarContent()}
               </div>
             )}
 
-            {containerWidth < 800 ? (
+            {overlaySidebar && drawerOpen && (
+              <>
+                <div className="absolute inset-0 z-20 bg-black/40" onClick={() => setDrawerOpen(false)} />
+                <div
+                  onClick={(e) => {
+                    if ((e.target as HTMLElement).closest('button')) setDrawerOpen(false);
+                  }}
+                  className={`absolute inset-y-0 left-0 z-30 w-60 max-w-[85%] flex flex-col overflow-hidden shadow-2xl ${isLight ? 'bg-slate-50' : 'bg-[#1a191e]'}`}
+                >
+                  {renderSidebarContent()}
+                </div>
+              </>
+            )}
+
+            {singlePane ? (
               isComposing ? (
                 <div className={`flex-1 flex flex-col min-h-0 min-w-0 ${isLight ? 'bg-white' : 'bg-[#18181b]'}`}>
                   {renderComposeContent()}

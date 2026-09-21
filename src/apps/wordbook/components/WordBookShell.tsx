@@ -24,6 +24,7 @@ interface WordBookShellProps {
   onSave: () => void;
   zoom: number;
   onZoomChange: (zoom: number) => void;
+  onAutoFitZoom?: (zoom: number) => void;
   currentFolderId: string | null;
   resolveDefaultFolderId: (name: string) => string | null;
   isStarred: boolean;
@@ -57,6 +58,7 @@ export default function WordBookShell({
   onSave,
   zoom,
   onZoomChange,
+  onAutoFitZoom,
   currentFolderId,
   resolveDefaultFolderId,
   isStarred,
@@ -140,6 +142,7 @@ export default function WordBookShell({
           showRuler={showRuler}
           printLayoutOn={printLayoutOn}
           showNonPrintingChars={showNonPrintingChars}
+          onAutoFitZoom={onAutoFitZoom}
         />
       </div>
       {!isViewOnly && editor && <TableContextToolbar editor={editor} />}

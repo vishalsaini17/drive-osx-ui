@@ -1630,6 +1630,7 @@ export default function WordBook({ windowId = 'wordbook' }: { windowId?: string 
         onSave={handleSaveClick}
         zoom={zoom}
         onZoomChange={setZoom}
+        onAutoFitZoom={setZoom}
         currentFolderId={currentFolderId}
         resolveDefaultFolderId={resolveDefaultFolderId}
         isStarred={isStarred}

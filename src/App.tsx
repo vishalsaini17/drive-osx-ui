@@ -527,7 +527,14 @@ function DesktopLayout() {
                 desktopIsLight ? 'hover:bg-black/5' : 'hover:bg-white/5'
               }`}
             >
-              <div className="w-10 h-10 filter drop-shadow-md group-hover:scale-105 transition-transform shrink-0">
+              {/* Matches the dock's own icon size at each tier (Dock.tsx
+                  sizeClasses): below 640px the dock is forced to its 'sm'
+                  icon size ('w-8 h-8'), and from 640-1023px (tablet) it
+                  defaults to 'md' ('w-11 h-11') since there's no narrow-
+                  viewport override in that range. `lg:` restores the
+                  original, larger desktop-only size — true desktop screens
+                  keep their existing design untouched. */}
+              <div className="w-10 h-10 max-sm:w-8 max-sm:h-8 sm:w-11 sm:h-11 lg:w-10 lg:h-10 filter drop-shadow-md group-hover:scale-105 transition-transform shrink-0">
                 {getAppIcon(appId, 'w-full h-full')}
               </div>
               <span

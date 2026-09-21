@@ -343,6 +343,7 @@ export function RibbonFontSizeStepper({
         createPortal(
           <div
             ref={popoverRef}
+            data-ribbon-popover="true"
             onPointerDown={(e) => e.stopPropagation()}
             style={{ position: 'fixed', top: position.top, left: position.left, zIndex: 100000 }}
             className="bg-white border border-zinc-200 rounded-lg shadow-lg py-1 w-16 max-h-72 overflow-y-auto"
@@ -500,6 +501,7 @@ export function RibbonColorPicker({
         createPortal(
           <div
             ref={popoverRef}
+            data-ribbon-popover="true"
             onPointerDown={(e) => e.stopPropagation()}
             style={{ position: 'fixed', top: position.top, left: position.left, zIndex: 100000 }}
             className="bg-white border border-zinc-200 rounded-lg shadow-lg p-2.5 w-64"
@@ -693,6 +695,7 @@ export function RibbonDropdown({
         createPortal(
           <div
             ref={popoverRef}
+            data-ribbon-popover="true"
             onClick={() => setOpen(false)}
             onPointerDown={(e) => e.stopPropagation()}
             style={{ position: 'fixed', top: position.top, left: position.left, zIndex: 100000 }}
@@ -703,6 +706,118 @@ export function RibbonDropdown({
           document.body
         )}
     </>
+  );
+}
+
+/**
+ * The ribbon's "More options" overflow menu (mobile/tablet, see
+ * `RibbonToolbar.tsx`'s `isCompact`) — same trigger/popover/clamped-position
+ * shape as `RibbonDropdown`, but deliberately not built on top of it:
+ *
+ * 1. `RibbonDropdown`'s popover closes itself on *any* click inside it — the
+ *    right behavior for a flat list of one-shot actions, wrong here, where
+ *    the content is a whole second copy of the ribbon (buttons, selects,
+ *    color pickers, nested `RibbonDropdown`s) that should stay open across
+ *    an arbitrary number of interactions.
+ * 2. Every popover in this file (`RibbonDropdown`, `RibbonColorPicker`,
+ *    `RibbonFontSizeStepper`) portals to `document.body`, so a *nested* one
+ *    opened from inside this menu — e.g. its embedded Zoom or bullet-style
+ *    `RibbonDropdown` — renders as a sibling in the DOM, not a descendant.
+ *    A plain `popoverRef.contains(target)` outside-click check would
+ *    therefore treat a click inside that nested popover as "outside" and
+ *    close this whole menu out from under it. Every such popover in this
+ *    file marks its portaled root `data-ribbon-popover="true"`
+ *    specifically so this check can also recognize those as "still inside."
+ */
+export function RibbonMoreMenu({
+  title,
+  trigger,
+  children,
+  widthClass = 'w-72',
+}: {
+  title: string;
+  trigger: React.ReactNode;
+  children: React.ReactNode;
+  widthClass?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const triggerRectRef = useRef<DOMRect | null>(null);
+
+  const openMenu = () => {
+    const rect = buttonRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    triggerRectRef.current = rect;
+    setPosition({ top: rect.bottom + 4, left: rect.left });
+    setOpen(true);
+  };
+
+  useLayoutEffect(() => {
+    if (!open || !position || !popoverRef.current || !triggerRectRef.current) return;
+    const size = popoverRef.current.getBoundingClientRect();
+    const clamped = clampPopoverPosition(triggerRectRef.current, { width: size.width, height: size.height }, position);
+    if (clamped.top !== position.top || clamped.left !== position.left) setPosition(clamped);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, position]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: PointerEvent) => {
+      const target = e.target as Node;
+      if (buttonRef.current?.contains(target)) return;
+      if (popoverRef.current?.contains(target)) return;
+      // Inside a nested popover (Zoom, a color picker, a bullet-style
+      // grid, …) portaled elsewhere in the DOM — see the doc comment above.
+      if (target instanceof Element && target.closest('[data-ribbon-popover]')) return;
+      setOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown, true);
+    return () => document.removeEventListener('pointerdown', onPointerDown, true);
+  }, [open]);
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        title={title}
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => (open ? setOpen(false) : openMenu())}
+        className={`h-7 w-7 rounded flex items-center justify-center cursor-pointer ${
+          open ? 'bg-zinc-200 text-zinc-900' : 'text-zinc-700 hover:bg-zinc-200/70'
+        }`}
+      >
+        {trigger}
+      </button>
+      {open &&
+        position &&
+        createPortal(
+          <div
+            ref={popoverRef}
+            data-ribbon-popover="true"
+            onPointerDown={(e) => e.stopPropagation()}
+            style={{ position: 'fixed', top: position.top, left: position.left, zIndex: 100000 }}
+            className={`bg-white border border-zinc-200 rounded-lg shadow-xl p-2 max-h-[70vh] overflow-y-auto flex flex-col gap-2.5 ${widthClass}`}
+          >
+            {children}
+          </div>,
+          document.body
+        )}
+    </>
+  );
+}
+
+/** A labeled group of controls inside `RibbonMoreMenu` — keeps the overflow
+ *  menu navigable (still organized by what the desktop ribbon's own
+ *  dividers group together) instead of one flat, unlabeled row of icons. */
+export function RibbonMoreMenuSection({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider px-0.5">{label}</span>
+      <div className="flex flex-wrap items-center gap-0.5 p-1 rounded-md bg-zinc-50 border border-zinc-100">{children}</div>
+    </div>
   );
 }
 

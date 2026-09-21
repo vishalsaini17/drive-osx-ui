@@ -46,6 +46,26 @@ export default function TitleBar({
   const [draft, setDraft] = useState(docTitle);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // This window's own rendered width. Every control here but the filename
+  // button was `shrink-0`, so on a phone window the filename — the one
+  // flexible thing in the row — absorbed the entire deficit alone and got
+  // crushed to a few px while "Unsaved changes", the page count, and the
+  // Share button still ran off the right edge. Below `isCompact` the
+  // secondary text/labels drop so the filename gets its width back.
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [containerWidth, setContainerWidth] = useState<number>(980);
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setContainerWidth(entry.contentRect.width);
+      }
+    });
+    observer.observe(containerRef.current);
+    return () => observer.disconnect();
+  }, []);
+  const isCompact = containerWidth < 480;
+
   // The title can change from outside mid-edit (e.g. Save As, or another
   // window renaming the same file) — never while the user is actively
   // typing here, which `editing` guards against clobbering their draft.
@@ -78,7 +98,7 @@ export default function TitleBar({
   }, [editing]);
 
   return (
-    <div className="border-b border-zinc-200 bg-white shrink-0 select-none">
+    <div ref={containerRef} className="border-b border-zinc-200 bg-white shrink-0 select-none">
       <div className="h-11 px-3 flex items-center gap-2">
         <span className="shrink-0 text-blue-600">
           <FileText className="w-5 h-5" />
@@ -119,10 +139,17 @@ export default function TitleBar({
 
         <div className="flex-1" />
 
-        {isDirty && <span className="text-[11px] text-zinc-400 shrink-0">Unsaved changes</span>}
-        <span className="text-[11px] text-zinc-400 tabular-nums shrink-0">
-          {pageCount} page{pageCount === 1 ? '' : 's'}
-        </span>
+        {isDirty && !isCompact && <span className="text-[11px] text-zinc-400 shrink-0">Unsaved changes</span>}
+        {/* Compact still needs *some* dirty-state signal — a bare dot next
+            to the page count rather than the full sentence. */}
+        {isDirty && isCompact && (
+          <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 shrink-0" title="Unsaved changes" />
+        )}
+        {!isCompact && (
+          <span className="text-[11px] text-zinc-400 tabular-nums shrink-0">
+            {pageCount} page{pageCount === 1 ? '' : 's'}
+          </span>
+        )}
 
         {/*
           Lives here rather than on the ribbon: switching to Viewing hides
@@ -134,10 +161,14 @@ export default function TitleBar({
           title="Editing mode"
           widthClass="w-48"
           trigger={
-            <span className="flex items-center gap-1 px-1.5 h-7 rounded border border-zinc-200 hover:bg-zinc-50">
+            <span className={`flex items-center gap-1 h-7 rounded border border-zinc-200 hover:bg-zinc-50 ${isCompact ? 'w-7 justify-center' : 'px-1.5'}`}>
               {isViewOnly ? <Eye className="w-3.5 h-3.5 text-zinc-600" /> : <Pencil className="w-3.5 h-3.5 text-zinc-600" />}
-              <span className="text-xs text-zinc-700">{isViewOnly ? 'Viewing' : 'Editing'}</span>
-              <ChevronDown className="w-3 h-3 text-zinc-400" />
+              {!isCompact && (
+                <>
+                  <span className="text-xs text-zinc-700">{isViewOnly ? 'Viewing' : 'Editing'}</span>
+                  <ChevronDown className="w-3 h-3 text-zinc-400" />
+                </>
+              )}
             </span>
           }
         >
@@ -170,12 +201,13 @@ export default function TitleBar({
           widthClass="w-56"
           trigger={
             <span
-              className={`flex items-center gap-1 px-2 h-7 rounded font-medium ${
+              title="Share"
+              className={`flex items-center gap-1 h-7 rounded font-medium ${isCompact ? 'w-7 justify-center' : 'px-2'} ${
                 canShare ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-zinc-100 text-zinc-400'
               }`}
             >
               <Share2 className="w-3.5 h-3.5" />
-              <span className="text-xs">Share</span>
+              {!isCompact && <span className="text-xs">Share</span>}
             </span>
           }
         >
