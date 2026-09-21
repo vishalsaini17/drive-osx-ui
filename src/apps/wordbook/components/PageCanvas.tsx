@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { EditorContent, Editor } from '@tiptap/react';
 import { PageBreakPlan } from '../../../platform/documents/pagination/types';
 import { contentAreaMm, mmToPx, PageSetup } from '../../../platform/documents/book/pageSetup';
@@ -13,7 +13,32 @@ interface PageCanvasProps {
   showRuler?: boolean;
   printLayoutOn?: boolean;
   showNonPrintingChars?: boolean;
+  /** On a phone/tablet *device* (see `AUTO_FIT_VIEWPORT_BREAKPOINT`), sets
+   *  zoom so the page's true width matches the available space — the page
+   *  is a real physical size (e.g. 816px for Letter at 100%), which a
+   *  phone or tablet is almost never wide enough for, so without this
+   *  every page required horizontal scrolling to see the full width. Same
+   *  computation the ribbon's manual "Fit" zoom option already offers,
+   *  just applied automatically at this width instead of needing to be
+   *  found in a menu. Omit to leave zoom exactly as the caller passed it
+   *  (e.g. a context where auto-fit doesn't apply).
+   */
+  onAutoFitZoom?: (fitZoom: number) => void;
 }
+
+/** Matches the ribbon's own manual "Fit" zoom option (RibbonToolbar.tsx) so both compute the identical result. */
+const AUTO_FIT_MARGIN_PX = 48;
+/**
+ * Gates auto-fit on the real device viewport, not this window's own
+ * rendered width — Word Book's *default* window (980px, see AppRegistry)
+ * is itself narrower than a landscape tablet, so comparing against this
+ * component's own container would auto-fit-zoom every desktop user's
+ * ordinary-sized window too. `window.innerWidth` is what actually
+ * distinguishes "phone/tablet" from "desktop with a normal window size" —
+ * the same reasoning the OS shell's own `isTabletOrNarrower` (Dock.tsx)
+ * follows for exactly this ambiguity.
+ */
+const AUTO_FIT_VIEWPORT_BREAKPOINT = 1024;
 
 /**
  * The A4 page workspace.
@@ -35,6 +60,7 @@ export default function PageCanvas({
   showRuler,
   printLayoutOn = true,
   showNonPrintingChars,
+  onAutoFitZoom,
 }: PageCanvasProps) {
   const pageWidthPx = mmToPx(pageSetup.widthMm);
   const content = contentAreaMm(pageSetup);
@@ -48,8 +74,41 @@ export default function PageCanvas({
   const stackHeightPx =
     pages.length > 0 ? pages[pages.length - 1].topOffsetPx + pages[pages.length - 1].heightPx : mmToPx(pageSetup.heightMm);
 
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const [containerWidth, setContainerWidth] = useState(0);
+  useEffect(() => {
+    if (!scrollContainerRef.current) return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) setContainerWidth(entry.contentRect.width);
+    });
+    observer.observe(scrollContainerRef.current);
+    return () => observer.disconnect();
+  }, []);
+
+  const [isNarrowViewport, setIsNarrowViewport] = useState(
+    typeof window !== 'undefined' ? window.innerWidth < AUTO_FIT_VIEWPORT_BREAKPOINT : false
+  );
+  useEffect(() => {
+    const handleResize = () => setIsNarrowViewport(window.innerWidth < AUTO_FIT_VIEWPORT_BREAKPOINT);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  useEffect(() => {
+    if (!onAutoFitZoom || containerWidth <= 0 || !isNarrowViewport) return;
+    const available = containerWidth - AUTO_FIT_MARGIN_PX;
+    const fit = Math.min(2, Math.max(0.3, Math.round((available / pageWidthPx) * 100) / 100));
+    onAutoFitZoom(fit);
+    // `zoom` is deliberately excluded — this recomputes when the available
+    // space changes (resize, rotation, a sidebar opening/closing), not on
+    // every zoom change, so a manual zoom-in from the ribbon isn't
+    // immediately clobbered back to "fit" on the next unrelated render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [containerWidth, isNarrowViewport, pageWidthPx, onAutoFitZoom]);
+
   return (
     <div
+      ref={scrollContainerRef}
       className={`flex-1 min-h-0 overflow-auto bg-[#e9eaee] ${showLineNumbers ? 'wb-line-numbers' : ''} ${
         showNonPrintingChars ? 'wb-nonprinting' : ''
       }`}

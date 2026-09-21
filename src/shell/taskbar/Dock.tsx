@@ -487,16 +487,22 @@ export default function Dock() {
 
   // Below the mobile window breakpoint every app window opens maximized (see
   // systemStore's MOBILE_WINDOW_BREAKPOINT), so `isDockOverlapped` is true
-  // almost continuously. Auto-hide-then-reveal-on-hover has no touch
-  // equivalent — there is no `mousemove`/hover on a touchscreen — so a dock
-  // that could still auto-hide here would become permanently unreachable.
-  // Below the breakpoint it simply never hides, the same way a phone OS's
-  // home/gesture bar is a persistent overlay rather than a hover reveal.
-  // (`isNarrowViewport` itself is declared earlier, alongside `effectiveDockSize`.)
+  // almost continuously there — but at tablet widths a window is *not*
+  // forced maximized, so a freshly opened app can easily leave the dock's
+  // strip uncovered and `isDockOverlapped` false, even though touch users
+  // there have no hover to fall back on either. Below `lg` (phone and
+  // tablet, where the dock is used by touch rather than a mouse) hiding is
+  // therefore keyed directly to whether *any* app is open at all, not to
+  // window geometry: it hides the moment an app opens and reappears the
+  // moment that app is minimized or closed — always reachable by touch,
+  // with no hover escape hatch needed. At `lg` and up (mouse-driven, often
+  // several floating windows at once) the original geometry+hover behavior
+  // is unchanged: only a window actually covering the strip hides it, and
+  // hovering the bottom edge reveals it again.
+  const isTabletOrNarrower = windowWidth < 1024;
+  const hasOpenApp = windows.some((w) => w.id !== 'launcher' && w.isOpen && !w.isMinimized);
   const shouldHideDock =
-    !isNarrowViewport &&
-    isDockOverlapped &&
-    !isCursorAtBottom &&
+    (isTabletOrNarrower ? hasOpenApp : isDockOverlapped && !isCursorAtBottom) &&
     !showAppDirectoryPopup &&
     !showMorePopup &&
     !showPopup &&

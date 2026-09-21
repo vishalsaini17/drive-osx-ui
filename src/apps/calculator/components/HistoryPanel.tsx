@@ -8,6 +8,10 @@ interface HistoryPanelProps {
   history: HistoryItem[];
   onClearHistory: () => void;
   onSelectHistoryItem: (item: HistoryItem) => void;
+  /** Below this, `w-80` in-flow (see the div below) left only ~70px for the
+   *  calculator itself on a phone window — it now floats over the content
+   *  instead of sharing the row with it. */
+  isCompact?: boolean;
 }
 
 export default function HistoryPanel({
@@ -16,6 +20,7 @@ export default function HistoryPanel({
   history,
   onClearHistory,
   onSelectHistoryItem,
+  isCompact = false,
 }: HistoryPanelProps) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
@@ -29,7 +34,11 @@ export default function HistoryPanel({
   };
 
   return (
-    <div className="w-80 bg-zinc-50 dark:bg-zinc-900 border-l border-zinc-200 dark:border-zinc-800 flex flex-col h-full shrink-0 text-xs select-none shadow-lg z-20">
+    <div
+      className={`w-80 max-w-[85%] bg-zinc-50 dark:bg-zinc-900 border-l border-zinc-200 dark:border-zinc-800 flex flex-col h-full text-xs select-none shadow-lg ${
+        isCompact ? 'absolute inset-y-0 right-0 z-30 animate-in slide-in-from-right duration-200' : 'shrink-0 z-20'
+      }`}
+    >
       {/* Header */}
       <div className="p-3 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between bg-white dark:bg-zinc-950">
         <div className="flex items-center gap-2">

@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Search, Wand2, Bug, GitBranch, FileCode2, Package, Settings as SettingsIcon, CircleCheck, ChevronLeft } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Search, Wand2, Bug, GitBranch, FileCode2, Package, Settings as SettingsIcon, CircleCheck, ChevronLeft, ChevronDown } from 'lucide-react';
 import { MONACO_THEME_IDS, EditorThemeName } from '../editor/themes';
 
 export interface SettingsEditorProps {
@@ -326,7 +326,7 @@ function SettingRow({ d, onChange }: { d: SettingDescriptor; onChange: (patch: R
             <select
               value={String(d.value)}
               onChange={(e) => onChange({ [d.id]: e.target.value })}
-              className="bg-[var(--wb-control-bg)] border border-[var(--wb-border-strong)] rounded px-2 py-1.5 text-[12px] text-[var(--wb-fg)] outline-none min-w-[220px] cursor-pointer"
+              className="bg-[var(--wb-control-bg)] border border-[var(--wb-border-strong)] rounded px-2 py-1.5 text-[12px] text-[var(--wb-fg)] outline-none w-full max-w-full sm:w-auto sm:min-w-[220px] cursor-pointer"
             >
               {control.options.map((o) => (
                 <option key={o.value} value={o.value}>
@@ -375,6 +375,17 @@ function SettingRow({ d, onChange }: { d: SettingDescriptor; onChange: (patch: R
 export default function SettingsEditor(props: SettingsEditorProps) {
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState<CategoryId>('commonly-used');
+  const [categoryMenuOpen, setCategoryMenuOpen] = useState(false);
+  const categoryMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!categoryMenuOpen) return;
+    // Capture phase: the window shell stops propagation of pointer events that start inside it.
+    const onDown = (e: PointerEvent) => {
+      if (categoryMenuRef.current && !categoryMenuRef.current.contains(e.target as Node)) setCategoryMenuOpen(false);
+    };
+    document.addEventListener('pointerdown', onDown, true);
+    return () => document.removeEventListener('pointerdown', onDown, true);
+  }, [categoryMenuOpen]);
   const descriptors = buildDescriptors(props);
 
   const trimmedQuery = query.trim().toLowerCase();
@@ -384,7 +395,7 @@ export default function SettingsEditor(props: SettingsEditorProps) {
 
   return (
     <div className="h-full flex flex-col bg-[var(--wb-surface)] text-[var(--wb-fg)] overflow-hidden">
-      <div className="px-6 pt-4 pb-3 border-b border-[var(--wb-border-strong)] shrink-0">
+      <div className="px-4 sm:px-6 pt-4 pb-3 border-b border-[var(--wb-border-strong)] shrink-0">
         <div className="flex items-center gap-2 bg-[var(--wb-control-bg)] rounded px-3 py-1.5 max-w-2xl">
           <Search className="w-4 h-4 text-[var(--wb-fg)]/40 shrink-0" />
           <input
@@ -394,9 +405,46 @@ export default function SettingsEditor(props: SettingsEditorProps) {
             className="flex-1 bg-transparent text-[13px] text-[var(--wb-fg)] outline-none placeholder:text-[var(--wb-fg)]/30 min-w-0"
           />
         </div>
+
+        {/* Phone: the category list becomes a dropdown instead of a 224px column. */}
+        <div ref={categoryMenuRef} className="relative mt-2 sm:hidden">
+          <button
+            onClick={() => setCategoryMenuOpen((v) => !v)}
+            className="w-full flex items-center justify-between gap-2 bg-[var(--wb-control-bg)] rounded px-3 py-2 text-[13px] text-[var(--wb-fg)] cursor-pointer"
+            aria-haspopup="listbox"
+            aria-expanded={categoryMenuOpen}
+          >
+            <span className="truncate">{trimmedQuery ? 'Search results' : CATEGORY_LABELS[category]}</span>
+            <ChevronDown className={`w-4 h-4 shrink-0 transition-transform ${categoryMenuOpen ? 'rotate-180' : ''}`} />
+          </button>
+          {categoryMenuOpen && (
+            <div
+              role="listbox"
+              className="absolute left-0 right-0 top-full mt-1 z-20 rounded border border-[var(--wb-border-strong)] bg-[var(--wb-surface-raised)] shadow-2xl py-1"
+            >
+              {NAV_ITEMS.map((item) => (
+                <button
+                  key={item.id}
+                  role="option"
+                  aria-selected={category === item.id}
+                  onClick={() => {
+                    setQuery('');
+                    setCategory(item.id);
+                    setCategoryMenuOpen(false);
+                  }}
+                  className={`w-full text-left text-[13px] px-4 py-2.5 cursor-pointer ${item.indent ? 'pl-8' : ''} ${
+                    category === item.id ? 'bg-[var(--wb-selected)] text-[var(--wb-fg)]' : 'text-[var(--wb-fg)]/70 hover:bg-[var(--wb-fg)]/5'
+                  }`}
+                >
+                  {CATEGORY_LABELS[item.id]}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
       <div className="flex-1 min-h-0 flex">
-        <div className="w-56 shrink-0 border-r border-[var(--wb-border-strong)] overflow-y-auto py-3">
+        <div className="hidden sm:block w-56 shrink-0 border-r border-[var(--wb-border-strong)] overflow-y-auto py-3">
           {NAV_ITEMS.map((item) => (
             <button
               key={item.id}
@@ -412,7 +460,7 @@ export default function SettingsEditor(props: SettingsEditorProps) {
             </button>
           ))}
         </div>
-        <div className="flex-1 min-h-0 overflow-y-auto px-8 py-6">
+        <div className="flex-1 min-h-0 min-w-0 overflow-y-auto px-4 py-4 sm:px-8 sm:py-6">
           {trimmedQuery ? (
             searchMatches.length > 0 ? (
               <>

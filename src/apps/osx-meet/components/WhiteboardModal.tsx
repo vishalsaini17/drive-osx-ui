@@ -212,25 +212,28 @@ export default function WhiteboardModal({ isOpen, onClose, isLight }: Whiteboard
   };
 
   return (
-    <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/70 backdrop-blur-sm p-3 sm:p-6 animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/70 backdrop-blur-sm p-0 sm:p-6 animate-in fade-in duration-200">
       <div
-        className={`w-full max-w-5xl rounded-2xl shadow-2xl border flex flex-col overflow-hidden max-h-[92vh] ${
+        className={`w-full max-w-5xl h-full sm:h-auto rounded-none sm:rounded-2xl shadow-2xl border flex flex-col overflow-hidden max-h-full sm:max-h-[92vh] ${
           isLight ? 'bg-slate-50 border-slate-200 text-slate-800' : 'bg-[#1e1d24] border-white/15 text-white'
         }`}
       >
         {/* Header Toolbar */}
-        <div className={`h-14 px-4 flex items-center justify-between border-b shrink-0 ${isLight ? 'border-slate-200 bg-slate-50' : 'border-white/10 bg-black/20'}`}>
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-purple-600 to-indigo-500 flex items-center justify-center text-white shadow-md">
+        <div className={`h-14 px-3 sm:px-4 flex items-center justify-between gap-2 border-b shrink-0 ${isLight ? 'border-slate-200 bg-slate-50' : 'border-white/10 bg-black/20'}`}>
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-8 h-8 shrink-0 rounded-xl bg-gradient-to-tr from-purple-600 to-indigo-500 flex items-center justify-center text-white shadow-md">
               <Sparkles size={16} />
             </div>
-            <div>
-              <h2 className="text-sm font-bold tracking-tight">Collaborative Whiteboard</h2>
-              <p className={`text-[11px] hidden sm:block ${isLight ? 'text-slate-500' : 'text-zinc-400'}`}>Draw, sketch diagrams & export to DriveOSX</p>
+            <div className="min-w-0">
+              <h2 className="text-sm font-bold tracking-tight truncate">
+                <span className="sm:hidden">Whiteboard</span>
+                <span className="hidden sm:inline">Collaborative Whiteboard</span>
+              </h2>
+              <p className={`text-[11px] hidden sm:block truncate ${isLight ? 'text-slate-500' : 'text-zinc-400'}`}>Draw, sketch diagrams & export to DriveOSX</p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {/* Actions */}
             <button
               onClick={handleUndo}
@@ -255,19 +258,23 @@ export default function WhiteboardModal({ isOpen, onClose, isLight }: Whiteboard
               <span className="hidden sm:inline">Clear</span>
             </button>
 
-            <div className={`h-4 w-px mx-1 ${isLight ? 'bg-slate-300' : 'bg-white/15'}`} />
+            <div className={`hidden sm:block h-4 w-px mx-1 ${isLight ? 'bg-slate-300' : 'bg-white/15'}`} />
 
             <button
               onClick={handleSaveToDriveOSX}
-              className="px-3 py-1.5 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white cursor-pointer transition-colors flex items-center gap-1.5 shadow-md"
+              title="Save to DriveOSX"
+              aria-label="Save to DriveOSX"
+              className="p-2 sm:px-3 sm:py-1.5 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white cursor-pointer transition-colors flex items-center gap-1.5 shadow-md"
             >
               {savedSuccess ? <Check size={14} /> : <HardDrive size={14} />}
-              <span>{savedSuccess ? 'Saved to Drive!' : 'Save to DriveOSX'}</span>
+              <span className="hidden sm:inline">{savedSuccess ? 'Saved to Drive!' : 'Save to DriveOSX'}</span>
             </button>
 
             <button
               onClick={handleDownloadImage}
-              className="px-3 py-1.5 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white cursor-pointer transition-colors flex items-center gap-1.5 shadow-md"
+              title="Download image"
+              aria-label="Download image"
+              className="p-2 sm:px-3 sm:py-1.5 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white cursor-pointer transition-colors flex items-center gap-1.5 shadow-md"
             >
               <Download size={14} />
               <span className="hidden sm:inline">Download</span>
@@ -275,7 +282,7 @@ export default function WhiteboardModal({ isOpen, onClose, isLight }: Whiteboard
 
             <button
               onClick={onClose}
-              className={`p-1.5 rounded-xl cursor-pointer ml-1 ${
+              className={`p-1.5 rounded-xl cursor-pointer sm:ml-1 shrink-0 ${
                 isLight ? 'text-slate-400 hover:text-slate-900 hover:bg-slate-200' : 'text-zinc-400 hover:text-white hover:bg-white/10'
               }`}
             >
@@ -288,7 +295,7 @@ export default function WhiteboardModal({ isOpen, onClose, isLight }: Whiteboard
         <div className={`flex-1 flex flex-col sm:flex-row min-h-0 relative overflow-hidden ${isLight ? 'bg-slate-200' : 'bg-zinc-950'}`}>
           {/* Side Tool Palette */}
           <div
-            className={`w-full sm:w-16 p-2 sm:p-3 border-b sm:border-b-0 sm:border-r flex sm:flex-col items-center justify-between sm:justify-start gap-2 shrink-0 overflow-x-auto ${
+            className={`w-full sm:w-16 p-2 sm:p-3 border-b sm:border-b-0 sm:border-r flex flex-wrap sm:flex-nowrap sm:flex-col items-center justify-between sm:justify-start gap-2 shrink-0 sm:overflow-x-auto ${
               isLight ? 'bg-white border-slate-200' : 'bg-zinc-900 border-zinc-800'
             }`}
           >
@@ -401,10 +408,15 @@ export default function WhiteboardModal({ isOpen, onClose, isLight }: Whiteboard
           <div className="flex-1 p-3 flex items-center justify-center overflow-auto min-h-0 bg-slate-900">
             <canvas
               ref={canvasRef}
-              onMouseDown={handleMouseDown}
-              onMouseMove={handleMouseMove}
-              onMouseUp={handleMouseUp}
-              onMouseLeave={handleMouseUp}
+              onPointerDown={(e) => {
+                // Keeps a stroke going if the finger/pointer leaves the canvas mid-draw.
+                e.currentTarget.setPointerCapture?.(e.pointerId);
+                handleMouseDown(e);
+              }}
+              onPointerMove={handleMouseMove}
+              onPointerUp={handleMouseUp}
+              onPointerCancel={handleMouseUp}
+              style={{ touchAction: 'none' }}
               className="bg-white shadow-2xl rounded-xl cursor-crosshair border border-white/20 max-w-full max-h-full object-contain"
             />
           </div>

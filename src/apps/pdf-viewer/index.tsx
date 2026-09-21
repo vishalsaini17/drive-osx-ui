@@ -20,6 +20,7 @@ import { FileItem } from '../../platform/types';
 import { FileText, Check, AlertCircle, UploadCloud, FolderOpen, HardDrive } from 'lucide-react';
 import { useAppMenu } from '../../platform/menus/AppMenuContext';
 import { separator } from '../../platform/menus/types';
+import { useViewportWidth } from '../../platform/layout/useViewportWidth';
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -49,7 +50,17 @@ export default function PDFViewerApp({ windowId = 'pdf-viewer' }: { windowId?: s
   const [zoomLevel, setZoomLevel] = useState<number>(100);
   const [fitMode, setFitMode] = useState<'custom' | 'fit-width' | 'fit-page'>('fit-width');
   const [rotation, setRotation] = useState<number>(0);
-  const [sidebarOpen, setSidebarOpen] = useState<boolean>(true);
+  // Phone/tablet viewports get an overlay drawer that starts closed; on the
+  // desktop the sidebar is an inline pane that starts open. Real viewport
+  // width (not the window's) — a tablet window is narrower than the default
+  // desktop one, and the desktop layout must not change.
+  const viewportWidth = useViewportWidth();
+  const compact = viewportWidth < 1024;
+  const phone = viewportWidth < 640;
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => (typeof window === 'undefined' ? true : window.innerWidth >= 1024));
+  useEffect(() => {
+    setSidebarOpen(!compact);
+  }, [compact]);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('thumbnails');
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [isReadOnly, setIsReadOnly] = useState<boolean>(false);
@@ -321,7 +332,7 @@ export default function PDFViewerApp({ windowId = 'pdf-viewer' }: { windowId?: s
       <input ref={fileInputRef} type="file" accept="application/pdf,.pdf" className="hidden" onChange={handleLocalFileSelected} />
 
       {toastMessage && (
-        <div className="fixed top-12 right-6 z-50 bg-blue-600 text-white px-4 py-2.5 rounded-2xl shadow-2xl border border-blue-400 text-xs font-bold flex items-center gap-2">
+        <div className={`fixed z-50 bg-blue-600 ${compact ? 'top-12 left-4 right-4 justify-center' : 'top-12 right-6'} text-white px-4 py-2.5 rounded-2xl shadow-2xl border border-blue-400 text-xs font-bold flex items-center gap-2`}>
           <Check size={16} />
           <span>{toastMessage}</span>
         </div>
@@ -362,11 +373,17 @@ export default function PDFViewerApp({ windowId = 'pdf-viewer' }: { windowId?: s
         onUnlockPasswordPrompt={() => {
           /* Password modal is already shown automatically while status === 'password'. */
         }}
+        compact={compact}
+        phone={phone}
       />
 
       <div className="flex-1 flex overflow-hidden relative">
+        {compact && status === 'ready' && pdfDoc && sidebarOpen && (
+          <div className="absolute inset-0 z-20 bg-black/50" onClick={() => setSidebarOpen(false)} />
+        )}
         {status === 'ready' && pdfDoc && sidebarOpen && (
           <Sidebar
+            overlay={compact}
             pdfDoc={pdfDoc}
             numPages={pdfDoc.numPages}
             currentPage={currentPage}
@@ -378,7 +395,10 @@ export default function PDFViewerApp({ windowId = 'pdf-viewer' }: { windowId?: s
             indexedCount={indexedCount}
             activeTab={sidebarTab}
             onActiveTabChange={setSidebarTab}
-            onPageSelect={(pIdx) => setCurrentPage(pIdx + 1)}
+            onPageSelect={(pIdx) => {
+              setCurrentPage(pIdx + 1);
+              if (compact) setSidebarOpen(false);
+            }}
             onAddBookmark={handleAddBookmark}
             onDeleteBookmark={handleDeleteBookmark}
             onSearchChange={setSearchQuery}
@@ -398,11 +418,11 @@ export default function PDFViewerApp({ windowId = 'pdf-viewer' }: { windowId?: s
           }}
           onDragLeave={() => setIsDragOver(false)}
           onDrop={status !== 'ready' ? handleDrop : undefined}
-          className="flex-1 bg-slate-900 overflow-y-auto p-6 flex flex-col items-center relative"
+          className={`flex-1 min-w-0 bg-slate-900 overflow-y-auto flex flex-col items-center relative ${compact ? 'p-2' : 'p-6'}`}
         >
           {status === 'idle' && !docMeta && !fetchError && (
             <div
-              className={`m-auto text-center space-y-4 max-w-md p-10 rounded-3xl border-2 border-dashed transition-colors ${
+              className={`m-auto text-center space-y-4 max-w-md p-6 sm:p-10 rounded-3xl border-2 border-dashed transition-colors ${
                 isDragOver ? 'border-blue-500 bg-blue-500/10' : 'border-slate-800'
               }`}
             >
@@ -414,7 +434,7 @@ export default function PDFViewerApp({ windowId = 'pdf-viewer' }: { windowId?: s
                 Open a PDF from your computer or from Drive OSX, or drag &amp; drop a file here. PDFs also open here
                 automatically when double-clicked in File Explorer.
               </p>
-              <div className="flex items-center justify-center gap-2 pt-1">
+              <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
                 <button
                   onClick={handleOpenFromComputer}
                   className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-black rounded-2xl shadow-lg transition-colors cursor-pointer flex items-center gap-2"
@@ -450,13 +470,13 @@ export default function PDFViewerApp({ windowId = 'pdf-viewer' }: { windowId?: s
           )}
 
           {(status === 'error' || fetchError) && (
-            <div className="m-auto text-center space-y-4 max-w-md p-8 bg-slate-950 rounded-3xl border border-slate-800 shadow-2xl">
+            <div className="m-auto text-center space-y-4 max-w-md p-6 sm:p-8 bg-slate-950 rounded-3xl border border-slate-800 shadow-2xl">
               <div className="w-16 h-16 bg-rose-500/20 text-rose-400 rounded-3xl border border-rose-500/30 flex items-center justify-center mx-auto shadow-md">
                 <AlertCircle size={32} />
               </div>
               <h3 className="text-lg font-black text-white">Couldn't Open This PDF</h3>
               <p className="text-xs text-slate-400 leading-relaxed font-medium">{fetchError || error}</p>
-              <div className="flex items-center justify-center gap-2">
+              <div className="flex flex-wrap items-center justify-center gap-2">
                 <button
                   onClick={handleOpenFromComputer}
                   className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-black rounded-2xl shadow-lg transition-colors cursor-pointer flex items-center gap-2"
@@ -482,7 +502,7 @@ export default function PDFViewerApp({ windowId = 'pdf-viewer' }: { windowId?: s
           )}
 
           {status === 'password' && (
-            <div className="m-auto text-center space-y-4 max-w-md p-8 bg-slate-950 rounded-3xl border border-slate-800 shadow-2xl">
+            <div className="m-auto text-center space-y-4 max-w-md p-6 sm:p-8 bg-slate-950 rounded-3xl border border-slate-800 shadow-2xl">
               <div className="w-16 h-16 bg-amber-500/20 text-amber-400 rounded-3xl border border-amber-500/30 flex items-center justify-center mx-auto shadow-md">
                 <AlertCircle size={32} />
               </div>
@@ -501,6 +521,7 @@ export default function PDFViewerApp({ windowId = 'pdf-viewer' }: { windowId?: s
               fitMode={fitMode}
               rotation={rotation}
               containerRef={viewportRef}
+              fitPadding={compact ? 32 : 48}
               activeAnnotationTool={activeAnnotationTool}
               isReadOnly={isReadOnly}
               stickyNotes={stickyNotes}

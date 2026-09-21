@@ -295,9 +295,20 @@ export default function ApplicationMenuPopup({
                   }}
                   onContextMenu={(e) => handleAppContextMenu(e, app)}
                 >
-                  {/* MacBook Style Squircle App Icon Container */}
+                  {/* MacBook Style Squircle App Icon Container, matching the
+                      dock's own icon size at each tier (Dock.tsx
+                      sizeClasses), same as the desktop shortcut icon
+                      (App.tsx): below 640px the dock is forced to 'sm'
+                      ('w-8 h-8'); 640-1023px (tablet) it defaults to 'md'
+                      ('w-11 h-11'), since there's no narrow-viewport
+                      override in that range; `lg:` restores the original,
+                      larger desktop-only size (4.5rem). Padding drops to 0
+                      below `lg:` too — the desktop shortcut icon is a bare
+                      graphic with no inset, so keeping the desktop padding
+                      here would leave this icon visibly smaller than that
+                      one despite the container matching. */}
                   <div
-                    className={`w-16 h-16 sm:w-[4.5rem] sm:h-[4.5rem] rounded-[22px] p-2.5 flex items-center justify-center backdrop-blur-xl transition-all relative ${shell.tile} ${shell.tileHover}`}
+                    className={`w-16 h-16 max-sm:w-8 max-sm:h-8 max-sm:p-0 sm:w-11 sm:h-11 sm:p-0 lg:w-[4.5rem] lg:h-[4.5rem] lg:p-2.5 rounded-[22px] p-2.5 flex items-center justify-center backdrop-blur-xl transition-all relative ${shell.tile} ${shell.tileHover}`}
                   >
                     {getAppIcon(app.id, 'w-full h-full')}
 

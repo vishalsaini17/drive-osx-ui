@@ -8,6 +8,8 @@ interface StatusBarProps {
   tabSizeLabel: string;
   errorCount: number;
   warningCount: number;
+  /** Phone-width: drop the fields that never change (encoding, line endings) to fit. */
+  compact?: boolean;
 }
 
 const LANGUAGE_LABELS: Record<string, string> = {
@@ -41,7 +43,7 @@ const LANGUAGE_LABELS: Record<string, string> = {
  * (Monaco's own marker service for problems, real cursor position, the
  * actual indent/encoding this app writes files with), not placeholder text.
  */
-export default function StatusBar({ language, cursorLine, cursorColumn, tabSizeLabel, errorCount, warningCount }: StatusBarProps) {
+export default function StatusBar({ language, cursorLine, cursorColumn, tabSizeLabel, errorCount, warningCount, compact = false }: StatusBarProps) {
   return (
     <div data-name="editor-status-bar" className="h-[22px] shrink-0 bg-[#007acc] text-white flex items-center justify-between px-2 text-[12px] select-none">
       <div className="flex items-center h-full">
@@ -57,8 +59,12 @@ export default function StatusBar({ language, cursorLine, cursorColumn, tabSizeL
           Ln {cursorLine}, Col {cursorColumn}
         </span>
         <span className="h-full px-1.5 flex items-center hover:bg-white/15 cursor-default">{tabSizeLabel}</span>
-        <span className="h-full px-1.5 flex items-center hover:bg-white/15 cursor-default">UTF-8</span>
-        <span className="h-full px-1.5 flex items-center hover:bg-white/15 cursor-default">LF</span>
+        {!compact && (
+          <>
+            <span className="h-full px-1.5 flex items-center hover:bg-white/15 cursor-default">UTF-8</span>
+            <span className="h-full px-1.5 flex items-center hover:bg-white/15 cursor-default">LF</span>
+          </>
+        )}
         <span className="h-full px-1.5 flex items-center hover:bg-white/15 cursor-default">{LANGUAGE_LABELS[language] ?? language}</span>
       </div>
     </div>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Calculator as CalcIcon, Clock, Binary, Scale, FlaskConical, Landmark } from 'lucide-react';
 import { CalculatorMode, HistoryItem, AngleUnit, ProgrammerBase, WordSize } from './types';
 import BasicCalculator from './components/BasicCalculator';
@@ -19,6 +19,26 @@ const MODE_TABS: { id: CalculatorMode; label: string; icon: typeof CalcIcon }[] 
 ];
 
 export default function CalculatorApp({ windowId = 'calculator' }: { windowId?: string }) {
+  // Tracks this window's own rendered width — the mode switcher (5 tabs,
+  // each with an icon and a full label) previously had no compact
+  // treatment and relied on `flex-wrap` to avoid overflowing, which kept it
+  // on-screen but wrapped it into a second, unevenly-spaced row on a phone
+  // window. Below `isCompactHeader` it drops to icon-only tabs instead, the
+  // same treatment the Clock app's tab switcher uses for the same problem.
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [containerWidth, setContainerWidth] = useState<number>(680);
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setContainerWidth(entry.contentRect.width);
+      }
+    });
+    observer.observe(containerRef.current);
+    return () => observer.disconnect();
+  }, []);
+  const isCompactHeader = containerWidth < 480;
+
   const [mode, setMode] = useState<CalculatorMode>('basic');
   const [display, setDisplay] = useState<string>('0');
   const [expression, setExpression] = useState<string>('');
@@ -347,7 +367,7 @@ export default function CalculatorApp({ windowId = 'calculator' }: { windowId?: 
     },
   ]);
   return (
-    <div className="w-full h-full flex flex-col bg-zinc-100 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 overflow-hidden font-sans">
+    <div ref={containerRef} className="w-full h-full flex flex-col bg-zinc-100 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 overflow-hidden font-sans">
       {/* App Header & Navigation Tabs */}
       <div className="border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shrink-0 shadow-2xs">
         <div className="p-3 flex items-center justify-between gap-3">
@@ -382,18 +402,22 @@ export default function CalculatorApp({ windowId = 'calculator' }: { windowId?: 
         </div>
 
         {/* Mode Selector Tabs */}
-        <div className="mx-3 mb-3 flex items-center gap-1 flex-wrap p-1 rounded-xl bg-zinc-100 dark:bg-zinc-800 text-xs font-semibold">
+        <div className={`mx-3 mb-3 flex items-center gap-1 p-1 rounded-xl bg-zinc-100 dark:bg-zinc-800 text-xs font-semibold ${isCompactHeader ? '' : 'flex-wrap'}`}>
           {MODE_TABS.map((tab) => (
             <button
               key={tab.id}
               onClick={() => setMode(tab.id)}
-              className={`flex-1 min-w-[5.5rem] px-3 py-1.5 rounded-lg flex items-center justify-center gap-1.5 cursor-pointer transition-all ${
+              title={isCompactHeader ? tab.label : undefined}
+              className={`flex-1 rounded-lg flex items-center justify-center gap-1.5 cursor-pointer transition-all ${
+                isCompactHeader ? 'py-2' : 'min-w-[5.5rem] px-3 py-1.5'
+              } ${
                 mode === tab.id
                   ? 'bg-purple-600 text-white shadow-xs font-bold'
                   : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-200/60 dark:hover:bg-zinc-700/50'
               }`}
             >
-              <tab.icon className="w-3.5 h-3.5 shrink-0" /> {tab.label}
+              <tab.icon className="w-3.5 h-3.5 shrink-0" />
+              {!isCompactHeader && tab.label}
             </button>
           ))}
         </div>
@@ -472,9 +496,20 @@ export default function CalculatorApp({ windowId = 'calculator' }: { windowId?: 
           {mode === 'converter' && <UnitConverter />}
         </div>
 
+        {/* Backdrop for the compact History drawer (HistoryPanel renders it
+            `absolute`/slide-in below `isCompactHeader`) — tap outside to
+            dismiss, same as the History panel's own close (X) button. */}
+        {isCompactHeader && isHistoryOpen && (
+          <div
+            className="absolute inset-0 z-20 bg-black/20"
+            onClick={() => setIsHistoryOpen(false)}
+          />
+        )}
+
         {/* History Panel */}
         <HistoryPanel
           isOpen={isHistoryOpen}
+          isCompact={isCompactHeader}
           onClose={() => setIsHistoryOpen(false)}
           history={history}
           onClearHistory={() => setHistory([])}

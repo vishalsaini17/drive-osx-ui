@@ -326,6 +326,17 @@ export default function CalendarApp() {
 
       {/* Main Calendar Body (Sidebar + Content View) */}
       <div className="flex-1 flex min-h-0 relative overflow-hidden">
+        {/* Backdrop for the compact sidebar drawer (Sidebar.tsx renders it
+            `absolute`/slide-in below `isCompact`) — it already had a close
+            (X) button, but not a tap-outside-to-close, which is the more
+            common way to dismiss an overlay like this on a phone/tablet. */}
+        {isCompact && showSidebar && (
+          <div
+            className="absolute inset-0 z-20 bg-black/20"
+            onClick={() => setShowSidebar(false)}
+          />
+        )}
+
         {/* Left Sidebar */}
         {showSidebar && (
           <Sidebar
