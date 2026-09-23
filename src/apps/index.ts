@@ -21,6 +21,7 @@ export const MeetingApp = lazy(() => import('./osx-meet'));
 export const TrashApp = lazy(() => import('./trash-bin'));
 export const MailApp = lazy(() => import('./mail-studio'));
 export const CalculatorApp = lazy(() => import('./calculator'));
+export const ConverterApp = lazy(() => import('./converter'));
 export const SpreadsheetApp = lazy(() => import('./spreadsheet'));
 export const PresentationApp = lazy(() => import('./presentation'));
 export const PDFViewerApp = lazy(() => import('./pdf-viewer'));
@@ -45,6 +46,7 @@ export const APPLICATION_MAP: Record<string, ApplicationComponent> = {
   trash: TrashApp,
   mail: MailApp,
   calculator: CalculatorApp,
+  converter: ConverterApp,
   spreadsheet: SpreadsheetApp,
   presentation: PresentationApp,
   'pdf-viewer': PDFViewerApp,

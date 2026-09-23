@@ -49,7 +49,12 @@ export default defineConfig(() => {
       allowedHosts: true as const,
       // Disable HMR and file watching when requested by the environment.
       hmr: process.env.DISABLE_HMR !== 'true',
-      watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      // watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      watch: process.env.DISABLE_HMR === 'true'
+  ? null
+  : {
+      usePolling: true,
+    },
       proxy: {
         '/api/v1': {
           target: 'http://drive-osx-api:7000',
