@@ -4,7 +4,7 @@ import {
   AtSign, Loader2, WifiOff, RefreshCw, Inbox, UserCheck, Trash2, BookUser,
   Phone, Video, ChevronUp, ChevronDown, Mic, Smile, Users, FileText,
   Image as ImageIcon, Camera, Music, Download, HardDrive,
-  Pin, CornerUpLeft, Forward, Copy, SmilePlus, Pencil,
+  Pin, CornerUpLeft, Forward, Copy, SmilePlus, Pencil, ChevronLeft,
 } from 'lucide-react';
 import { useSystemStore } from '../../shell/state/systemStore';
 import { useAppMenu } from '../../platform/menus/AppMenuContext';
@@ -23,6 +23,7 @@ import {
   CHAT_MESSAGE_EVENT, setActiveConversation, type ChatMessageEvent,
 } from '../../shell/notifications/useRealtimeNotifications';
 import { useMessengerTheme } from './useMessengerTheme';
+import { useViewportWidth } from '../../platform/layout/useViewportWidth';
 import { useSupportsHover } from '../../platform/layout/useSupportsHover';
 import { APP_THEME_CHOICES } from '../../platform/theme/appTheme';
 import ContactDetailsPanel from './ContactDetailsPanel';
@@ -345,6 +346,27 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
   // Per-message actions — react, reply, copy, forward, pin, delete
   // -----------------------------------------------------------------------
   const [openMessageMenuId, setOpenMessageMenuId] = useState<string | null>(null);
+  // Where the per-message menu / reaction strip opens, decided when the chevron
+  // is pressed: a fixed left/right + downward anchor runs off a narrow window.
+  const [menuPlacement, setMenuPlacement] = useState<{ alignRight: boolean; flipUp: boolean; maxH: number }>({
+    alignRight: false,
+    flipUp: false,
+    maxH: 320,
+  });
+  const placeMessageMenu = (anchor: HTMLElement, preferRight: boolean) => {
+    const root = rootRef.current?.getBoundingClientRect();
+    if (!root) return;
+    const rect = anchor.getBoundingClientRect();
+    const WIDTH = 224;
+    const HEIGHT = 270;
+    const roomRight = root.right - rect.left - 8;
+    const roomLeft = rect.right - root.left - 8;
+    const alignRight = preferRight ? roomLeft >= WIDTH || roomLeft >= roomRight : !(roomRight >= WIDTH || roomRight >= roomLeft);
+    const spaceBelow = root.bottom - rect.bottom - 8;
+    const spaceAbove = rect.top - root.top - 8;
+    const flipUp = spaceBelow < HEIGHT && spaceAbove > spaceBelow;
+    setMenuPlacement({ alignRight, flipUp, maxH: Math.max(120, Math.floor(flipUp ? spaceAbove : spaceBelow)) });
+  };
   const [reactingToMessageId, setReactingToMessageId] = useState<string | null>(null);
   const [togglingReactionId, setTogglingReactionId] = useState<string | null>(null);
   const [togglingPinId, setTogglingPinId] = useState<string | null>(null);
@@ -393,8 +415,18 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
   }, []);
 
   const isCompact = containerWidth < 720;
+  // Details panels float over the chat on phones AND tablets (real viewport,
+  // so desktop windows keep the inline panel): an inline 320px panel inside a
+  // tablet window leaves the conversation a ~60px sliver.
+  const viewportWidth = useViewportWidth();
+  const panelsOverlay = isCompact || viewportWidth < 1024;
   const [showSidebar, setShowSidebar] = useState(true);
   useEffect(() => setShowSidebar(!isCompact), [isCompact]);
+  // On a phone the conversation list is the home screen: show it whenever no
+  // conversation is open (first launch, or after the open one is deleted).
+  useEffect(() => {
+    if (isCompact && !activeConversationId) setShowSidebar(true);
+  }, [isCompact, activeConversationId]);
   const supportsHover = useSupportsHover();
 
   // A microphone or camera stream left open after the window closes keeps
@@ -1858,7 +1890,7 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
         </div>
       )}
 
-      {showSidebar && isCompact && (
+      {showSidebar && isCompact && activeConversationId && (
         <div className="absolute inset-0 bg-black/40 z-30" onClick={() => setShowSidebar(false)} />
       )}
 
@@ -1866,7 +1898,9 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
       {showSidebar && (
         <div
           className={`${palette.sidebarBg} border-r ${palette.border} flex flex-col shrink-0 min-h-0 ${
-            isCompact ? 'absolute inset-y-0 left-0 z-40 w-72 shadow-2xl' : 'w-72'
+            isCompact
+              ? `absolute inset-y-0 left-0 z-40 shadow-2xl ${activeConversationId ? 'w-72 max-w-[85%]' : 'w-full'}`
+              : 'w-72'
           }`}
         >
           <div className={`p-3 border-b ${palette.border} flex items-center justify-between gap-2 shrink-0`}>
@@ -2071,9 +2105,12 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
             {isCompact && (
               <button
                 onClick={() => setShowSidebar(true)}
-                className={`p-2 rounded-xl ${palette.hover} cursor-pointer`}
+                className={`shrink-0 flex items-center gap-0.5 pl-1 pr-2 py-2 rounded-xl ${palette.hover} cursor-pointer text-xs font-bold ${palette.textMuted}`}
+                title="Conversations"
+                aria-label="Back to conversations"
               >
-                <MessageSquare size={15} className={palette.textMuted} />
+                <ChevronLeft size={16} />
+                <span>Chats</span>
               </button>
             )}
             {activeConversation ? (
@@ -2363,9 +2400,10 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                           {message.isMine && <MessageTicks status={message.status} textSubtle={palette.textSubtle} />}
                           <div className="relative shrink-0">
                             <button
-                              onClick={() =>
-                                setOpenMessageMenuId((current) => (current === message.id ? null : message.id))
-                              }
+                              onClick={(event) => {
+                                placeMessageMenu(event.currentTarget, message.isMine);
+                                setOpenMessageMenuId((current) => (current === message.id ? null : message.id));
+                              }}
                               className={`p-0.5 rounded-md cursor-pointer transition-opacity ${supportsHover ? 'opacity-0 group-hover:opacity-100 focus:opacity-100' : 'opacity-100'} ${palette.hover}`}
                               title="Message options"
                               aria-label="Message options"
@@ -2377,8 +2415,9 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                               <>
                                 <div className="fixed inset-0 z-40" onClick={() => setOpenMessageMenuId(null)} />
                                 <div
-                                  className={`absolute top-full mt-1 z-50 w-44 rounded-xl border shadow-2xl overflow-hidden ${palette.panelBg} ${palette.border} ${
-                                    message.isMine ? 'right-0' : 'left-0'
+                                  style={{ maxHeight: menuPlacement.maxH }}
+                                  className={`absolute ${menuPlacement.flipUp ? 'bottom-full mb-1' : 'top-full mt-1'} z-50 w-44 rounded-xl border shadow-2xl overflow-y-auto ${palette.panelBg} ${palette.border} ${
+                                    menuPlacement.alignRight ? 'right-0' : 'left-0'
                                   }`}
                                 >
                                   {!message.isDeleted && (
@@ -2475,8 +2514,8 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                               <>
                                 <div className="fixed inset-0 z-40" onClick={() => setReactingToMessageId(null)} />
                                 <div
-                                  className={`absolute top-full mt-1 z-50 flex items-center gap-0.5 p-1.5 rounded-2xl border shadow-2xl ${palette.panelBg} ${palette.border} ${
-                                    message.isMine ? 'right-0' : 'left-0'
+                                  className={`absolute ${menuPlacement.flipUp ? 'bottom-full mb-1' : 'top-full mt-1'} z-50 flex items-center gap-0.5 p-1.5 rounded-2xl border shadow-2xl ${palette.panelBg} ${palette.border} ${
+                                    menuPlacement.alignRight ? 'right-0' : 'left-0'
                                   }`}
                                 >
                                   {QUICK_REACTIONS.map((emoji) => (
@@ -2939,7 +2978,7 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
                     }
                   }}
                   rows={1}
-                  placeholder={`Message ${activeConversation.title}`}
+                  placeholder={isCompact ? 'Type a message' : `Message ${activeConversation.title}`}
                   className={`flex-1 min-w-0 resize-none bg-transparent border-0 px-2 py-2 text-xs leading-relaxed focus:outline-none max-h-32 overflow-y-auto ${palette.text} ${palette.textSubtle.replace('text-', 'placeholder:text-')}`}
                 />
                 {draft.trim() ? (
@@ -2971,10 +3010,10 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
       {/* ================= CONTACT DETAILS ================= */}
       {showContactPanel && peer && activeConversationId && (
         <>
-          {isCompact && (
+          {panelsOverlay && (
             <div className="absolute inset-0 bg-black/40 z-30" onClick={() => setShowContactPanel(false)} />
           )}
-          <div className={isCompact ? 'absolute inset-y-0 right-0 z-40 shadow-2xl' : 'contents'}>
+          <div className={panelsOverlay ? 'absolute inset-y-0 right-0 z-40 max-w-[90%] shadow-2xl' : 'contents'}>
             <ContactDetailsPanel
               peer={peer}
               palette={palette}
@@ -3009,10 +3048,10 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
       {/* ================= GROUP INFO ================= */}
       {showGroupPanel && activeConversation && activeConversation.kind === 'group' && activeConversationId && (
         <>
-          {isCompact && (
+          {panelsOverlay && (
             <div className="absolute inset-0 bg-black/40 z-30" onClick={() => setShowGroupPanel(false)} />
           )}
-          <div className={isCompact ? 'absolute inset-y-0 right-0 z-40 shadow-2xl' : 'contents'}>
+          <div className={panelsOverlay ? 'absolute inset-y-0 right-0 z-40 max-w-[90%] shadow-2xl' : 'contents'}>
             <GroupDetailsPanel
               conversation={activeConversation}
               currentUsername={currentUser?.username}
@@ -3511,16 +3550,20 @@ export default function Messenger({ windowId = 'messenger' }: { windowId?: strin
           </span>
         }
         center={
-          <span className="opacity-75">
-            {activeConversation ? activeConversation.title : 'No conversation selected'}
-          </span>
+          isCompact ? undefined : (
+            <span className="opacity-75">
+              {activeConversation ? activeConversation.title : 'No conversation selected'}
+            </span>
+          )
         }
         right={
-          <span className="opacity-75">
-            {/* Both halves matter: the preference, and what it came out as. */}
-            Theme: {APP_THEME_CHOICES.find((o) => o.value === themeChoice)?.label ?? 'Theme'} (
-            {palette.isDark ? 'dark' : 'light'})
-          </span>
+          isCompact ? undefined : (
+            <span className="opacity-75">
+              {/* Both halves matter: the preference, and what it came out as. */}
+              Theme: {APP_THEME_CHOICES.find((o) => o.value === themeChoice)?.label ?? 'Theme'} (
+              {palette.isDark ? 'dark' : 'light'})
+            </span>
+          )
         }
       />
     </div>

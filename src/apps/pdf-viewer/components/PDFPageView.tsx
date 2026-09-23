@@ -19,6 +19,8 @@ interface PDFPageViewProps {
   fitMode: 'custom' | 'fit-width' | 'fit-page';
   rotation: number;
   containerRef: React.RefObject<HTMLDivElement>;
+  /** Gap kept around the page when fitting to width/page. */
+  fitPadding?: number;
   activeAnnotationTool: AnnotationType | 'select' | null;
   isReadOnly: boolean;
   stickyNotes: StickyNote[];
@@ -56,6 +58,7 @@ export const PDFPageView: React.FC<PDFPageViewProps> = ({
   fitMode,
   rotation,
   containerRef,
+  fitPadding = 48,
   activeAnnotationTool,
   isReadOnly,
   stickyNotes,
@@ -109,7 +112,7 @@ export const PDFPageView: React.FC<PDFPageViewProps> = ({
 
       const nativeViewport = page.getViewport({ scale: 1, rotation });
       let scale = zoomLevel / 100;
-      const padding = 48;
+      const padding = fitPadding;
       if (containerSize) {
         if (fitMode === 'fit-width') {
           scale = Math.max(0.1, (containerSize.width - padding) / nativeViewport.width);
@@ -196,7 +199,7 @@ export const PDFPageView: React.FC<PDFPageViewProps> = ({
       renderTask?.cancel();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pdfDoc, pageNumber, rotation, zoomLevel, fitMode, containerSize, searchQuery]);
+  }, [pdfDoc, pageNumber, rotation, zoomLevel, fitMode, containerSize, searchQuery, fitPadding]);
 
   // Freehand-drawing overlay: redraw saved + in-progress strokes for this page.
   useEffect(() => {
@@ -242,7 +245,7 @@ export const PDFPageView: React.FC<PDFPageViewProps> = ({
     };
   };
 
-  const handleMouseDown = (e: React.MouseEvent) => {
+  const handleMouseDown = (e: React.PointerEvent) => {
     if (isReadOnly) return;
     const { x, y } = getPercentPoint(e);
 
@@ -259,7 +262,7 @@ export const PDFPageView: React.FC<PDFPageViewProps> = ({
     }
   };
 
-  const handleMouseMove = (e: React.MouseEvent) => {
+  const handleMouseMove = (e: React.PointerEvent) => {
     if (!isDrawing || activeAnnotationTool !== 'drawing') return;
     setCurrentPathPoints((prev) => [...prev, getPercentPoint(e)]);
   };
@@ -313,15 +316,19 @@ export const PDFPageView: React.FC<PDFPageViewProps> = ({
   return (
     <div
       ref={pageWrapRef}
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={(e) => {
+      onPointerDown={handleMouseDown}
+      onPointerMove={handleMouseMove}
+      onPointerUp={() => {
         handleMouseUp();
         handleTextMouseUp();
       }}
+      onPointerCancel={handleMouseUp}
+      onTouchEnd={() => window.setTimeout(handleTextMouseUp, 60)}
       style={
         renderedSize
           ? ({
+              // Without this a touch drag scrolls the pane instead of drawing.
+              touchAction: activeAnnotationTool === 'drawing' && !isReadOnly ? 'none' : undefined,
               width: renderedSize.width,
               height: renderedSize.height,
               // pdf.js's `TextLayer` positions its spans using these custom
@@ -335,7 +342,7 @@ export const PDFPageView: React.FC<PDFPageViewProps> = ({
             } as React.CSSProperties)
           : undefined
       }
-      className={`relative bg-white shadow-2xl rounded-sm my-6 mx-auto select-text ${
+      className={`relative bg-white shadow-2xl rounded-sm ${fitPadding < 48 ? 'my-2' : 'my-6'} mx-auto select-text ${
         activeAnnotationTool === 'drawing' ? 'cursor-crosshair' : activeAnnotationTool === 'sticky-note' ? 'cursor-copy' : ''
       }`}
     >

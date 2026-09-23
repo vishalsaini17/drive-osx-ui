@@ -103,17 +103,17 @@ export default function BreakoutRoomsModal({
         </div>
 
         {/* Content */}
-        <div className="p-5 flex flex-col gap-4 max-h-[75vh] overflow-y-auto">
+        <div className="p-4 sm:p-5 flex flex-col gap-4 max-h-[75vh] overflow-y-auto">
           {!isSessionActive ? (
             <div className="flex flex-col gap-4">
-              <div className={`flex items-center gap-4 p-4 rounded-2xl border ${isLight ? 'bg-slate-50 border-slate-200' : 'bg-zinc-800/40 border-zinc-700/50'}`}>
+              <div className={`flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4 p-4 rounded-2xl border ${isLight ? 'bg-slate-50 border-slate-200' : 'bg-zinc-800/40 border-zinc-700/50'}`}>
                 <div className="flex-1 flex flex-col gap-1">
                   <span className={`text-xs font-bold ${isLight ? 'text-slate-800' : 'text-zinc-200'}`}>Number of Breakout Rooms</span>
                   <span className={`text-[11px] ${isLight ? 'text-slate-500' : 'text-zinc-400'}`}>
                     Automatically split {participants.length} participants into rooms.
                   </span>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   {[2, 3, 4].map((n) => (
                     <button
                       key={n}
@@ -132,7 +132,7 @@ export default function BreakoutRoomsModal({
                 </div>
               </div>
 
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <button
                   onClick={handleCreateRooms}
                   className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2 cursor-pointer transition-colors ${

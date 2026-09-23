@@ -34,6 +34,8 @@ interface SidebarProps {
   onDeleteStickyNote: (id: string) => void;
   onDeleteTextAnnotation: (id: string) => void;
   onClose: () => void;
+  /** Render as an overlay drawer (phone/tablet) instead of an inline pane. */
+  overlay?: boolean;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -55,6 +57,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onDeleteStickyNote,
   onDeleteTextAnnotation,
   onClose,
+  overlay = false,
 }) => {
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -65,7 +68,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   }, [activeTab]);
 
   return (
-    <div className="w-72 bg-slate-950 border-r border-slate-800 flex flex-col font-sans shrink-0 overflow-hidden select-none">
+    <div
+      className={`w-72 bg-slate-950 border-r border-slate-800 flex flex-col font-sans overflow-hidden select-none ${
+        overlay ? 'absolute inset-y-0 left-0 z-30 max-w-[85%] shadow-2xl' : 'shrink-0'
+      }`}
+    >
       {/* Sidebar Navigation Tabs Header */}
       <div className="bg-slate-900 border-b border-slate-800 p-1 grid grid-cols-4 gap-1 text-xs font-bold text-slate-400">
         <button

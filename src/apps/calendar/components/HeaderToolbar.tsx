@@ -57,6 +57,7 @@ export const HeaderToolbar: React.FC<HeaderToolbarProps> = ({
 }) => {
   const [showCalendarsDropdown, setShowCalendarsDropdown] = useState(false);
   const [showTzDropdown, setShowTzDropdown] = useState(false);
+  const [showViewDropdown, setShowViewDropdown] = useState(false);
 
   const categoryColors: Record<string, string> = {
     Personal: 'bg-blue-500',
@@ -155,28 +156,79 @@ export const HeaderToolbar: React.FC<HeaderToolbarProps> = ({
           <span className={isVeryCompact ? 'hidden sm:inline' : 'inline'}>Today</span>
         </button>
 
-        {/* View Switcher Pills */}
-        <div
-          className={`flex items-center p-0.5 rounded-lg border ${
-            isLight ? 'bg-slate-200/70 border-slate-300/60' : 'bg-black/30 border-white/10'
-          }`}
-        >
-          {(['day', 'week', 'month', 'year', 'agenda'] as CalendarViewMode[]).map((mode) => (
+        {/* View Switcher — five always-full-word buttons (~200px) was the
+            single largest thing in this toolbar and had no compact
+            treatment, which is what pushed the whole bar past a phone's
+            width. Below `isVeryCompact` it collapses to one dropdown
+            button, the same pattern the Calendars filter above already
+            uses, instead of abbreviating five labels down to illegible
+            single letters. */}
+        {isVeryCompact ? (
+          <div className="relative">
             <button
-              key={mode}
-              onClick={() => setViewMode(mode)}
-              className={`px-1.5 sm:px-2.5 py-0.5 rounded-md text-xs font-semibold capitalize transition-all cursor-pointer ${
-                viewMode === mode
-                  ? 'bg-white text-slate-900 shadow-2xs dark:bg-white/20 dark:text-white'
-                  : isLight
-                  ? 'text-slate-600 hover:text-slate-900'
-                  : 'text-white/60 hover:text-white'
+              onClick={() => setShowViewDropdown(!showViewDropdown)}
+              className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-semibold capitalize cursor-pointer transition-colors ${
+                isLight
+                  ? 'bg-white hover:bg-slate-100 border border-slate-300/70 text-slate-800 shadow-2xs'
+                  : 'bg-white/10 hover:bg-white/15 border border-white/10 text-white'
               }`}
+              title="Change View"
             >
-              {mode}
+              <span>{viewMode}</span>
+              <ChevronDown size={11} className="opacity-60" />
             </button>
-          ))}
-        </div>
+
+            {showViewDropdown && (
+              <div
+                className={`absolute top-full left-0 mt-1 w-32 rounded-xl p-1 z-50 shadow-xl border ${
+                  isLight ? 'bg-white border-slate-200 text-slate-800' : 'bg-[#323136] border-white/15 text-white'
+                }`}
+              >
+                {(['day', 'week', 'month', 'year', 'agenda'] as CalendarViewMode[]).map((mode) => (
+                  <button
+                    key={mode}
+                    onClick={() => {
+                      setViewMode(mode);
+                      setShowViewDropdown(false);
+                    }}
+                    className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs capitalize cursor-pointer transition-colors ${
+                      viewMode === mode
+                        ? 'bg-blue-500/10 text-blue-500 font-bold'
+                        : isLight
+                        ? 'hover:bg-slate-100'
+                        : 'hover:bg-white/10'
+                    }`}
+                  >
+                    {mode}
+                    {viewMode === mode && <Check size={13} />}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div
+            className={`flex items-center p-0.5 rounded-lg border ${
+              isLight ? 'bg-slate-200/70 border-slate-300/60' : 'bg-black/30 border-white/10'
+            }`}
+          >
+            {(['day', 'week', 'month', 'year', 'agenda'] as CalendarViewMode[]).map((mode) => (
+              <button
+                key={mode}
+                onClick={() => setViewMode(mode)}
+                className={`px-1.5 sm:px-2.5 py-0.5 rounded-md text-xs font-semibold capitalize transition-all cursor-pointer ${
+                  viewMode === mode
+                    ? 'bg-white text-slate-900 shadow-2xs dark:bg-white/20 dark:text-white'
+                    : isLight
+                    ? 'text-slate-600 hover:text-slate-900'
+                    : 'text-white/60 hover:text-white'
+                }`}
+              >
+                {mode}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Right Toolbar Controls: Timezone, Search, Add Event */}

@@ -54,6 +54,40 @@ export function a4PageSetup(orientation: PageOrientation = 'portrait'): PageSetu
   };
 }
 
+/** US Letter: 8.5in × 11in. Margins match A4's (25.4mm is exactly 1in — the standard default either way). */
+const LETTER_PORTRAIT: PageSetup = { ...A4_PORTRAIT, widthMm: 215.9, heightMm: 279.4 };
+
+export function letterPageSetup(orientation: PageOrientation = 'portrait'): PageSetup {
+  if (orientation === 'portrait') return { ...LETTER_PORTRAIT };
+  return { ...LETTER_PORTRAIT, widthMm: LETTER_PORTRAIT.heightMm, heightMm: LETTER_PORTRAIT.widthMm, orientation: 'landscape' };
+}
+
+/** US Legal: 8.5in × 14in. */
+const LEGAL_PORTRAIT: PageSetup = { ...A4_PORTRAIT, widthMm: 215.9, heightMm: 355.6 };
+
+export function legalPageSetup(orientation: PageOrientation = 'portrait'): PageSetup {
+  if (orientation === 'portrait') return { ...LEGAL_PORTRAIT };
+  return { ...LEGAL_PORTRAIT, widthMm: LEGAL_PORTRAIT.heightMm, heightMm: LEGAL_PORTRAIT.widthMm, orientation: 'landscape' };
+}
+
+export type PaperSize = 'a4' | 'letter' | 'legal';
+
+/** Identifies which of the three presets a `PageSetup`'s own dimensions (in either orientation) match, ignoring margins the user may have since customized — falls back to 'a4' for anything else (e.g. custom-sized documents from a future margin editor). */
+export function paperSizeOf(setup: PageSetup): PaperSize {
+  const long = Math.max(setup.widthMm, setup.heightMm);
+  const short = Math.min(setup.widthMm, setup.heightMm);
+  const close = (a: number, b: number) => Math.abs(a - b) < 0.5;
+  if (close(short, LETTER_PORTRAIT.widthMm) && close(long, LETTER_PORTRAIT.heightMm)) return 'letter';
+  if (close(short, LEGAL_PORTRAIT.widthMm) && close(long, LEGAL_PORTRAIT.heightMm)) return 'legal';
+  return 'a4';
+}
+
+export function pageSetupForPaperSize(size: PaperSize, orientation: PageOrientation): PageSetup {
+  if (size === 'letter') return letterPageSetup(orientation);
+  if (size === 'legal') return legalPageSetup(orientation);
+  return a4PageSetup(orientation);
+}
+
 export function withOrientation(setup: PageSetup, orientation: PageOrientation): PageSetup {
   if (setup.orientation === orientation) return setup;
   return { ...setup, widthMm: setup.heightMm, heightMm: setup.widthMm, orientation };

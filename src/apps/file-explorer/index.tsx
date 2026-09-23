@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
 import {
   Folder,
+  PanelLeft,
   ArrowLeft,
   ArrowRight,
   ArrowUp,
@@ -187,6 +188,8 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
   const openTextFileInNewEditorWindow = useSystemStore((state) => state.openTextFileInNewEditorWindow);
   const openPdfFileInViewer = useSystemStore((state) => state.openPdfFileInViewer);
   const openPdfFileInNewViewerWindow = useSystemStore((state) => state.openPdfFileInNewViewerWindow);
+  const openBookFileInWordbook = useSystemStore((state) => state.openBookFileInWordbook);
+  const openBookFileInNewWordbookWindow = useSystemStore((state) => state.openBookFileInNewWordbookWindow);
   const consumeFilePickerRequest = useSystemStore((state) => state.consumeFilePickerRequest);
   const resolveFilePicker = useSystemStore((state) => state.resolveFilePicker);
   const handleCloseWindow = useSystemStore((state) => state.handleCloseWindow);
@@ -701,6 +704,29 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
     return () => observer.disconnect();
   }, []);
 
+  /**
+   * Whether the *device*, not just this window, is phone/tablet-sized.
+   * `containerWidth` alone can't answer that: this app's own default window
+   * (1020px) is barely narrower than a landscape tablet viewport (1024px),
+   * so a tablet-width window and an unresized desktop window report almost
+   * the same container width. Viewport width is the only signal that
+   * actually distinguishes them — mirrors the `< 1024` "tablet or narrower"
+   * threshold the OS shell itself uses (see Dock.tsx). Below it the sidebar
+   * moves into a menu-triggered drawer (`isSidebarDrawerOpen`) instead of
+   * staying a persistent column, since a phone/tablet window is usually the
+   * full viewport width and has no room to spare for one.
+   */
+  const [viewportWidth, setViewportWidth] = useState<number>(
+    typeof window !== 'undefined' ? window.innerWidth : 1280
+  );
+  useEffect(() => {
+    const handleResize = () => setViewportWidth(window.innerWidth);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+  const isMobileOrTabletView = viewportWidth < 1024;
+  const [isSidebarDrawerOpen, setIsSidebarDrawerOpen] = useState(false);
+
   useEffect(() => {
     if (!explorerAreaRef.current) return;
     const observer = new ResizeObserver((entries) => {
@@ -956,7 +982,7 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
   const renderFileIcon = (item: FileItem, size: 'large' | 'small' | 'xl' = 'large') => {
     const kind = getFileKind(item);
 
-    const dim = size === 'xl' ? 'w-16 h-16' : size === 'large' ? 'w-10 h-10' : 'w-4 h-4';
+    const dim = size === 'xl' ? 'w-16 h-16' : size === 'large' ? 'w-8 h-8' : 'w-4 h-4';
     const rounded = size === 'xl' ? 'rounded-xl' : size === 'large' ? 'rounded-lg' : 'rounded';
 
     if (kind === 'image' && item.content && (item.content.startsWith('data:image/') || item.content.startsWith('http'))) {
@@ -2555,6 +2581,14 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
       } else {
         openPdfFileInViewer(item.id, item.name, currentFolderId);
       }
+    } else if (appKey === 'wordbook') {
+      // Word Book fetches the file's own content itself (FileService.getFile)
+      // once it loads, same reasoning as pdf-viewer above.
+      if (forceNewWindow) {
+        openBookFileInNewWordbookWindow(item.id, item.name, currentFolderId);
+      } else {
+        openBookFileInWordbook(item.id, item.name, currentFolderId);
+      }
     } else if (appKey === 'image-viewer' || appKey === 'audio-player' || appKey === 'video-player' || appKey === 'code-viewer') {
       setActivePreviewItem(item);
     } else if (appKey === 'properties') {
@@ -2801,6 +2835,15 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
       id: 'view',
       label: 'View',
       items: [
+        // Only on phone/tablet-sized viewports — see `isMobileOrTabletView` —
+        // where the sidebar lives in this drawer instead of a persistent
+        // column (there's no such toggle needed on desktop).
+        ...(isMobileOrTabletView
+          ? [
+              { id: 'toggle-sidebar', label: 'Sidebar', checked: isSidebarDrawerOpen, onSelect: () => setIsSidebarDrawerOpen((prev) => !prev) },
+              separator(),
+            ]
+          : []),
         { id: 'view-grid', label: 'Grid', selected: viewMode === 'grid', onSelect: () => setViewMode('grid') },
         { id: 'view-list', label: 'List', selected: viewMode === 'list', onSelect: () => setViewMode('list') },
         separator(),
@@ -2851,6 +2894,89 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
     },
   ]);
 
+  // Closes the phone/tablet sidebar drawer after a navigation — a no-op on
+  // desktop, where the sidebar is a persistent column with no drawer to
+  // close, so every sidebar row can call this unconditionally instead of
+  // needing two separate click handlers.
+  const handleSidebarNavigate = (locId: string | null) => {
+    handleSidebarClick(locId);
+    if (isMobileOrTabletView) setIsSidebarDrawerOpen(false);
+  };
+
+  // Shared between the desktop's persistent sidebar column and the phone/
+  // tablet drawer (`isMobileOrTabletView`) so the two never drift apart.
+  // `compact` is only ever true on desktop, where narrowing the window
+  // below 480px collapses this to an icon-only rail (`isCompactSidebar`) —
+  // the drawer always renders at full width, since it only exists where
+  // there's room for one.
+  const renderSidebarNav = (compact: boolean) => (
+    <>
+      {/* CORE PLACES */}
+      {[
+        { id: 'home', label: 'Home', icon: Home, targetFolderId: null },
+        { id: 'recent', label: 'Recent', icon: Clock, targetFolderId: 'recent' },
+        { id: 'starred', label: 'Starred', icon: Star, targetFolderId: 'starred' },
+        { id: 'shared-with-me', label: 'Shared with me', icon: Users, targetFolderId: 'shared-with-me' },
+        { id: 'trash', label: 'Trash Bin', icon: Trash2, targetFolderId: 'trash' },
+      ].map((item) => {
+        const isActive =
+          (item.id === 'home' && currentFolderId === null) ||
+          currentFolderId === item.targetFolderId;
+        const IconComponent = item.icon;
+
+        return (
+          <button
+            key={item.id}
+            onClick={() => handleSidebarNavigate(item.targetFolderId)}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => handleFolderDrop(e, item.targetFolderId)}
+            className={`w-full text-left px-3 py-2 rounded-xl transition-colors flex items-center gap-3 text-[13.5px] cursor-pointer ${
+              isActive ? ts.sidebarBtnActive : ts.sidebarBtn
+            } ${compact ? 'justify-center px-0 py-2.5' : ''}`}
+            title={compact ? item.label : undefined}
+          >
+            <IconComponent className="w-[18px] h-[18px] shrink-0 stroke-[1.8]" />
+            {!compact && <span className="truncate">{item.label}</span>}
+          </button>
+        );
+      })}
+
+      <div className="my-2 mx-1 border-t border-neutral-300/80 dark:border-white/10" />
+
+      {/* PINNED FOLDERS */}
+      {!compact && (
+        <div className="px-3 py-1 text-[11px] font-semibold text-neutral-400 uppercase tracking-wider flex items-center justify-between">
+          <span>Pinned</span>
+          <Pin className="w-3.5 h-3.5 text-neutral-400" />
+        </div>
+      )}
+
+      {pinnedFolderIds.map((folderId) => {
+        const folderItem = files.find((f) => f.id === folderId);
+        const folderName = folderItem ? folderItem.name : getFolderLabel(folderId);
+        const IconComponent = getFolderIcon(folderId, folderName);
+        const isActive = currentFolderId === folderId;
+
+        return (
+          <button
+            key={folderId}
+            onClick={() => handleSidebarNavigate(folderId)}
+            onContextMenu={(e) => handleSidebarItemContextMenu(e, folderId, folderName)}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => handleFolderDrop(e, folderId)}
+            className={`w-full text-left px-3 py-2 rounded-xl transition-colors flex items-center gap-3 text-[13.5px] cursor-pointer group ${
+              isActive ? ts.sidebarBtnActive : ts.sidebarBtn
+            } ${compact ? 'justify-center px-0 py-2.5' : ''}`}
+            title={compact ? folderName : undefined}
+          >
+            <IconComponent className="w-[18px] h-[18px] shrink-0 stroke-[1.8]" />
+            {!compact && <span className="truncate flex-1">{folderName}</span>}
+          </button>
+        );
+      })}
+    </>
+  );
+
   return (
     <div ref={containerRef} data-name="file-explorer-root" className={`relative h-full flex flex-col text-sm select-none ${ts.container}`}>
       {/* ==================== 1. TOP NAV & TOOLBAR RIBBON ==================== */}
@@ -2858,6 +2984,20 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
         {/* Navigation Row */}
         <div data-name="file-explorer-nav-row" className="flex items-center gap-1.5 p-2 px-3">
           <div className="flex items-center gap-1 shrink-0">
+            {/* Directly visible sidebar toggle — phone/tablet only. The
+                View > Sidebar menu entry still exists and stays in sync
+                (same `isSidebarDrawerOpen` state), but burying the only way
+                to reach folders three taps deep in the window's hamburger
+                menu wasn't discoverable, so it's also one tap away here. */}
+            {isMobileOrTabletView && (
+              <button
+                onClick={() => setIsSidebarDrawerOpen((prev) => !prev)}
+                className={`p-1.5 rounded-md hover:bg-black/5 cursor-pointer ${isSidebarDrawerOpen ? 'bg-black/5' : ''}`}
+                title="Toggle Sidebar"
+              >
+                <PanelLeft className="w-4 h-4" />
+              </button>
+            )}
             <button
               onClick={handleGoBack}
               disabled={historyIndex === 0}
@@ -3107,73 +3247,43 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
 
       {/* ==================== 2. MAIN LAYOUT: SIDEBAR, STAGE, DETAILS ==================== */}
       <div data-name="file-explorer-main-layout" className="flex-1 flex overflow-hidden relative" onContextMenu={(e) => handleContextMenu(e, null)}>
-        {/* LEFT NAVIGATION TREE SIDEBAR */}
-        <div data-name="file-explorer-sidebar" className={`transition-all duration-150 ${isCompactSidebar ? 'w-12 p-1' : 'w-52 p-2.5'} flex flex-col gap-0.5 shrink-0 overflow-y-auto select-none ${ts.sidebar}`}>
-          {/* CORE PLACES */}
-          {[
-            { id: 'home', label: 'Home', icon: Home, targetFolderId: null },
-            { id: 'recent', label: 'Recent', icon: Clock, targetFolderId: 'recent' },
-            { id: 'starred', label: 'Starred', icon: Star, targetFolderId: 'starred' },
-            { id: 'shared-with-me', label: 'Shared with me', icon: Users, targetFolderId: 'shared-with-me' },
-            { id: 'trash', label: 'Trash Bin', icon: Trash2, targetFolderId: 'trash' },
-          ].map((item) => {
-            const isActive =
-              (item.id === 'home' && currentFolderId === null) ||
-              currentFolderId === item.targetFolderId;
-            const IconComponent = item.icon;
+        {/* LEFT NAVIGATION TREE SIDEBAR — a persistent column on desktop;
+            below 1024px viewport width it moves into a drawer opened from
+            the window menu's View > Sidebar toggle instead (see
+            `isMobileOrTabletView`), since a phone/tablet window rarely has a
+            column's worth of width to spare. */}
+        {!isMobileOrTabletView && (
+          <div data-name="file-explorer-sidebar" className={`transition-all duration-150 ${isCompactSidebar ? 'w-12 p-1' : 'w-52 p-2.5'} flex flex-col gap-0.5 shrink-0 overflow-y-auto select-none ${ts.sidebar}`}>
+            {renderSidebarNav(isCompactSidebar)}
+          </div>
+        )}
 
-            return (
-              <button
-                key={item.id}
-                onClick={() => handleSidebarClick(item.targetFolderId)}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={(e) => handleFolderDrop(e, item.targetFolderId)}
-                className={`w-full text-left px-3 py-2 rounded-xl transition-colors flex items-center gap-3 text-[13.5px] cursor-pointer ${
-                  isActive ? ts.sidebarBtnActive : ts.sidebarBtn
-                } ${isCompactSidebar ? 'justify-center px-0 py-2.5' : ''}`}
-                title={isCompactSidebar ? item.label : undefined}
-              >
-                <IconComponent className="w-[18px] h-[18px] shrink-0 stroke-[1.8]" />
-                {!isCompactSidebar && <span className="truncate">{item.label}</span>}
-              </button>
-            );
-          })}
-
-          <div className="my-2 mx-1 border-t border-neutral-300/80 dark:border-white/10" />
-
-          {/* PINNED FOLDERS */}
-          {!isCompactSidebar && (
-            <div className="px-3 py-1 text-[11px] font-semibold text-neutral-400 uppercase tracking-wider flex items-center justify-between">
-              <span>Pinned</span>
-              <Pin className="w-3.5 h-3.5 text-neutral-400" />
+        {isMobileOrTabletView && isSidebarDrawerOpen && (
+          <>
+            {/* Backdrop — tapping outside the drawer closes it, same pattern
+                as the dock's own popups (DockPopupPanel). */}
+            <div
+              className="absolute inset-0 z-[110] bg-black/30 backdrop-blur-[1px]"
+              onClick={() => setIsSidebarDrawerOpen(false)}
+            />
+            <div
+              data-name="file-explorer-sidebar-drawer"
+              className={`absolute inset-y-0 left-0 z-[111] w-64 max-w-[80%] p-2.5 flex flex-col gap-0.5 overflow-y-auto select-none shadow-2xl ${ts.sidebar}`}
+            >
+              <div className="flex items-center justify-between px-1 pb-1.5 mb-1 border-b border-neutral-300/80 dark:border-white/10">
+                <span className="text-[11px] font-semibold text-neutral-400 uppercase tracking-wider">Sidebar</span>
+                <button
+                  onClick={() => setIsSidebarDrawerOpen(false)}
+                  className={`p-1 rounded-lg cursor-pointer ${ts.sidebarBtn}`}
+                  title="Close Sidebar"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              {renderSidebarNav(false)}
             </div>
-          )}
-
-          {pinnedFolderIds.map((folderId) => {
-            const folderItem = files.find((f) => f.id === folderId);
-            const folderName = folderItem ? folderItem.name : getFolderLabel(folderId);
-            const IconComponent = getFolderIcon(folderId, folderName);
-            const isActive = currentFolderId === folderId;
-
-            return (
-              <button
-                key={folderId}
-                onClick={() => handleSidebarClick(folderId)}
-                onContextMenu={(e) => handleSidebarItemContextMenu(e, folderId, folderName)}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={(e) => handleFolderDrop(e, folderId)}
-                className={`w-full text-left px-3 py-2 rounded-xl transition-colors flex items-center gap-3 text-[13.5px] cursor-pointer group ${
-                  isActive ? ts.sidebarBtnActive : ts.sidebarBtn
-                } ${isCompactSidebar ? 'justify-center px-0 py-2.5' : ''}`}
-                title={isCompactSidebar ? folderName : undefined}
-              >
-                <IconComponent className="w-[18px] h-[18px] shrink-0 stroke-[1.8]" />
-                {!isCompactSidebar && <span className="truncate flex-1">{folderName}</span>}
-              </button>
-            );
-          })}
-
-        </div>
+          </>
+        )}
 
         {/* MIDDLE EXPLORER CANVAS AREA */}
         <div

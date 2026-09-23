@@ -7,7 +7,9 @@ import { useAppMenu } from '../../platform/menus/AppMenuContext';
 import { separator } from '../../platform/menus/types';
 import { useContextMenuStore } from '../../shell/context-menu/contextMenuStore';
 import AppShell from '../../design-system/components/AppShell';
-import { FolderOpen, FileCode2, FilePlus, FolderInput, Search } from 'lucide-react';
+import { FolderOpen, FileCode2, FilePlus, FolderInput, Search, Files, Settings as SettingsIcon, X } from 'lucide-react';
+import { useViewportWidth } from '../../platform/layout/useViewportWidth';
+import { useSupportsHover } from '../../platform/layout/useSupportsHover';
 import EditorTabBar from './components/EditorTabBar';
 import MonacoPane from './components/MonacoPane';
 import ExplorerSidebar from './components/ExplorerSidebar';
@@ -126,6 +128,15 @@ export default function CodeEditor({ windowId = 'editor' }: { windowId?: string 
   // leading with the empty Explorer panel open just wastes space until the
   // user opens a folder or clicks Explorer themselves.
   const [sidebarVisible, setSidebarVisible] = useState(false);
+  // Phone/tablet viewports: no Activity Bar or inline side bar. The same panels
+  // open as an overlay drawer instead (real viewport, so desktop is untouched).
+  const viewportWidth = useViewportWidth();
+  const compact = viewportWidth < 1024;
+  const phone = viewportWidth < 640;
+  const supportsHover = useSupportsHover();
+  useEffect(() => {
+    setSidebarVisible(false);
+  }, [compact]);
   const [cursorPosition, setCursorPosition] = useState({ lineNumber: 1, column: 1 });
   const [markerCounts, setMarkerCounts] = useState({ errors: 0, warnings: 0 });
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -816,28 +827,18 @@ export default function CodeEditor({ windowId = 'editor' }: { windowId?: string 
     // All Commands" would just duplicate View's Command Palette item above.
   ]);
 
-  return (
-    // `contents` keeps this div out of AppShell's own flex layout while still
-    // letting the CSS custom properties it sets cascade to every descendant —
-    // including the Open File/Open Folder modals below, which render outside
-    // AppShell as siblings, not children.
-    <div className="contents" style={workbenchVars as React.CSSProperties}>
-      <AppShell className="bg-[var(--wb-surface)] text-[var(--wb-fg)]">
-        <div data-name="editor-workbench" className="flex-1 min-h-0 flex">
-          <ActivityBar
-            active={sidebarVisible ? activePanel : null}
-            onSelect={handleActivitySelect}
-            settingsActive={isSettingsOpen}
-            onOpenSettings={() => setIsSettingsOpen(true)}
-          />
-          {sidebarVisible && activePanel === 'explorer' && (
-            <SidebarPanel dataName="editor-sidebar-explorer" title="EXPLORER">
+  const renderExplorerPanel = (fill: boolean) => (
+          
+            <SidebarPanel fill={fill} dataName="editor-sidebar-explorer" title="EXPLORER">
               {openFolder ? (
                 <ExplorerSidebar
                   rootId={openFolder.id}
                   rootName={openFolder.name}
                   activeFileId={activeTab?.fileId ?? null}
-                  onOpenFile={(f) => void handleSelectOpenFile(f)}
+                  onOpenFile={(f) => {
+                    void handleSelectOpenFile(f);
+                    if (compact) setSidebarVisible(false);
+                  }}
                   onCloseFolder={handleCloseFolder}
                   onMutated={handleExplorerMutated}
                   onRootRenamed={(newName) => setOpenFolder((prev) => (prev ? { ...prev, name: newName } : prev))}
@@ -864,15 +865,20 @@ export default function CodeEditor({ windowId = 'editor' }: { windowId?: string 
                 </div>
               )}
             </SidebarPanel>
-          )}
-          {sidebarVisible && activePanel === 'search' && (
-            <SidebarPanel dataName="editor-sidebar-search" title="SEARCH">
+  );
+
+  const renderSearchPanel = (fill: boolean) => (
+          
+            <SidebarPanel fill={fill} dataName="editor-sidebar-search" title="SEARCH">
               {openFolder ? (
                 <SearchPanel
                   rootId={openFolder.id}
                   rootName={openFolder.name}
                   getDirtyOpenFileIds={getDirtyOpenFileIds}
-                  onOpenResult={(f, line, col, len) => void handleSearchOpenResult(f, line, col, len)}
+                  onOpenResult={(f, line, col, len) => {
+                    void handleSearchOpenResult(f, line, col, len);
+                    if (compact) setSidebarVisible(false);
+                  }}
                   onFileContentReplaced={handleFileContentReplaced}
                 />
               ) : (
@@ -895,6 +901,73 @@ export default function CodeEditor({ windowId = 'editor' }: { windowId?: string 
                 </div>
               )}
             </SidebarPanel>
+  );
+
+  return (
+    // `contents` keeps this div out of AppShell's own flex layout while still
+    // letting the CSS custom properties it sets cascade to every descendant —
+    // including the Open File/Open Folder modals below, which render outside
+    // AppShell as siblings, not children.
+    <div className="contents" style={workbenchVars as React.CSSProperties}>
+      <AppShell className="bg-[var(--wb-surface)] text-[var(--wb-fg)]">
+        <div data-name="editor-workbench" className="flex-1 min-h-0 flex relative">
+          {!compact && (
+          <ActivityBar
+            active={sidebarVisible ? activePanel : null}
+            onSelect={handleActivitySelect}
+            settingsActive={isSettingsOpen}
+            onOpenSettings={() => setIsSettingsOpen(true)}
+          />
+          )}
+          {!compact && sidebarVisible && activePanel === 'explorer' && renderExplorerPanel(false)}
+          {!compact && sidebarVisible && activePanel === 'search' && renderSearchPanel(false)}
+          {compact && sidebarVisible && (
+            <>
+              <div className="absolute inset-0 z-20 bg-black/40" onClick={() => setSidebarVisible(false)} />
+              <div
+                data-name="editor-sidebar-drawer"
+                className="absolute inset-y-0 left-0 z-30 w-72 max-w-[85%] flex flex-col bg-[var(--wb-surface-raised)] border-r border-[var(--wb-border-strong)] shadow-2xl [&_.py-\[3px\]]:py-2.5"
+              >
+                <div className="flex items-stretch h-11 shrink-0 border-b border-[var(--wb-border-strong)] bg-[var(--wb-surface-sunken)]">
+                  {([
+                    { id: 'explorer', label: 'Explorer', Icon: Files },
+                    { id: 'search', label: 'Search', Icon: Search },
+                  ] as const).map(({ id, label, Icon }) => (
+                    <button
+                      key={id}
+                      onClick={() => setActivePanel(id)}
+                      className={`flex-1 flex items-center justify-center gap-1.5 text-[12px] font-medium cursor-pointer ${
+                        activePanel === id
+                          ? 'text-[var(--wb-fg)] shadow-[inset_0_-2px_0_0_var(--wb-accent)]'
+                          : 'text-[var(--wb-fg)]/50 hover:text-[var(--wb-fg)]/80'
+                      }`}
+                    >
+                      <Icon className="w-4 h-4" /> {label}
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => {
+                      setIsSettingsOpen(true);
+                      setSidebarVisible(false);
+                    }}
+                    title="Settings"
+                    aria-label="Settings"
+                    className="w-11 flex items-center justify-center text-[var(--wb-fg)]/50 hover:text-[var(--wb-fg)] cursor-pointer"
+                  >
+                    <SettingsIcon className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => setSidebarVisible(false)}
+                    title="Close"
+                    aria-label="Close panel"
+                    className="w-11 flex items-center justify-center text-[var(--wb-fg)]/50 hover:text-[var(--wb-fg)] cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+                {activePanel === 'search' ? renderSearchPanel(true) : renderExplorerPanel(true)}
+              </div>
+            </>
           )}
           <div data-name="editor-group" className="flex-1 min-h-0 min-w-0 flex flex-col">
             <EditorTabBar
@@ -914,6 +987,22 @@ export default function CodeEditor({ windowId = 'editor' }: { windowId?: string 
                 else handleCloseTab(id);
               }}
               onNew={handleNewTab}
+              alwaysShowClose={compact || !supportsHover}
+              leading={
+                compact ? (
+                  <button
+                    type="button"
+                    title="Explorer and search"
+                    aria-label="Open explorer"
+                    onClick={() => setSidebarVisible((v) => !v)}
+                    className={`sticky left-0 z-10 w-10 shrink-0 flex items-center justify-center border-r border-[var(--wb-border-strong)] bg-[var(--wb-surface)] cursor-pointer ${
+                      sidebarVisible ? 'text-[var(--wb-accent)]' : 'text-[var(--wb-fg)]/60 hover:text-[var(--wb-fg)]'
+                    }`}
+                  >
+                    <Files className="w-[18px] h-[18px]" />
+                  </button>
+                ) : null
+              }
             />
             {!isSettingsOpen && activeTab && breadcrumbsEnabled && (
               <Breadcrumb
@@ -954,10 +1043,10 @@ export default function CodeEditor({ windowId = 'editor' }: { windowId?: string 
                     <h2 className="text-lg font-semibold text-[var(--wb-fg)]/80">Welcome to the Editor</h2>
                     <p className="text-[13px] text-[var(--wb-fg)]/40 mt-1">Open a file or folder to get started.</p>
                   </div>
-                  <div className="flex items-center gap-2.5">
+                  <div className="flex flex-wrap items-center justify-center gap-2.5">
                     <button
                       onClick={handleNewTab}
-                      className="flex items-center gap-2 px-3.5 py-2 rounded-lg text-[12px] font-medium bg-[var(--wb-fg)]/5 hover:bg-[var(--wb-fg)]/10 text-[var(--wb-fg)]/70 cursor-pointer"
+                      className="flex items-center gap-2 px-3.5 py-2 rounded-lg text-[12px] font-medium whitespace-nowrap bg-[var(--wb-fg)]/5 hover:bg-[var(--wb-fg)]/10 text-[var(--wb-fg)]/70 cursor-pointer"
                     >
                       <FilePlus className="w-3.5 h-3.5" /> New File
                     </button>
@@ -967,7 +1056,7 @@ export default function CodeEditor({ windowId = 'editor' }: { windowId?: string 
                         e.stopPropagation();
                         requestFilePick(windowId, 'file');
                       }}
-                      className="flex items-center gap-2 px-3.5 py-2 rounded-lg text-[12px] font-medium bg-[var(--wb-fg)]/5 hover:bg-[var(--wb-fg)]/10 text-[var(--wb-fg)]/70 cursor-pointer"
+                      className="flex items-center gap-2 px-3.5 py-2 rounded-lg text-[12px] font-medium whitespace-nowrap bg-[var(--wb-fg)]/5 hover:bg-[var(--wb-fg)]/10 text-[var(--wb-fg)]/70 cursor-pointer"
                     >
                       <FolderInput className="w-3.5 h-3.5" /> Open File…
                     </button>
@@ -976,7 +1065,7 @@ export default function CodeEditor({ windowId = 'editor' }: { windowId?: string 
                         e.stopPropagation();
                         requestFilePick(windowId, 'folder');
                       }}
-                      className="flex items-center gap-2 px-3.5 py-2 rounded-lg text-[12px] font-medium bg-[var(--wb-accent-soft)] hover:bg-[var(--wb-accent-hover)] text-[var(--wb-on-accent)] cursor-pointer"
+                      className="flex items-center gap-2 px-3.5 py-2 rounded-lg text-[12px] font-medium whitespace-nowrap bg-[var(--wb-accent-soft)] hover:bg-[var(--wb-accent-hover)] text-[var(--wb-on-accent)] cursor-pointer"
                     >
                       <FolderOpen className="w-3.5 h-3.5" /> Open Folder…
                     </button>
@@ -991,7 +1080,7 @@ export default function CodeEditor({ windowId = 'editor' }: { windowId?: string 
                   wordWrap={wordWrap}
                   tabSize={tabSize}
                   insertSpaces={insertSpaces}
-                  minimapEnabled={minimapEnabled}
+                  minimapEnabled={minimapEnabled && !compact}
                   lineNumbersEnabled={lineNumbersEnabled}
                   renderWhitespace={renderWhitespace}
                   fontSize={fontSize}
@@ -1036,6 +1125,7 @@ export default function CodeEditor({ windowId = 'editor' }: { windowId?: string 
           tabSizeLabel={tabSizeLabel}
           errorCount={markerCounts.errors}
           warningCount={markerCounts.warnings}
+          compact={phone}
         />
       </AppShell>
     </div>

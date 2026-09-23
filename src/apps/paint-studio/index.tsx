@@ -18,6 +18,7 @@ import { useAppMenu } from '../../platform/menus/AppMenuContext';
 import { separator } from '../../platform/menus/types';
 import { useSystemStore } from '../../shell/state/systemStore';
 import DiagramLayer from './components/DiagramLayer';
+import PaintColorPicker from './components/PaintColorPicker';
 import {
   DEFAULT_EDGE_STYLE, DEFAULT_NODE_STYLE, DiagramEdge, DiagramNode, DiagramObject,
   DocumentSnapshot, EdgeRouting, FLOWCHART_PRESETS, NodeShape, Point, Rect,
@@ -1778,6 +1779,47 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
     setShowRightPanel(!isCompact);
   }, [isTight, isCompact]);
 
+  // Auto-fit zoom on a phone/tablet *device* — gated on the real viewport,
+  // not `containerWidth` above: this app's own default window (1240px,
+  // see AppRegistry) safely clears 1024 so that ambiguity doesn't bite here
+  // the way it did in wordbook, but the canvas is still a fixed pixel size
+  // (1200×800 by default, resizable up to 8000px) that a phone or tablet
+  // is almost never wide enough for at 100%, and it was requiring
+  // horizontal scrolling to see the whole thing. Mirrors wordbook's
+  // PageCanvas auto-fit-zoom: recomputes when the *available* canvas-stage
+  // width changes (a resize, rotation, or a side panel opening/closing),
+  // not on every zoom change, so manually zooming in from the status bar
+  // isn't immediately undone by an unrelated render.
+  const [isNarrowDevice, setIsNarrowDevice] = useState(
+    typeof window !== 'undefined' ? window.innerWidth < 1024 : false
+  );
+  useEffect(() => {
+    const handleResize = () => setIsNarrowDevice(window.innerWidth < 1024);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  const [canvasStageAreaWidth, setCanvasStageAreaWidth] = useState(0);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) setCanvasStageAreaWidth(entry.contentRect.width);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!isNarrowDevice || canvasStageAreaWidth <= 0) return;
+    // Matches the scroll container's own `p-6` (24px each side) plus a
+    // little slack so the fitted canvas isn't flush against the edges.
+    const available = canvasStageAreaWidth - 48;
+    const fit = Math.min(400, Math.max(25, Math.round((available / canvasWidth) * 100)));
+    setZoom(fit);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isNarrowDevice, canvasStageAreaWidth, canvasWidth]);
+
   const editingNode = editingNodeId
     ? (objects.find((o) => o.id === editingNodeId) as DiagramNode | undefined)
     : undefined;
@@ -2098,12 +2140,12 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
               ))}
             </div>
           )}
-          <input
-            type="color"
+          <PaintColorPicker
             value={activeSlot === 1 ? primaryColor : secondaryColor}
-            onChange={(e) => (activeSlot === 1 ? setPrimaryColor(e.target.value) : setSecondaryColor(e.target.value))}
-            className="w-6 h-6 rounded cursor-pointer border border-slate-300 p-0"
+            onChange={(color) => (activeSlot === 1 ? setPrimaryColor(color) : setSecondaryColor(color))}
+            palette={PALETTE}
             title="Custom colour"
+            triggerClassName="w-6 h-6 rounded cursor-pointer border border-slate-300 p-0"
           />
         </div>
 
@@ -2279,6 +2321,26 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
 
         {/* Canvas stage */}
         <div ref={scrollRef} className="flex-1 min-w-0 overflow-auto bg-[#dbe2ef]/70 p-6 custom-scrollbar relative">
+          {/* Backdrop for whichever side panel is currently drawn as an
+              overlay (`isTight`/`isCompact` below) — tapping the canvas
+              while one is open now dismisses it, the same as every other
+              overlay panel drawer in this codebase (File Explorer,
+              Calendar, Calculator). Scoped to this canvas-stage container
+              specifically, not the whole body row: the *other* panel, when
+              it's inline rather than an overlay (e.g. Tools on a tablet,
+              where only Properties floats), is a plain sibling with no
+              z-index of its own — an `inset-0` backdrop at the body level
+              painted over it anyway and blocked clicking anything in it. */}
+          {((isTight && showLeftPanel) || (isCompact && showRightPanel)) && (
+            <div
+              className="absolute inset-0 z-[25] bg-black/20"
+              onClick={() => {
+                if (isTight) setShowLeftPanel(false);
+                if (isCompact) setShowRightPanel(false);
+              }}
+            />
+          )}
+
           {!showLeftPanel && (
             <button
               onClick={() => setShowLeftPanel(true)}
@@ -2484,7 +2546,16 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
           </button>
         )}
         {showRightPanel && (
-          <div className="w-60 bg-white border-l border-slate-200 shrink-0 overflow-y-auto custom-scrollbar p-3 flex flex-col gap-3">
+          <div className={`bg-white border-l border-slate-200 overflow-y-auto custom-scrollbar p-3 flex flex-col gap-3 ${
+            // Unlike the left (Tools) panel, this was always `shrink-0` —
+            // fine while `isCompact` also keeps it closed by default, but
+            // reopening it by hand (it's the only place canvas size and
+            // object styles live, so there's a button for exactly that)
+            // used to shrink the canvas by a fixed 240px regardless of how
+            // little room was left, on a phone leaving it a sliver. Same
+            // overlay treatment the left panel already gets below `isTight`.
+            isCompact ? 'absolute inset-y-0 right-0 z-30 w-60 shadow-2xl' : 'w-60 shrink-0'
+          }`}>
             <div className="flex items-center justify-between">
               <span className="text-[10px] font-extrabold uppercase text-slate-400 tracking-wider">
                 {selectedIds.length === 0 ? 'Canvas' : selectedIds.length === 1 ? 'Object' : `${selectedIds.length} objects`}
@@ -2545,11 +2616,12 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
                 </div>
 
                 <label className="text-[11px] font-bold text-slate-600">Background</label>
-                <input
-                  type="color"
+                <PaintColorPicker
                   value={canvasBg}
-                  onChange={(e) => setCanvasBg(e.target.value)}
-                  className="w-full h-8 rounded border border-slate-300 cursor-pointer"
+                  onChange={setCanvasBg}
+                  palette={PALETTE}
+                  title="Canvas background"
+                  triggerClassName="w-full h-8 rounded border border-slate-300 cursor-pointer"
                 />
 
                 <label className="text-[11px] font-bold text-slate-600">Grid size</label>
@@ -2570,14 +2642,22 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
             {selectedNodes.length > 0 && (
               <>
                 <label className="text-[11px] font-bold text-slate-600">Fill</label>
-                <input type="color" value={selectedNodes[0].style.fill}
-                  onChange={(e) => patchSelectedNodeStyle('Fill colour', { fill: e.target.value })}
-                  className="w-full h-7 rounded border border-slate-300 cursor-pointer" />
+                <PaintColorPicker
+                  value={selectedNodes[0].style.fill}
+                  onChange={(color) => patchSelectedNodeStyle('Fill colour', { fill: color })}
+                  palette={PALETTE}
+                  title="Fill colour"
+                  triggerClassName="w-full h-7 rounded border border-slate-300 cursor-pointer"
+                />
 
                 <label className="text-[11px] font-bold text-slate-600">Border</label>
-                <input type="color" value={selectedNodes[0].style.stroke}
-                  onChange={(e) => patchSelectedNodeStyle('Border colour', { stroke: e.target.value })}
-                  className="w-full h-7 rounded border border-slate-300 cursor-pointer" />
+                <PaintColorPicker
+                  value={selectedNodes[0].style.stroke}
+                  onChange={(color) => patchSelectedNodeStyle('Border colour', { stroke: color })}
+                  palette={PALETTE}
+                  title="Border colour"
+                  triggerClassName="w-full h-7 rounded border border-slate-300 cursor-pointer"
+                />
 
                 <label className="text-[11px] font-bold text-slate-600">Line style</label>
                 <select
@@ -2608,9 +2688,13 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
                       selectedNodes[0].style.italic ? 'bg-blue-600 text-white border-blue-600' : 'border-slate-300'
                     }`}
                   >I</button>
-                  <input type="color" value={selectedNodes[0].style.fontColor}
-                    onChange={(e) => patchSelectedNodeStyle('Text colour', { fontColor: e.target.value })}
-                    className="w-7 h-7 rounded border border-slate-300 cursor-pointer" />
+                  <PaintColorPicker
+                    value={selectedNodes[0].style.fontColor}
+                    onChange={(color) => patchSelectedNodeStyle('Text colour', { fontColor: color })}
+                    palette={PALETTE}
+                    title="Text colour"
+                    triggerClassName="w-7 h-7 rounded border border-slate-300 cursor-pointer"
+                  />
                 </div>
 
                 <label className="text-[11px] font-bold text-slate-600">Opacity</label>
@@ -2822,8 +2906,15 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
       <WindowStatus
         left={
           <span className="flex items-center gap-3">
+            {/* The shared status bar's own "Frame: …" text (AppWindow.tsx)
+                plus this app's own left+right content — both marked
+                `shrink-0` by WindowStatusBar — together ran past a phone
+                window's width even with the flexible center section
+                collapsed to nothing. Below `isTight` the least essential
+                pieces (canvas pixel size, the last-action label) drop so
+                the row actually fits instead of clipping off the edge. */}
             <span>{mousePos ? `${mousePos.x}, ${mousePos.y}` : '—, —'}</span>
-            <span className="opacity-75">{canvasWidth} × {canvasHeight}</span>
+            {!isTight && <span className="opacity-75">{canvasWidth} × {canvasHeight}</span>}
             {selectionBounds && (
               <span className="opacity-75">
                 Sel {Math.round(selectionBounds.w)} × {Math.round(selectionBounds.h)}
@@ -2839,7 +2930,7 @@ export default function PaintApp({ windowId = 'paint' }: { windowId?: string }) 
         }
         right={
           <span className="flex items-center gap-2">
-            <span className="opacity-70 truncate max-w-28">{lastAction}</span>
+            {!isTight && <span className="opacity-70 truncate max-w-28">{lastAction}</span>}
             <button onClick={() => setZoom((z) => Math.max(25, z - 25))} className="p-0.5 hover:bg-current/10 rounded cursor-pointer" title="Zoom out">
               <ZoomOut size={13} />
             </button>

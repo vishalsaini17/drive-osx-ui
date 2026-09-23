@@ -1,12 +1,9 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Editor, useEditorState } from '@tiptap/react';
 import {
   Bold,
   Italic,
   Underline as UnderlineIcon,
-  Strikethrough,
-  Subscript as SubscriptIcon,
-  Superscript as SuperscriptIcon,
   Undo2,
   Redo2,
   AlignLeft,
@@ -15,22 +12,37 @@ import {
   AlignJustify,
   List,
   ListOrdered,
+  ListChecks,
   Indent,
   Outdent,
   ListRestart,
   ListPlus,
   Baseline,
   Highlighter,
-  Table as TableIcon,
   Image as ImageIcon,
   Link as LinkIcon,
-  Minus,
-  FileDown,
   ZoomIn,
   ZoomOut,
+  Printer,
+  SpellCheck,
+  Paintbrush,
+  RemoveFormatting,
+  PanelLeft,
+  ChevronDown,
+  MoreHorizontal,
 } from 'lucide-react';
-import { RibbonGroup, RibbonDivider, RibbonButton, RibbonSelect, RibbonColorPicker, RibbonTab } from './RibbonPrimitives';
-import { FileService } from '../../../../platform/files/FileService';
+import {
+  RibbonDivider,
+  RibbonButton,
+  RibbonSelect,
+  RibbonColorPicker,
+  RibbonFontSizeStepper,
+  RibbonDropdown,
+  RibbonMoreMenu,
+  RibbonMoreMenuSection,
+} from './RibbonPrimitives';
+import { uploadAndInsertImage } from '../../editor/insertImage';
+import MenuSearch from '../MenuSearch';
 
 const FONT_FAMILIES = [
   { value: '', label: 'Default' },
@@ -43,10 +55,113 @@ const FONT_FAMILIES = [
   { value: '"Garamond", "Palatino Linotype", serif', label: 'Garamond' },
 ];
 
-const FONT_SIZES = ['8pt', '9pt', '10pt', '10.5pt', '11pt', '12pt', '14pt', '16pt', '18pt', '20pt', '24pt', '28pt', '32pt', '36pt', '48pt', '72pt'];
+const LINE_SPACINGS = ['1', '1.15', '1.5', '2'];
+const SPACING_AFTER = ['0pt', '6pt', '8pt', '10pt', '12pt', '18pt', '24pt'];
+
+/** The set of marks a "paint format" copy/apply cycle carries over — text formatting only, never block-level attributes (heading level, spacing, alignment). */
+const PAINT_FORMAT_MARKS = ['bold', 'italic', 'underline', 'textStyle', 'highlight', 'link'];
+
+/** 96px/in = 72pt/in, so 1px = 0.75pt at the CSS-standard 96dpi. */
+const PX_TO_PT = 0.75;
+/** Fallbacks only for the rare tick where the view isn't mounted yet — the live DOM read below is the real source of truth. */
+const FALLBACK_FONT_SIZE_PX = 13;
+const FALLBACK_LINE_SPACING = 1.5;
+const FALLBACK_SPACING_AFTER_PX = 10;
+
+/**
+ * The DOM element for the top-level block (paragraph/heading) the selection
+ * is currently in. A heading's real size/line-height/spacing lives in
+ * block-level CSS (`PageCanvas.tsx`), not in a mark, so there's no schema
+ * attribute to read it back from — reading the live computed style instead
+ * of hand-duplicating that CSS as constants here is what keeps this display
+ * from drifting out of sync with it (the same reasoning `domMeasurement.ts`
+ * follows for a block's height and margin during pagination).
+ */
+function currentBlockElement(editor: Editor): HTMLElement | null {
+  try {
+    const { $from } = editor.state.selection;
+    const dom = editor.view.nodeDOM($from.before($from.depth));
+    return dom instanceof HTMLElement ? dom : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parses whatever a `textStyle.fontSize` mark happens to hold — this app's
+ * own control always writes `"Npt"`, but a mark can also arrive via pasted
+ * HTML carrying an inline `style="font-size: ..."`, most commonly in `px`.
+ * A relative unit (em/rem/%) can't be resolved from the raw string alone
+ * (the context it was relative to isn't preserved across paste), so those
+ * fall through to `null` — same as no override — rather than display a
+ * fabricated number.
+ */
+function parseFontSizeToPt(raw: string | undefined | null): number | null {
+  if (!raw) return null;
+  const match = /^([\d.]+)\s*(pt|px)?$/.exec(raw.trim());
+  if (!match) return null;
+  const value = parseFloat(match[1]);
+  if (Number.isNaN(value)) return null;
+  return match[2] === 'px' ? value * PX_TO_PT : value;
+}
+
+/** Rounds to the nearest half-point and formats to match the "Npt"/"N.5pt" shape `SPACING_AFTER`'s own options use. */
+function formatPt(pt: number): string {
+  const rounded = Math.round(pt * 2) / 2;
+  return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(1)}pt`;
+}
+
+/** Rounds to 2 decimals and drops a trailing ".0" so it matches the plain "1"/"1.5"/"2" shape `LINE_SPACINGS` uses. */
+function formatMultiplier(n: number): string {
+  return String(Math.round(n * 100) / 100);
+}
+
+/** Ensures `value` has a matching entry so the native `<select>` never lands on a blank/wrong option, sorted numerically. */
+function withCurrentValue(presets: string[], value: string): string[] {
+  return presets.includes(value) ? presets : [...presets, value].sort((a, b) => parseFloat(a) - parseFloat(b));
+}
+
+const ZOOM_PRESETS = [0.5, 0.75, 0.9, 1, 1.25, 1.5, 2];
+
+const BULLET_STYLES: { id: string; preview: [string, string, string] }[] = [
+  { id: 'default', preview: ['●', '○', '▪'] },
+  { id: 'diamond', preview: ['❖', '➢', '▪'] },
+  { id: 'boxes', preview: ['▪', '▫', '▣'] },
+  { id: 'arrow', preview: ['➤', '◆', '▪'] },
+  { id: 'star', preview: ['★', '○', '▪'] },
+  { id: 'arrow2', preview: ['➤', '○', '▪'] },
+];
+
+const NUMBER_STYLES: { id: string; preview: [string, string, string] }[] = [
+  { id: 'default', preview: ['1.', 'a.', 'i.'] },
+  { id: 'parens', preview: ['1)', 'a)', 'i)'] },
+  { id: 'legal', preview: ['1.', '1.1.', '1.2.1.'] },
+  { id: 'upperAlpha', preview: ['A.', 'a.', 'i.'] },
+  { id: 'upperRoman', preview: ['I.', 'A.', '1.'] },
+  { id: 'zeroPadded', preview: ['01.', 'a.', 'i.'] },
+];
+
+const CHECKLIST_VARIANTS = [
+  { id: 'square', label: 'Square' },
+  { id: 'round', label: 'Round' },
+];
+
+/** A 3-row mini preview matching how Docs shows each list-style option — a marker glyph per nesting depth beside a placeholder line, indented to suggest the nesting. */
+function ListStylePreview({ preview }: { preview: [string, string, string] }) {
+  return (
+    <div className="flex flex-col gap-1">
+      {preview.map((glyph, i) => (
+        <div key={i} className="flex items-center gap-1" style={{ paddingLeft: i * 8 }}>
+          <span className="text-[10px] w-4 text-zinc-600">{glyph}</span>
+          <span className="h-1 flex-1 rounded bg-zinc-300" />
+        </div>
+      ))}
+    </div>
+  );
+}
 
 const HEADING_STYLES = [
-  { value: 'paragraph', label: 'Normal' },
+  { value: 'paragraph', label: 'Normal text' },
   { value: 'h1', label: 'Heading 1' },
   { value: 'h2', label: 'Heading 2' },
   { value: 'h3', label: 'Heading 3' },
@@ -55,19 +170,64 @@ const HEADING_STYLES = [
   { value: 'h6', label: 'Heading 6' },
 ];
 
-type RibbonTabId = 'home' | 'insert' | 'view';
-
 interface RibbonToolbarProps {
+  windowId: string;
   editor: Editor | null;
   zoom: number;
   onZoomChange: (zoom: number) => void;
   currentFolderId: string | null;
   resolveDefaultFolderId: (name: string) => string | null;
+  isOutlineOpen: boolean;
+  onToggleOutline: () => void;
+  spellcheckOn: boolean;
+  onToggleSpellcheck: () => void;
+  onOpenLinkModal: () => void;
 }
 
-export default function RibbonToolbar({ editor, zoom, onZoomChange, currentFolderId, resolveDefaultFolderId }: RibbonToolbarProps) {
-  const [tab, setTab] = useState<RibbonTabId>('home');
+export default function RibbonToolbar({
+  windowId,
+  editor,
+  zoom,
+  onZoomChange,
+  currentFolderId,
+  resolveDefaultFolderId,
+  isOutlineOpen,
+  onToggleOutline,
+  spellcheckOn,
+  onToggleSpellcheck,
+  onOpenLinkModal,
+}: RibbonToolbarProps) {
   const imageInputRef = useRef<HTMLInputElement>(null);
+
+  // The real device viewport, not this window's own rendered width — Word
+  // Book's *default* window (980px, see AppRegistry) is itself narrower
+  // than the full ribbon's ~1300px, and even narrower than a landscape
+  // tablet, so comparing against this component's own container would put
+  // every desktop user's ordinary-sized window into compact mode too.
+  // `window.innerWidth` is what actually distinguishes "phone/tablet" from
+  // "desktop with a normal window size" — the same reasoning
+  // `PageCanvas.tsx`'s auto-fit-zoom and the OS shell's own
+  // `isTabletOrNarrower` (Dock.tsx) follow for the identical ambiguity.
+  // Below `isCompact` only a small set of the most-used controls (undo/
+  // redo, bold/italic/underline, bullet/numbered list) stay in the row;
+  // everything else moves into the "More options" menu (`RibbonMoreMenu`)
+  // instead of off the visible edge — the full ribbon was already
+  // scrollable rather than clipped, but a control someone doesn't know to
+  // scroll for is effectively hidden.
+  const [windowWidth, setWindowWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 1300);
+  useEffect(() => {
+    const handleResize = () => setWindowWidth(window.innerWidth);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+  const isCompact = windowWidth < 1024;
+
+  // "Paint format": captures the mark set at the cursor, then applies it to
+  // whatever the *next* non-empty selection turns out to be, one time. Kept
+  // as a one-shot listener rather than always-on so it never fires on a
+  // plain click (which collapses to an empty selection — guarded below).
+  const [paintFormatActive, setPaintFormatActive] = useState(false);
+  const paintFormatMarksRef = useRef<Record<string, Record<string, unknown>> | null>(null);
 
   // Re-render on every editor transaction so active-state highlighting
   // (bold/heading/align/etc.) stays in sync with the cursor. `useEditorState`
@@ -77,19 +237,86 @@ export default function RibbonToolbar({ editor, zoom, onZoomChange, currentFolde
   // StrictMode's dev double-invoke.
   useEditorState({ editor, selector: ({ transactionNumber }) => transactionNumber });
 
+  useEffect(() => {
+    if (!editor || !paintFormatActive) return;
+    const applyOnce = () => {
+      const marks = paintFormatMarksRef.current;
+      if (!marks || editor.state.selection.empty) return;
+      const chain = editor.chain().focus().unsetAllMarks();
+      Object.entries(marks).forEach(([name, attrs]) => {
+        chain.setMark(name, attrs);
+      });
+      chain.run();
+      setPaintFormatActive(false);
+      paintFormatMarksRef.current = null;
+    };
+    editor.on('selectionUpdate', applyOnce);
+    return () => {
+      editor.off('selectionUpdate', applyOnce);
+    };
+  }, [editor, paintFormatActive]);
+
   if (!editor) {
-    return <div className="h-[104px] shrink-0 bg-[#f3f2f6] border-b border-zinc-300" />;
+    return <div className="h-11 shrink-0 bg-[#f3f2f6] border-b border-zinc-300" />;
   }
 
   const activeHeading = HEADING_STYLES.find((h) => h.value !== 'paragraph' && editor.isActive('heading', { level: Number(h.value.slice(1)) }))?.value ?? 'paragraph';
   const currentFontFamily = editor.getAttributes('textStyle').fontFamily ?? '';
-  const currentFontSize = editor.getAttributes('textStyle').fontSize ?? '12pt';
+
+  // The block-level defaults (heading size, line spacing, space-after) all
+  // live in CSS, not in a schema attribute — read from the live DOM rather
+  // than a second hand-kept copy of that CSS. `blockFontSizePx` doubles as
+  // the base for recovering line spacing as a plain multiplier below (CSS
+  // resolves an inherited unitless `line-height` to its absolute px
+  // equivalent, so dividing back by font-size is what gets "1.5" back).
+  const blockEl = currentBlockElement(editor);
+  const blockStyle = blockEl ? getComputedStyle(blockEl) : null;
+  const blockFontSizePx = blockStyle ? parseFloat(blockStyle.fontSize) || FALLBACK_FONT_SIZE_PX : FALLBACK_FONT_SIZE_PX;
+  const blockLineHeightPx = blockStyle ? parseFloat(blockStyle.lineHeight) || blockFontSizePx * FALLBACK_LINE_SPACING : blockFontSizePx * FALLBACK_LINE_SPACING;
+  const blockMarginBottomPx = blockStyle ? parseFloat(blockStyle.marginBottom) || 0 : FALLBACK_SPACING_AFTER_PX;
+
+  // An inline run can override its own size independently of the block
+  // (a `textStyle.fontSize` mark) — that never shows up in the *block*
+  // element's own computed style, so it has to be checked first and takes
+  // priority; falling back to the block's real rendered size (not a
+  // hand-kept default) is what makes a heading with no override show its
+  // actual size instead of a flat, wrong constant.
+  const explicitFontSizePt = parseFontSizeToPt(editor.getAttributes('textStyle').fontSize as string | undefined);
+  const currentFontSizePt = explicitFontSizePt ?? blockFontSizePx * PX_TO_PT;
+  const currentLineSpacing = formatMultiplier(blockLineHeightPx / blockFontSizePx);
+  const currentSpacingAfter = formatPt(blockMarginBottomPx * PX_TO_PT);
+
+  // The line-spacing/space-after dropdowns are native <select>s — a value
+  // with no matching <option> just renders blank/misleading — so make sure
+  // whatever's actually in effect always has one to land on.
+  const lineSpacingOptions = withCurrentValue(LINE_SPACINGS, currentLineSpacing);
+  const spacingAfterOptions = withCurrentValue(SPACING_AFTER, currentSpacingAfter);
+
   const currentColor = editor.getAttributes('textStyle').color ?? null;
   const currentHighlight = editor.getAttributes('highlight').color ?? null;
+
+  // Line spacing / space-after apply to the block itself (paragraph or
+  // heading), never to just a run of inline text — there's no per-run
+  // equivalent of `updateAttributes(type, ...)` the way marks have, so this
+  // resolves which of the two node types is actually active first.
+  const applyBlockSpacing = (attrs: { lineHeight?: string; spacingAfter?: string }) => {
+    const type = editor.isActive('heading') ? 'heading' : 'paragraph';
+    editor.chain().focus().updateAttributes(type, attrs).run();
+  };
 
   const setHeading = (value: string) => {
     if (value === 'paragraph') editor.chain().focus().setParagraph().run();
     else editor.chain().focus().setHeading({ level: Number(value.slice(1)) as 1 | 2 | 3 | 4 | 5 | 6 }).run();
+  };
+
+  const startPaintFormat = () => {
+    if (editor.state.selection.empty) return;
+    const marks: Record<string, Record<string, unknown>> = {};
+    PAINT_FORMAT_MARKS.forEach((name) => {
+      if (editor.isActive(name)) marks[name] = editor.getAttributes(name);
+    });
+    paintFormatMarksRef.current = marks;
+    setPaintFormatActive(true);
   };
 
   // Unlike Word, this editor does not auto-continue numbering across an
@@ -117,233 +344,386 @@ export default function RibbonToolbar({ editor, zoom, onZoomChange, currentFolde
     }
   };
 
+  // Turning a list *on* (toggleBulletList/toggleOrderedList/toggleTaskList)
+  // when it's already the active type would toggle it *off* instead — these
+  // only do that the first time, then just restyle whichever list is there.
+  const applyBulletStyle = (bulletStyle: string) => {
+    if (!editor.isActive('bulletList')) editor.chain().focus().toggleBulletList().run();
+    editor.chain().focus().updateAttributes('bulletList', { bulletStyle }).run();
+  };
+
+  const applyNumberStyle = (numberStyle: string) => {
+    if (!editor.isActive('orderedList')) editor.chain().focus().toggleOrderedList().run();
+    editor.chain().focus().updateAttributes('orderedList', { numberStyle }).run();
+  };
+
+  const applyChecklistVariant = (checklistVariant: string) => {
+    if (!editor.isActive('taskList')) editor.chain().focus().toggleTaskList().run();
+    editor.chain().focus().updateAttributes('taskList', { checklistVariant }).run();
+  };
+
   const insertImageFromFile = async (file: File) => {
     try {
-      const parentId = currentFolderId ?? resolveDefaultFolderId('Documents');
-      const uploaded = await FileService.upload(file, { parentId: parentId ?? undefined });
-      const url = await FileService.downloadUrl(uploaded._id);
-      editor.chain().focus().setImage({ src: url, alt: file.name }).run();
+      await uploadAndInsertImage(editor, file, currentFolderId, resolveDefaultFolderId);
     } catch (error) {
       console.error('Failed to insert image:', error);
       alert('Could not upload that image. Please try again.');
     }
   };
 
-  const insertLink = () => {
-    const previousUrl = editor.getAttributes('link').href as string | undefined;
-    const url = prompt('Link URL:', previousUrl ?? 'https://');
-    if (url === null) return;
-    if (url === '') {
-      editor.chain().focus().extendMarkRange('link').unsetLink().run();
-      return;
-    }
-    editor.chain().focus().extendMarkRange('link').setLink({ href: url }).run();
-  };
+  // Each is the exact JSX the desktop ribbon has always rendered inline —
+  // extracted to a variable purely so `isCompact` can place the identical
+  // controls in a second location (`RibbonMoreMenu`) instead of forking
+  // them into two maintained copies.
+  const documentToolsGroup = (
+    <>
+      <RibbonButton title="Print" onClick={() => window.print()}>
+        <Printer className="w-3.5 h-3.5" />
+      </RibbonButton>
+      <RibbonButton title={spellcheckOn ? 'Spellcheck: on' : 'Spellcheck: off'} active={spellcheckOn} onClick={onToggleSpellcheck}>
+        <SpellCheck className="w-3.5 h-3.5" />
+      </RibbonButton>
+      <RibbonButton title="Paint format — copy formatting, then click or select text to apply it" active={paintFormatActive} onClick={startPaintFormat}>
+        <Paintbrush className="w-3.5 h-3.5" />
+      </RibbonButton>
+    </>
+  );
+
+  const zoomGroup = (
+    <>
+      <RibbonButton title="Zoom out" disabled={zoom <= 0.5} onClick={() => onZoomChange(Math.max(0.5, Math.round((zoom - 0.1) * 10) / 10))}>
+        <ZoomOut className="w-3.5 h-3.5" />
+      </RibbonButton>
+      <RibbonDropdown
+        title="Zoom"
+        widthClass="w-24"
+        trigger={
+          <>
+            <span className="text-xs text-zinc-700 tabular-nums w-10 text-center">{Math.round(zoom * 100)}%</span>
+            <ChevronDown className="w-3 h-3 text-zinc-500" />
+          </>
+        }
+      >
+        <button
+          type="button"
+          onClick={() => {
+            const container = document.querySelector<HTMLElement>('[data-testid="wb-scroll-container"]');
+            const pageEl = document.querySelector<HTMLElement>('[data-wb-page-stack]');
+            if (!container || !pageEl) return;
+            // The page element's own width is already zoom-scaled (a CSS
+            // `transform`, not a layout change) — dividing back out by the
+            // *current* zoom recovers its true, zoom-independent width, the
+            // same reasoning `PageCanvas.tsx`'s own zoom comment relies on.
+            const unzoomedPageWidth = pageEl.getBoundingClientRect().width / zoom;
+            const available = container.clientWidth - 48;
+            const fit = Math.min(2, Math.max(0.3, Math.round((available / unzoomedPageWidth) * 100) / 100));
+            onZoomChange(fit);
+          }}
+          className="w-full text-left px-2 py-1 rounded hover:bg-zinc-100 text-xs text-zinc-700 cursor-pointer"
+        >
+          Fit
+        </button>
+        <div className="border-t border-zinc-200 my-1" />
+        {ZOOM_PRESETS.map((preset) => (
+          <button
+            key={preset}
+            type="button"
+            onClick={() => onZoomChange(preset)}
+            className={`w-full text-left px-2 py-1 rounded hover:bg-zinc-100 text-xs cursor-pointer ${
+              Math.round(zoom * 100) === Math.round(preset * 100) ? 'bg-purple-50 text-purple-700 font-medium' : 'text-zinc-700'
+            }`}
+          >
+            {Math.round(preset * 100)}%
+          </button>
+        ))}
+      </RibbonDropdown>
+      <RibbonButton title="Zoom in" disabled={zoom >= 2} onClick={() => onZoomChange(Math.min(2, Math.round((zoom + 0.1) * 10) / 10))}>
+        <ZoomIn className="w-3.5 h-3.5" />
+      </RibbonButton>
+    </>
+  );
+
+  const textStyleGroup = (
+    <>
+      <RibbonSelect title="Paragraph style" widthClass="w-28" value={activeHeading} onChange={setHeading} options={HEADING_STYLES} />
+      <RibbonSelect
+        title="Font family"
+        widthClass="w-32"
+        value={currentFontFamily}
+        onChange={(v) => (v ? editor.chain().focus().setFontFamily(v).run() : editor.chain().focus().unsetFontFamily().run())}
+        options={FONT_FAMILIES.map((f) => ({ value: f.value, label: f.label, style: f.value ? { fontFamily: f.value } : undefined }))}
+      />
+      <RibbonFontSizeStepper
+        title="Font size (pt)"
+        value={Math.round(currentFontSizePt * 10) / 10}
+        min={1}
+        max={400}
+        onChange={(v) => editor.chain().focus().setFontSize(`${v}pt`).run()}
+      />
+    </>
+  );
+
+  const colorGroup = (
+    <>
+      <RibbonColorPicker
+        title="Text color"
+        icon={<Baseline className="w-3.5 h-3.5" />}
+        currentColor={currentColor}
+        onPick={(c) => editor.chain().focus().setColor(c).run()}
+        onClear={() => editor.chain().focus().unsetColor().run()}
+      />
+      <RibbonColorPicker
+        title="Highlight"
+        icon={<Highlighter className="w-3.5 h-3.5" />}
+        currentColor={currentHighlight}
+        onPick={(c) => editor.chain().focus().setHighlight({ color: c }).run()}
+        onClear={() => editor.chain().focus().unsetHighlight().run()}
+      />
+    </>
+  );
+
+  const insertGroup = (
+    <>
+      <RibbonButton title="Insert link" active={editor.isActive('link')} onClick={onOpenLinkModal}>
+        <LinkIcon className="w-3.5 h-3.5" />
+      </RibbonButton>
+      <RibbonButton title="Insert image" onClick={() => imageInputRef.current?.click()}>
+        <ImageIcon className="w-3.5 h-3.5" />
+      </RibbonButton>
+    </>
+  );
+
+  const alignGroup = (
+    <>
+      <RibbonButton title="Align left" active={editor.isActive({ textAlign: 'left' })} onClick={() => editor.chain().focus().setTextAlign('left').run()}>
+        <AlignLeft className="w-3.5 h-3.5" />
+      </RibbonButton>
+      <RibbonButton title="Align center" active={editor.isActive({ textAlign: 'center' })} onClick={() => editor.chain().focus().setTextAlign('center').run()}>
+        <AlignCenter className="w-3.5 h-3.5" />
+      </RibbonButton>
+      <RibbonButton title="Align right" active={editor.isActive({ textAlign: 'right' })} onClick={() => editor.chain().focus().setTextAlign('right').run()}>
+        <AlignRight className="w-3.5 h-3.5" />
+      </RibbonButton>
+      <RibbonButton title="Justify" active={editor.isActive({ textAlign: 'justify' })} onClick={() => editor.chain().focus().setTextAlign('justify').run()}>
+        <AlignJustify className="w-3.5 h-3.5" />
+      </RibbonButton>
+      <RibbonSelect
+        title="Line spacing"
+        widthClass="w-14"
+        value={currentLineSpacing}
+        onChange={(v) => applyBlockSpacing({ lineHeight: v })}
+        options={lineSpacingOptions.map((s) => ({ value: s, label: s }))}
+      />
+      <RibbonSelect
+        title="Space after paragraph"
+        widthClass="w-16"
+        value={currentSpacingAfter}
+        onChange={(v) => applyBlockSpacing({ spacingAfter: v })}
+        options={spacingAfterOptions.map((s) => ({ value: s, label: s }))}
+      />
+    </>
+  );
+
+  const checklistGroup = (
+    <>
+      <RibbonButton title="Checklist" active={editor.isActive('taskList')} onClick={() => editor.chain().focus().toggleTaskList().run()}>
+        <ListChecks className="w-3.5 h-3.5" />
+      </RibbonButton>
+      <RibbonDropdown title="Checklist style" widthClass="w-28" trigger={<ChevronDown className="w-3 h-3 text-zinc-500" />}>
+        <div className="grid grid-cols-2 gap-1">
+          {CHECKLIST_VARIANTS.map((variant) => (
+            <button
+              key={variant.id}
+              type="button"
+              onClick={() => applyChecklistVariant(variant.id)}
+              className="flex flex-col items-center gap-1 p-2 rounded border border-zinc-200 hover:border-purple-300 hover:bg-purple-50/50 cursor-pointer"
+            >
+              <span
+                className={`w-3.5 h-3.5 border border-zinc-500 ${variant.id === 'round' ? 'rounded-full' : 'rounded-sm'}`}
+              />
+              <span className="text-[10px] text-zinc-600">{variant.label}</span>
+            </button>
+          ))}
+        </div>
+      </RibbonDropdown>
+    </>
+  );
+
+  const bulletStyleGroup = (
+    <RibbonDropdown title="Bullet list style" widthClass="w-52" trigger={<ChevronDown className="w-3 h-3 text-zinc-500" />}>
+      <div className="grid grid-cols-3 gap-1.5">
+        {BULLET_STYLES.map((style) => (
+          <button
+            key={style.id}
+            type="button"
+            onClick={() => applyBulletStyle(style.id)}
+            className="p-1.5 rounded border border-zinc-200 hover:border-purple-300 hover:bg-purple-50/50 cursor-pointer"
+          >
+            <ListStylePreview preview={style.preview} />
+          </button>
+        ))}
+      </div>
+    </RibbonDropdown>
+  );
+
+  const numberExtrasGroup = (
+    <>
+      <RibbonDropdown title="Numbered list style" widthClass="w-52" trigger={<ChevronDown className="w-3 h-3 text-zinc-500" />}>
+        <div className="grid grid-cols-3 gap-1.5">
+          {NUMBER_STYLES.map((style) => (
+            <button
+              key={style.id}
+              type="button"
+              onClick={() => applyNumberStyle(style.id)}
+              className="p-1.5 rounded border border-zinc-200 hover:border-purple-300 hover:bg-purple-50/50 cursor-pointer"
+            >
+              <ListStylePreview preview={style.preview} />
+            </button>
+          ))}
+        </div>
+      </RibbonDropdown>
+      <RibbonButton
+        title="Decrease indent (Shift+Tab in a list)"
+        disabled={!editor.can().liftListItem('listItem')}
+        onClick={() => editor.chain().focus().liftListItem('listItem').run()}
+      >
+        <Outdent className="w-3.5 h-3.5" />
+      </RibbonButton>
+      <RibbonButton
+        title="Increase indent / nest list (Tab in a list)"
+        disabled={!editor.can().sinkListItem('listItem')}
+        onClick={() => editor.chain().focus().sinkListItem('listItem').run()}
+      >
+        <Indent className="w-3.5 h-3.5" />
+      </RibbonButton>
+      <RibbonButton
+        title="Continue numbering from the previous list"
+        disabled={!editor.isActive('orderedList')}
+        onClick={continueNumbering}
+      >
+        <ListPlus className="w-3.5 h-3.5" />
+      </RibbonButton>
+      <RibbonButton
+        title="Restart numbering at 1"
+        disabled={!editor.isActive('orderedList')}
+        onClick={() => editor.chain().focus().updateAttributes('orderedList', { start: 1 }).run()}
+      >
+        <ListRestart className="w-3.5 h-3.5" />
+      </RibbonButton>
+    </>
+  );
+
+  const clearGroup = (
+    <RibbonButton title="Clear formatting" onClick={() => editor.chain().focus().unsetAllMarks().clearNodes().run()}>
+      <RemoveFormatting className="w-3.5 h-3.5" />
+    </RibbonButton>
+  );
+
+  const searchGroup = <MenuSearch windowId={windowId} />;
 
   return (
     <div className="shrink-0 bg-[#f3f2f6] border-b border-zinc-300 select-none">
-      <div className="flex items-center gap-0.5 px-3 pt-1">
-        <RibbonTab active={tab === 'home'} onClick={() => setTab('home')}>Home</RibbonTab>
-        <RibbonTab active={tab === 'insert'} onClick={() => setTab('insert')}>Insert</RibbonTab>
-        <RibbonTab active={tab === 'view'} onClick={() => setTab('view')}>View</RibbonTab>
-      </div>
+      <div className="flex items-center gap-0.5 min-h-11 px-2 py-1 overflow-x-auto whitespace-nowrap">
+        <RibbonButton title={isOutlineOpen ? 'Hide outline' : 'Show outline'} active={isOutlineOpen} onClick={onToggleOutline}>
+          <PanelLeft className="w-3.5 h-3.5" />
+        </RibbonButton>
 
-      <div className="flex items-stretch min-h-[78px] px-2 py-1.5 bg-white/60 border-t border-white">
-        {tab === 'home' && (
+        <RibbonDivider />
+
+        <RibbonButton title="Undo (Ctrl+Z)" disabled={!editor.can().undo()} onClick={() => editor.chain().focus().undo().run()}>
+          <Undo2 className="w-3.5 h-3.5" />
+        </RibbonButton>
+        <RibbonButton title="Redo (Ctrl+Y)" disabled={!editor.can().redo()} onClick={() => editor.chain().focus().redo().run()}>
+          <Redo2 className="w-3.5 h-3.5" />
+        </RibbonButton>
+
+        <RibbonDivider />
+
+        {!isCompact && (
           <>
-            <RibbonGroup label="Undo">
-              <RibbonButton title="Undo (Ctrl+Z)" disabled={!editor.can().undo()} onClick={() => editor.chain().focus().undo().run()}>
-                <Undo2 className="w-3.5 h-3.5" />
-              </RibbonButton>
-              <RibbonButton title="Redo (Ctrl+Y)" disabled={!editor.can().redo()} onClick={() => editor.chain().focus().redo().run()}>
-                <Redo2 className="w-3.5 h-3.5" />
-              </RibbonButton>
-            </RibbonGroup>
-
+            {documentToolsGroup}
             <RibbonDivider />
-
-            <RibbonGroup label="Font">
-              <div className="flex flex-col gap-1">
-                <div className="flex items-center gap-1">
-                  <RibbonSelect
-                    title="Font family"
-                    widthClass="w-32"
-                    value={currentFontFamily}
-                    onChange={(v) => (v ? editor.chain().focus().setFontFamily(v).run() : editor.chain().focus().unsetFontFamily().run())}
-                    options={FONT_FAMILIES.map((f) => ({ value: f.value, label: f.label, style: f.value ? { fontFamily: f.value } : undefined }))}
-                  />
-                  <RibbonSelect
-                    title="Font size"
-                    widthClass="w-16"
-                    value={currentFontSize}
-                    onChange={(v) => editor.chain().focus().setFontSize(v).run()}
-                    options={FONT_SIZES.map((s) => ({ value: s, label: s }))}
-                  />
-                </div>
-                <div className="flex items-center gap-0.5">
-                  <RibbonButton title="Bold (Ctrl+B)" active={editor.isActive('bold')} onClick={() => editor.chain().focus().toggleBold().run()}>
-                    <Bold className="w-3.5 h-3.5" />
-                  </RibbonButton>
-                  <RibbonButton title="Italic (Ctrl+I)" active={editor.isActive('italic')} onClick={() => editor.chain().focus().toggleItalic().run()}>
-                    <Italic className="w-3.5 h-3.5" />
-                  </RibbonButton>
-                  <RibbonButton title="Underline (Ctrl+U)" active={editor.isActive('underline')} onClick={() => editor.chain().focus().toggleUnderline().run()}>
-                    <UnderlineIcon className="w-3.5 h-3.5" />
-                  </RibbonButton>
-                  <RibbonButton title="Strikethrough" active={editor.isActive('strike')} onClick={() => editor.chain().focus().toggleStrike().run()}>
-                    <Strikethrough className="w-3.5 h-3.5" />
-                  </RibbonButton>
-                  <RibbonButton title="Subscript" active={editor.isActive('subscript')} onClick={() => editor.chain().focus().toggleSubscript().run()}>
-                    <SubscriptIcon className="w-3.5 h-3.5" />
-                  </RibbonButton>
-                  <RibbonButton title="Superscript" active={editor.isActive('superscript')} onClick={() => editor.chain().focus().toggleSuperscript().run()}>
-                    <SuperscriptIcon className="w-3.5 h-3.5" />
-                  </RibbonButton>
-                  <RibbonColorPicker
-                    title="Text color"
-                    icon={<Baseline className="w-3.5 h-3.5" />}
-                    currentColor={currentColor}
-                    onPick={(c) => editor.chain().focus().setColor(c).run()}
-                    onClear={() => editor.chain().focus().unsetColor().run()}
-                  />
-                  <RibbonColorPicker
-                    title="Highlight"
-                    icon={<Highlighter className="w-3.5 h-3.5" />}
-                    currentColor={currentHighlight}
-                    onPick={(c) => editor.chain().focus().setHighlight({ color: c }).run()}
-                    onClear={() => editor.chain().focus().unsetHighlight().run()}
-                  />
-                </div>
-              </div>
-            </RibbonGroup>
-
+            {zoomGroup}
             <RibbonDivider />
-
-            <RibbonGroup label="Paragraph">
-              <div className="flex flex-col gap-1">
-                <div className="flex items-center gap-0.5">
-                  <RibbonButton title="Align left" active={editor.isActive({ textAlign: 'left' })} onClick={() => editor.chain().focus().setTextAlign('left').run()}>
-                    <AlignLeft className="w-3.5 h-3.5" />
-                  </RibbonButton>
-                  <RibbonButton title="Align center" active={editor.isActive({ textAlign: 'center' })} onClick={() => editor.chain().focus().setTextAlign('center').run()}>
-                    <AlignCenter className="w-3.5 h-3.5" />
-                  </RibbonButton>
-                  <RibbonButton title="Align right" active={editor.isActive({ textAlign: 'right' })} onClick={() => editor.chain().focus().setTextAlign('right').run()}>
-                    <AlignRight className="w-3.5 h-3.5" />
-                  </RibbonButton>
-                  <RibbonButton title="Justify" active={editor.isActive({ textAlign: 'justify' })} onClick={() => editor.chain().focus().setTextAlign('justify').run()}>
-                    <AlignJustify className="w-3.5 h-3.5" />
-                  </RibbonButton>
-                </div>
-                <div className="flex items-center gap-0.5">
-                  <RibbonButton title="Bulleted list" active={editor.isActive('bulletList')} onClick={() => editor.chain().focus().toggleBulletList().run()}>
-                    <List className="w-3.5 h-3.5" />
-                  </RibbonButton>
-                  <RibbonButton title="Numbered list" active={editor.isActive('orderedList')} onClick={() => editor.chain().focus().toggleOrderedList().run()}>
-                    <ListOrdered className="w-3.5 h-3.5" />
-                  </RibbonButton>
-                  <RibbonButton
-                    title="Decrease indent (Shift+Tab in a list)"
-                    disabled={!editor.can().liftListItem('listItem')}
-                    onClick={() => editor.chain().focus().liftListItem('listItem').run()}
-                  >
-                    <Outdent className="w-3.5 h-3.5" />
-                  </RibbonButton>
-                  <RibbonButton
-                    title="Increase indent / nest list (Tab in a list)"
-                    disabled={!editor.can().sinkListItem('listItem')}
-                    onClick={() => editor.chain().focus().sinkListItem('listItem').run()}
-                  >
-                    <Indent className="w-3.5 h-3.5" />
-                  </RibbonButton>
-                  <RibbonButton
-                    title="Continue numbering from the previous list"
-                    disabled={!editor.isActive('orderedList')}
-                    onClick={continueNumbering}
-                  >
-                    <ListPlus className="w-3.5 h-3.5" />
-                  </RibbonButton>
-                  <RibbonButton
-                    title="Restart numbering at 1"
-                    disabled={!editor.isActive('orderedList')}
-                    onClick={() => editor.chain().focus().updateAttributes('orderedList', { start: 1 }).run()}
-                  >
-                    <ListRestart className="w-3.5 h-3.5" />
-                  </RibbonButton>
-                </div>
-              </div>
-            </RibbonGroup>
-
+            {textStyleGroup}
             <RibbonDivider />
-
-            <RibbonGroup label="Styles">
-              <RibbonSelect title="Paragraph style" widthClass="w-28" value={activeHeading} onChange={setHeading} options={HEADING_STYLES} />
-            </RibbonGroup>
           </>
         )}
 
-        {tab === 'insert' && (
+        <RibbonButton title="Bold (Ctrl+B)" active={editor.isActive('bold')} onClick={() => editor.chain().focus().toggleBold().run()}>
+          <Bold className="w-3.5 h-3.5" />
+        </RibbonButton>
+        <RibbonButton title="Italic (Ctrl+I)" active={editor.isActive('italic')} onClick={() => editor.chain().focus().toggleItalic().run()}>
+          <Italic className="w-3.5 h-3.5" />
+        </RibbonButton>
+        <RibbonButton title="Underline (Ctrl+U)" active={editor.isActive('underline')} onClick={() => editor.chain().focus().toggleUnderline().run()}>
+          <UnderlineIcon className="w-3.5 h-3.5" />
+        </RibbonButton>
+        {!isCompact && colorGroup}
+
+        <RibbonDivider />
+
+        {!isCompact && (
           <>
-            <RibbonGroup label="Tables">
-              <RibbonButton title="Insert 3×3 table" onClick={() => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}>
-                <TableIcon className="w-3.5 h-3.5" />
-                <span>Table</span>
-              </RibbonButton>
-            </RibbonGroup>
-
+            {insertGroup}
             <RibbonDivider />
-
-            <RibbonGroup label="Media">
-              <RibbonButton title="Insert image" onClick={() => imageInputRef.current?.click()}>
-                <ImageIcon className="w-3.5 h-3.5" />
-                <span>Image</span>
-              </RibbonButton>
-              <input
-                ref={imageInputRef}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) void insertImageFromFile(file);
-                  e.target.value = '';
-                }}
-              />
-              <RibbonButton title="Insert link" active={editor.isActive('link')} onClick={insertLink}>
-                <LinkIcon className="w-3.5 h-3.5" />
-                <span>Link</span>
-              </RibbonButton>
-            </RibbonGroup>
-
+            {alignGroup}
             <RibbonDivider />
-
-            <RibbonGroup label="Pages">
-              <RibbonButton title="Page break (Ctrl+Enter)" onClick={() => editor.chain().focus().insertPageBreak().run()}>
-                <FileDown className="w-3.5 h-3.5" />
-                <span>Page break</span>
-              </RibbonButton>
-              <RibbonButton title="Horizontal rule" onClick={() => editor.chain().focus().setHorizontalRule().run()}>
-                <Minus className="w-3.5 h-3.5" />
-                <span>Rule</span>
-              </RibbonButton>
-            </RibbonGroup>
+            {checklistGroup}
           </>
         )}
 
-        {tab === 'view' && (
-          <RibbonGroup label="Zoom">
-            <RibbonButton title="Zoom out" disabled={zoom <= 0.5} onClick={() => onZoomChange(Math.max(0.5, Math.round((zoom - 0.1) * 10) / 10))}>
-              <ZoomOut className="w-3.5 h-3.5" />
-            </RibbonButton>
-            <span className="text-xs text-zinc-600 tabular-nums w-11 text-center">{Math.round(zoom * 100)}%</span>
-            <RibbonButton title="Zoom in" disabled={zoom >= 2} onClick={() => onZoomChange(Math.min(2, Math.round((zoom + 0.1) * 10) / 10))}>
-              <ZoomIn className="w-3.5 h-3.5" />
-            </RibbonButton>
-            <RibbonButton title="Reset zoom" onClick={() => onZoomChange(1)}>
-              <span>100%</span>
-            </RibbonButton>
-          </RibbonGroup>
+        <RibbonButton title="Bulleted list" active={editor.isActive('bulletList')} onClick={() => editor.chain().focus().toggleBulletList().run()}>
+          <List className="w-3.5 h-3.5" />
+        </RibbonButton>
+        {!isCompact && bulletStyleGroup}
+
+        <RibbonButton title="Numbered list" active={editor.isActive('orderedList')} onClick={() => editor.chain().focus().toggleOrderedList().run()}>
+          <ListOrdered className="w-3.5 h-3.5" />
+        </RibbonButton>
+        {!isCompact && numberExtrasGroup}
+
+        {!isCompact && (
+          <>
+            <RibbonDivider />
+            {clearGroup}
+            <RibbonDivider />
+            {searchGroup}
+          </>
         )}
+
+        {isCompact && (
+          <>
+            <RibbonDivider />
+            <RibbonMoreMenu title="More options" trigger={<MoreHorizontal className="w-3.5 h-3.5" />}>
+              <RibbonMoreMenuSection label="Document">{documentToolsGroup}</RibbonMoreMenuSection>
+              <RibbonMoreMenuSection label="Zoom">{zoomGroup}</RibbonMoreMenuSection>
+              <RibbonMoreMenuSection label="Text style">{textStyleGroup}</RibbonMoreMenuSection>
+              <RibbonMoreMenuSection label="Color">{colorGroup}</RibbonMoreMenuSection>
+              <RibbonMoreMenuSection label="Insert">{insertGroup}</RibbonMoreMenuSection>
+              <RibbonMoreMenuSection label="Alignment & spacing">{alignGroup}</RibbonMoreMenuSection>
+              <RibbonMoreMenuSection label="Lists">
+                {checklistGroup}
+                {bulletStyleGroup}
+                {numberExtrasGroup}
+              </RibbonMoreMenuSection>
+              <RibbonMoreMenuSection label="Other">{clearGroup}</RibbonMoreMenuSection>
+              <div className="pt-1 border-t border-zinc-100">{searchGroup}</div>
+            </RibbonMoreMenu>
+          </>
+        )}
+
+        <input
+          ref={imageInputRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) void insertImageFromFile(file);
+            e.target.value = '';
+          }}
+        />
       </div>
     </div>
   );

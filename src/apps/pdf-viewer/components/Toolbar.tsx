@@ -29,6 +29,7 @@ import {
   Search,
   Check,
   Sidebar as SidebarIcon,
+  MoreHorizontal,
 } from 'lucide-react';
 
 interface ToolbarProps {
@@ -59,7 +60,97 @@ interface ToolbarProps {
   onShare: () => void;
   onToggleFullscreen: () => void;
   onUnlockPasswordPrompt: () => void;
+  /** Phone/tablet viewport: two-row toolbar with an overflow menu. */
+  compact?: boolean;
+  /** Phone-sized viewport: the tightest variant of `compact`. */
+  phone?: boolean;
 }
+
+const ZOOM_OPTIONS: { value: string; label: string }[] = [
+  { value: '50', label: '50%' },
+  { value: '75', label: '75%' },
+  { value: '100', label: '100%' },
+  { value: '125', label: '125%' },
+  { value: '150', label: '150%' },
+  { value: '200', label: '200%' },
+  { value: 'fit-width', label: 'Fit Width' },
+  { value: 'fit-page', label: 'Fit Page' },
+];
+
+/** Zoom picker that opens its own list inside the window. A native <select>'s popup is placed by the browser and can land off-screen. */
+const ZoomDropdown: React.FC<{
+  value: string;
+  disabled: boolean;
+  onSelect: (value: string) => void;
+}> = ({ value, disabled, onSelect }) => {
+  const [open, setOpen] = useState(false);
+  const [alignRight, setAlignRight] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const PANEL_W = 144;
+
+  useEffect(() => {
+    if (!open) return;
+    // Capture phase: the window shell stops propagation of pointer events that start inside it.
+    const handler = (e: PointerEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', handler, true);
+    return () => document.removeEventListener('pointerdown', handler, true);
+  }, [open]);
+
+  const toggle = () => {
+    if (!open && rootRef.current) {
+      const r = rootRef.current.getBoundingClientRect();
+      setAlignRight(r.left + PANEL_W > window.innerWidth - 8);
+    }
+    setOpen((v) => !v);
+  };
+
+  const current = ZOOM_OPTIONS.find((o) => o.value === value)?.label ?? `${value}%`;
+
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        onClick={toggle}
+        disabled={disabled}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        title="Zoom level"
+        className="flex items-center gap-1 bg-slate-900 text-slate-200 border border-slate-700 rounded px-2 py-1 text-xs font-extrabold disabled:opacity-30 cursor-pointer whitespace-nowrap"
+      >
+        <span>{current}</span>
+        <ChevronDown size={12} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div
+          role="listbox"
+          style={{ width: PANEL_W }}
+          className={`absolute top-full mt-1.5 z-50 max-h-[min(20rem,60vh)] overflow-y-auto bg-slate-900 border border-slate-700 rounded-xl shadow-2xl py-1 ${
+            alignRight ? 'right-0' : 'left-0'
+          }`}
+        >
+          {ZOOM_OPTIONS.map((o) => (
+            <button
+              key={o.value}
+              role="option"
+              aria-selected={o.value === value}
+              onClick={() => {
+                setOpen(false);
+                onSelect(o.value);
+              }}
+              className={`w-full text-left px-3 py-2.5 text-xs font-bold flex items-center justify-between cursor-pointer hover:bg-slate-800 ${
+                o.value === value ? 'text-blue-400' : 'text-slate-200'
+              }`}
+            >
+              {o.label}
+              {o.value === value && <Check size={13} />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
 
 export const Toolbar: React.FC<ToolbarProps> = ({
   documentTitle,
@@ -88,6 +179,8 @@ export const Toolbar: React.FC<ToolbarProps> = ({
   onShare,
   onToggleFullscreen,
   onUnlockPasswordPrompt,
+  compact = false,
+  phone = false,
 }) => {
   const blocked = isLocked || controlsDisabled;
   const [openMenuOpen, setOpenMenuOpen] = useState(false);
@@ -101,6 +194,281 @@ export const Toolbar: React.FC<ToolbarProps> = ({
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [openMenuOpen]);
+  const renderOpenPdf = (className: string) => (
+    <div className={className} ref={openMenuRef}>
+      <button
+        onClick={() => setOpenMenuOpen((v) => !v)}
+        className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-bold border border-slate-700 transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs"
+      >
+        <FolderOpen size={14} className="text-amber-400" />
+        <span>Open PDF</span>
+        <ChevronDown size={12} className={`transition-transform ${openMenuOpen ? 'rotate-180' : ''}`} />
+      </button>
+
+      {openMenuOpen && (
+        <div className="absolute left-0 top-full mt-1.5 w-56 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl z-50 overflow-hidden py-1">
+          <button
+            onClick={() => {
+              setOpenMenuOpen(false);
+              onOpenFromComputer();
+            }}
+            className="w-full text-left px-3 py-2.5 text-xs font-bold text-slate-200 hover:bg-slate-800 flex items-center gap-2.5 cursor-pointer"
+          >
+            <FolderOpen size={15} className="text-amber-400 shrink-0" /> From This Computer
+          </button>
+          <button
+            onClick={(e) => {
+              // The window container's own onClick refocuses this
+              // window on every click inside it — harmless normally,
+              // but it runs *after* this handler opens and focuses the
+              // picker window, stealing focus straight back to us.
+              e.stopPropagation();
+              setOpenMenuOpen(false);
+              onOpenFromDrive();
+            }}
+            className="w-full text-left px-3 py-2.5 text-xs font-bold text-slate-200 hover:bg-slate-800 flex items-center gap-2.5 cursor-pointer"
+          >
+            <HardDrive size={15} className="text-blue-400 shrink-0" /> From Drive OSX
+          </button>
+        </div>
+      )}
+    </div>
+  );
+
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!moreOpen) return;
+    const handler = (e: PointerEvent) => {
+      if (moreRef.current && !moreRef.current.contains(e.target as Node)) setMoreOpen(false);
+    };
+    // Capture phase: the window shell stops propagation of pointer events that
+    // start inside a window, so a bubbling listener never sees taps on the page.
+    document.addEventListener('pointerdown', handler, true);
+    return () => document.removeEventListener('pointerdown', handler, true);
+  }, [moreOpen]);
+
+  if (compact) {
+    const iconBtn =
+      'p-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-slate-200 rounded-lg border border-slate-700 transition-colors cursor-pointer';
+    const menuItem =
+      'w-full text-left px-3 py-2.5 text-xs font-bold text-slate-200 hover:bg-slate-800 disabled:opacity-40 flex items-center gap-2.5 cursor-pointer';
+    const pick = (fn: () => void) => () => {
+      setMoreOpen(false);
+      fn();
+    };
+    const tools = [
+      { id: 'select', label: 'Select', Icon: MousePointer, on: 'bg-blue-600 text-white border-blue-500', off: 'text-slate-400' },
+      { id: 'highlight', label: 'Highlight', Icon: Highlighter, on: 'bg-amber-500 text-slate-950 border-amber-400', off: 'text-amber-400' },
+      { id: 'underline', label: 'Underline', Icon: UnderlineIcon, on: 'bg-blue-600 text-white border-blue-500', off: 'text-blue-400' },
+      { id: 'strikeout', label: 'Strikeout', Icon: Strikethrough, on: 'bg-rose-600 text-white border-rose-500', off: 'text-rose-400' },
+      { id: 'sticky-note', label: 'Note', Icon: MessageSquarePlus, on: 'bg-emerald-600 text-white border-emerald-500', off: 'text-emerald-400' },
+      { id: 'drawing', label: 'Ink', Icon: Pencil, on: 'bg-purple-600 text-white border-purple-500', off: 'text-purple-400' },
+    ] as const;
+
+    return (
+      <div className="bg-slate-900 border-b border-slate-800 text-slate-200 select-none shrink-0 font-sans">
+        <div className="px-2 py-2 flex items-center gap-2">
+          <button
+            onClick={onToggleSidebar}
+            className={`shrink-0 p-2 rounded-lg border transition-colors cursor-pointer ${
+              sidebarOpen
+                ? 'bg-blue-600 text-white border-blue-500'
+                : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+            }`}
+            title="Pages, bookmarks and search"
+            aria-label="Toggle pages panel"
+          >
+            <SidebarIcon size={16} />
+          </button>
+
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            <div className="shrink-0 p-1.5 bg-rose-600 rounded-lg text-white shadow-sm">
+              <FileText size={16} />
+            </div>
+            <div className="flex flex-col min-w-0">
+              <span className="font-black text-xs text-white truncate">{documentTitle}</span>
+              <span className="text-[10px] text-slate-400 font-semibold truncate">
+                {isLocked ? 'Password locked' : totalPages > 0 ? `${totalPages} page${totalPages === 1 ? '' : 's'}` : 'PDF Document'}
+              </span>
+            </div>
+          </div>
+
+          {!phone && renderOpenPdf('relative shrink-0')}
+
+          <button onClick={onOpenSearch} disabled={blocked} className={`shrink-0 ${iconBtn}`} title="Search text in PDF" aria-label="Search">
+            <Search size={15} />
+          </button>
+
+          <div className="relative shrink-0" ref={moreRef}>
+            <button
+              onClick={() => setMoreOpen((v) => !v)}
+              className={`${iconBtn} ${moreOpen ? 'bg-slate-700' : ''}`}
+              title="More actions"
+              aria-label="More actions"
+            >
+              <MoreHorizontal size={15} />
+            </button>
+            {moreOpen && (
+              <div className="absolute right-0 top-full mt-1.5 w-60 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl z-50 overflow-hidden py-1">
+                {phone && (
+                  <>
+                    <button className={menuItem} onClick={pick(onOpenFromComputer)}>
+                      <FolderOpen size={15} className="text-amber-400 shrink-0" /> Open from this computer
+                    </button>
+                    <button
+                      className={menuItem}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setMoreOpen(false);
+                        onOpenFromDrive();
+                      }}
+                    >
+                      <HardDrive size={15} className="text-blue-400 shrink-0" /> Open from Drive OSX
+                    </button>
+                    <div className="my-1 border-t border-slate-800" />
+                    <button className={menuItem} disabled={blocked} onClick={pick(onRotate)}>
+                      <RotateCw size={15} className="shrink-0" /> Rotate clockwise
+                    </button>
+                    <button className={menuItem} onClick={pick(onToggleReadOnly)}>
+                      <Eye size={15} className="shrink-0" /> {isReadOnly ? 'Switch to edit mode' : 'Switch to read-only'}
+                    </button>
+                    <div className="my-1 border-t border-slate-800" />
+                  </>
+                )}
+                <button className={menuItem} disabled={blocked} onClick={pick(onCopyText)}>
+                  <Copy size={15} className="shrink-0" /> Copy page text
+                </button>
+                <button className={menuItem} disabled={blocked} onClick={pick(onDownload)}>
+                  <Download size={15} className="shrink-0" /> Download
+                </button>
+                <button className={menuItem} disabled={blocked} onClick={pick(onPrint)}>
+                  <Printer size={15} className="shrink-0" /> Print
+                </button>
+                <button className={menuItem} onClick={pick(onShare)}>
+                  <Share2 size={15} className="shrink-0" /> Share
+                </button>
+                <button className={menuItem} onClick={pick(onToggleFullscreen)}>
+                  <Maximize2 size={15} className="shrink-0" /> Fullscreen
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="px-2 pb-2 flex items-center gap-2">
+          <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs font-bold">
+            <button
+              onClick={() => onPageChange(currentPage - 1)}
+              disabled={currentPage <= 1 || blocked}
+              className="p-1.5 hover:bg-slate-800 disabled:opacity-30 rounded text-slate-300 cursor-pointer"
+              title="Previous Page"
+              aria-label="Previous page"
+            >
+              <ChevronLeft size={16} />
+            </button>
+            <div className="flex items-center gap-1 px-0.5">
+              <input
+                type="number"
+                min={1}
+                max={totalPages}
+                value={currentPage}
+                disabled={blocked}
+                onChange={(e) => {
+                  const val = parseInt(e.target.value, 10);
+                  if (!isNaN(val)) onPageChange(Math.max(1, Math.min(totalPages, val)));
+                }}
+                className="w-9 bg-slate-900 border border-slate-700 rounded text-center text-xs text-white font-extrabold focus:outline-none focus:ring-1 focus:ring-blue-500 py-0.5"
+              />
+              <span className="text-slate-400 text-xs">/ {totalPages}</span>
+            </div>
+            <button
+              onClick={() => onPageChange(currentPage + 1)}
+              disabled={currentPage >= totalPages || blocked}
+              className="p-1.5 hover:bg-slate-800 disabled:opacity-30 rounded text-slate-300 cursor-pointer"
+              title="Next Page"
+              aria-label="Next page"
+            >
+              <ChevronRight size={16} />
+            </button>
+          </div>
+
+          <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs font-bold">
+            <button
+              onClick={() => onZoomChange(Math.max(25, zoomLevel - 25), 'custom')}
+              disabled={blocked}
+              className="p-1.5 hover:bg-slate-800 disabled:opacity-30 rounded text-slate-300 cursor-pointer"
+              title="Zoom Out"
+              aria-label="Zoom out"
+            >
+              <ZoomOut size={16} />
+            </button>
+            <ZoomDropdown
+              value={fitMode !== 'custom' ? fitMode : String(zoomLevel)}
+              disabled={blocked}
+              onSelect={(val) => {
+                if (val === 'fit-width') onZoomChange(100, 'fit-width');
+                else if (val === 'fit-page') onZoomChange(100, 'fit-page');
+                else onZoomChange(parseInt(val, 10), 'custom');
+              }}
+            />
+            <button
+              onClick={() => onZoomChange(Math.min(300, zoomLevel + 25), 'custom')}
+              disabled={blocked}
+              className="p-1.5 hover:bg-slate-800 disabled:opacity-30 rounded text-slate-300 cursor-pointer"
+              title="Zoom In"
+              aria-label="Zoom in"
+            >
+              <ZoomIn size={16} />
+            </button>
+          </div>
+
+          {!phone && (
+            <>
+              <button onClick={onRotate} disabled={blocked} className={iconBtn} title={`Rotate Clockwise 90° (Current: ${rotation}°)`} aria-label="Rotate">
+                <RotateCw size={15} />
+              </button>
+              <button
+                onClick={onToggleReadOnly}
+                className={`ml-auto px-2.5 py-2 rounded-lg text-xs font-bold border transition-colors flex items-center gap-1 cursor-pointer ${
+                  isReadOnly
+                    ? 'bg-amber-950/80 text-amber-300 border-amber-700/80'
+                    : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                }`}
+                title="Toggle Read-Only Mode"
+              >
+                <Eye size={13} />
+                <span>{isReadOnly ? 'Read-Only' : 'Edit Mode'}</span>
+              </button>
+            </>
+          )}
+        </div>
+
+        {!isReadOnly && !blocked && (
+          <div className="px-2 py-1.5 bg-slate-950/80 border-t border-slate-800 flex items-center gap-1.5 text-xs">
+            {tools.map(({ id, label, Icon, on, off }) => {
+              const active = id === 'select' ? activeAnnotationTool === 'select' || activeAnnotationTool === null : activeAnnotationTool === id;
+              return (
+                <button
+                  key={id}
+                  onClick={() => onSetAnnotationTool(id)}
+                  title={label}
+                  aria-label={label}
+                  className={`flex-1 min-w-0 justify-center ${phone ? 'px-1.5' : 'px-2.5'} py-1.5 rounded-lg font-extrabold flex items-center gap-1.5 transition-all cursor-pointer border ${
+                    active ? on : `bg-slate-900 border-slate-800 hover:bg-slate-800 ${off}`
+                  }`}
+                >
+                  <Icon size={14} className="shrink-0" />
+                  {!phone && <span className="truncate">{label}</span>}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="bg-slate-900 border-b border-slate-800 text-slate-200 select-none shrink-0 font-sans">
       {/* Top Main Toolbar Header */}
@@ -145,44 +513,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
             </div>
           </div>
 
-          <div className="relative ml-2" ref={openMenuRef}>
-            <button
-              onClick={() => setOpenMenuOpen((v) => !v)}
-              className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-bold border border-slate-700 transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs"
-            >
-              <FolderOpen size={14} className="text-amber-400" />
-              <span>Open PDF</span>
-              <ChevronDown size={12} className={`transition-transform ${openMenuOpen ? 'rotate-180' : ''}`} />
-            </button>
-
-            {openMenuOpen && (
-              <div className="absolute left-0 top-full mt-1.5 w-56 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl z-50 overflow-hidden py-1">
-                <button
-                  onClick={() => {
-                    setOpenMenuOpen(false);
-                    onOpenFromComputer();
-                  }}
-                  className="w-full text-left px-3 py-2.5 text-xs font-bold text-slate-200 hover:bg-slate-800 flex items-center gap-2.5 cursor-pointer"
-                >
-                  <FolderOpen size={15} className="text-amber-400 shrink-0" /> From This Computer
-                </button>
-                <button
-                  onClick={(e) => {
-                    // The window container's own onClick refocuses this
-                    // window on every click inside it — harmless normally,
-                    // but it runs *after* this handler opens and focuses the
-                    // picker window, stealing focus straight back to us.
-                    e.stopPropagation();
-                    setOpenMenuOpen(false);
-                    onOpenFromDrive();
-                  }}
-                  className="w-full text-left px-3 py-2.5 text-xs font-bold text-slate-200 hover:bg-slate-800 flex items-center gap-2.5 cursor-pointer"
-                >
-                  <HardDrive size={15} className="text-blue-400 shrink-0" /> From Drive OSX
-                </button>
-              </div>
-            )}
-          </div>
+          {renderOpenPdf('relative ml-2')}
         </div>
 
         {/* Middle Section: Page Controls, Zoom, Rotate */}

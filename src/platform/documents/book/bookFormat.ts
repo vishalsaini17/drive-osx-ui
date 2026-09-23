@@ -13,7 +13,7 @@ import { PageSetup } from './pageSetup';
  * mechanism. Images are referenced by `fileId` into the existing file/object
  * storage, never inlined as base64, so `.book` files stay small.
  */
-export const BOOK_FORMAT_VERSION = 1;
+export const BOOK_FORMAT_VERSION = 2;
 
 export interface BookMetadata {
   title: string;
@@ -37,6 +37,14 @@ export interface HeaderFooterDoc {
 
 export interface BookSection {
   id: string;
+  /** Shown as the tab's label in the Document tabs panel. */
+  title: string;
+  /** A single emoji chosen via the tab's "Choose emoji" action, or null for the default document icon. */
+  emoji: string | null;
+  /** The enclosing tab's id, or null for a top-level tab — this is what makes a tab a subtab. */
+  parentId: string | null;
+  /** Position among siblings sharing the same `parentId`; lower sorts first. Not necessarily contiguous. */
+  order: number;
   /** Overrides merged over `BookDocument.defaultPageSetup`. */
   pageSetup: Partial<PageSetup>;
   headerRef: string | null;
@@ -84,8 +92,22 @@ export function migrateBookDocument(raw: unknown): BookDocument {
     );
   }
 
-  // No migrations exist yet (only format v1 has ever shipped) — this is the
-  // seam future versions hang their upgrade steps on.
+  // v1 -> v2: Document tabs added `title`/`emoji`/`parentId`/`order` to each
+  // section. A v1 file only ever had exactly one section (Phase 1's implicit
+  // single section — see toBookDocument.ts), so backfilling it as a single
+  // top-level tab reproduces the same document, just now addressable as
+  // "Tab 1" in the tabs panel instead of being an unnamed, unmovable section.
+  const sections = (doc.sections ?? []).map((section, index) => {
+    const partial = section as Partial<BookSection>;
+    return {
+      ...section,
+      title: partial.title ?? `Tab ${index + 1}`,
+      emoji: partial.emoji ?? null,
+      parentId: partial.parentId ?? null,
+      order: partial.order ?? index,
+    } as BookSection;
+  });
+
   return {
     formatVersion: BOOK_FORMAT_VERSION,
     metadata: doc.metadata ?? {
@@ -95,7 +117,7 @@ export function migrateBookDocument(raw: unknown): BookDocument {
       modifiedAt: new Date().toISOString(),
     },
     defaultPageSetup: doc.defaultPageSetup as PageSetup,
-    sections: doc.sections ?? [],
+    sections,
     headers: doc.headers ?? {},
     footers: doc.footers ?? {},
     assets: doc.assets ?? {},

@@ -1,4 +1,5 @@
 import { AppManifest } from './AppRegistry';
+import { BOOK_MIME_TYPE } from '../documents/book/bookFormat';
 
 export interface EditorMapping {
   appId: string;
@@ -43,6 +44,17 @@ export const EDITOR_REGISTRY: EditorMapping[] = [
     mimeTypes: ['text/html'],
     extensions: ['htm', 'html'],
     label: 'Web Browser',
+  },
+  {
+    appId: 'wordbook',
+    // `.doc`/`.docx` open in Word Book via a best-effort import (Mammoth
+    // converts the file to HTML, which the editor then ingests) — not a
+    // full, lossless round-trip of every Word feature, but a real, working
+    // open rather than the dead end (a blank preview pane) double-clicking
+    // one produced before this entry existed.
+    mimeTypes: [BOOK_MIME_TYPE, 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+    extensions: ['book', 'doc', 'docx'],
+    label: 'Word Book',
   },
 ];
 

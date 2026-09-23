@@ -45,7 +45,20 @@ export interface MenuHeading {
   label: string;
 }
 
-export type MenuItem = MenuAction | MenuSubmenu | MenuSeparator | MenuHeading;
+/**
+ * An escape hatch for menu content that isn't a row of text — a table
+ * size grid, a color swatch picker, anything with its own interaction
+ * model. `render` gets the enclosing panel's `onClose` so it can end the
+ * whole dropdown itself once the user has actually picked something,
+ * the same way a regular action item closes on `onSelect`.
+ */
+export interface MenuCustom {
+  kind: 'custom';
+  id: string;
+  render: (ctx: { onClose: () => void }) => React.ReactNode;
+}
+
+export type MenuItem = MenuAction | MenuSubmenu | MenuSeparator | MenuHeading | MenuCustom;
 
 export interface Menu {
   id: string;
@@ -65,8 +78,12 @@ export function isSubmenu(item: MenuItem): item is MenuSubmenu {
   return (item as MenuSubmenu).kind === 'submenu';
 }
 
+export function isCustom(item: MenuItem): item is MenuCustom {
+  return (item as MenuCustom).kind === 'custom';
+}
+
 export function isAction(item: MenuItem): item is MenuAction {
-  return !isSeparator(item) && !isHeading(item) && !isSubmenu(item);
+  return !isSeparator(item) && !isHeading(item) && !isSubmenu(item) && !isCustom(item);
 }
 
 /** Convenience builders, so app menu definitions stay readable. */

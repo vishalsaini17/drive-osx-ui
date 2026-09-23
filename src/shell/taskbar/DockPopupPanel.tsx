@@ -37,10 +37,17 @@ export function DockPopupPanel({
 }: DockPopupPanelProps) {
   const shell = useShellTheme();
 
-  const positionClass =
-    position === 'left'
-      ? 'left-1/2 -translate-x-1/2 sm:left-0 sm:translate-x-0 md:-translate-x-[15%]'
-      : 'right-1/2 translate-x-1/2 sm:right-0 sm:translate-x-0';
+  // Anchored to the true screen edge, not to whichever dock pill opened it.
+  // Anchoring to the pill (its own former design, restored briefly per
+  // breakpoint below `sm`/`md`) only happens to stay on-screen when that
+  // pill is close enough to the edge already — how close depends on how
+  // many apps are pinned to the dock and on the viewport width, so it broke
+  // at phone widths (reported) and, measured while fixing that, was only
+  // 4px from doing the same at 1440px desktop width with a fuller dock. A
+  // flat 12px margin from the real edge can't overflow at any width or dock
+  // length, so it replaces the pill-relative anchoring at every size rather
+  // than just below the breakpoint that was actually reported.
+  const positionClass = position === 'left' ? 'left-3' : 'right-3';
 
   return (
     <>
@@ -56,7 +63,7 @@ export function DockPopupPanel({
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={{ opacity: 0, y: 20, scale: 0.94 }}
         transition={{ type: 'spring', damping: 25, stiffness: 280 }}
-        className={`absolute bottom-[76px] sm:bottom-[86px] ${positionClass} ${widthClass} max-w-[calc(100vw-1.5rem)] max-h-[calc(100vh-95px)] overflow-y-auto rounded-[28px] p-3 flex flex-col gap-2.5 z-[999] pointer-events-auto select-none font-sans ${shell.panel} ${shell.text} ${className}`}
+        className={`fixed bottom-[76px] sm:bottom-[86px] ${positionClass} ${widthClass} max-w-[calc(100vw-1.5rem)] max-h-[calc(100vh-95px)] overflow-y-auto rounded-[28px] p-3 flex flex-col gap-2.5 z-[999] pointer-events-auto select-none font-sans ${shell.panel} ${shell.text} ${className}`}
       >
         {children}
       </motion.div>
