@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import pptxgen from 'pptxgenjs';
 import { jsPDF } from 'jspdf';
 import {
@@ -16,6 +16,7 @@ import { PresentationMode } from './components/PresentationMode';
 import { InsertElementModal } from './components/InsertElementModal';
 import { ShareCollabModal } from './components/ShareCollabModal';
 import { useSystemStore } from '../../shell/state/systemStore';
+import { useContainerWidth } from '../../platform/layout/useContainerWidth';
 import {
   Tv,
   Plus,
@@ -45,6 +46,8 @@ import {
   Maximize2,
   Layers,
   Eye,
+  Menu,
+  MoreVertical,
 } from 'lucide-react';
 
 export default function PresentationApp() {
@@ -59,6 +62,32 @@ export default function PresentationApp() {
   const [showShareModal, setShowShareModal] = useState<boolean>(false);
   const [showLayoutMenu, setShowLayoutMenu] = useState<boolean>(false);
   const [commentsDrawerOpen, setCommentsDrawerOpen] = useState<boolean>(false);
+
+  // Layout follows the app window's own width, not the browser viewport —
+  // below the shell's mobile breakpoint a window has no minimum width at all
+  // (systemStore forces it to fill whatever real screen it's on), so this app
+  // has to hold together well under its desktop `minW: 720`, not just at it.
+  //
+  // Two panes are fixed-width by design (the w-56 slide rail, the w-80
+  // comments drawer) and don't have anywhere to shrink to, so below `isTablet`
+  // the rail becomes a toggle drawer, and below `isMobile` the comments panel
+  // becomes a full overlay instead of squeezing the canvas into a sliver.
+  const { ref: rootRef, width } = useContainerWidth<HTMLDivElement>(0, 980);
+  const isTablet = width < 760;
+  const isMobile = width < 520;
+  const [slidesNavOpen, setSlidesNavOpen] = useState<boolean>(false);
+  // Once the rail is shown inline again there's no drawer to leave open.
+  useEffect(() => {
+    if (!isTablet) setSlidesNavOpen(false);
+  }, [isTablet]);
+
+  // Below `isTablet` the header no longer has room for five separate action
+  // buttons on one line — Share/Comments/Export/Save fold into this menu,
+  // leaving only the icon that opens it plus the primary Present button.
+  const [showActionsMenu, setShowActionsMenu] = useState<boolean>(false);
+  useEffect(() => {
+    if (!isTablet) setShowActionsMenu(false);
+  }, [isTablet]);
 
   // Presenter Notes Input State
   const [commentInput, setCommentInput] = useState<string>('');
@@ -397,94 +426,195 @@ export default function PresentationApp() {
   };
 
   return (
-    <div className="h-full flex flex-col bg-slate-900 font-sans text-slate-100 select-none overflow-hidden">
+    <div
+      ref={rootRef}
+      className="h-full flex flex-col bg-slate-900 font-sans text-slate-100 select-none overflow-hidden"
+    >
       {/* ================= 1. TOP TITLEBAR & APP HEADER ================= */}
-      <div className="bg-slate-950 px-4 py-2 flex items-center justify-between border-b border-slate-800 shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="p-1.5 bg-blue-600 rounded-lg text-white shadow-md">
+      <div className="bg-slate-950 px-4 py-2 flex items-center justify-between gap-2 border-b border-slate-800 shrink-0">
+        <div className="flex items-center gap-3 min-w-0 flex-1">
+          {/* Below `isTablet` the slide rail moves into a drawer, so this is
+              its only remaining entry point. Its glyph (3 stacked lines) is
+              deliberately different from the "more actions" glyph on the
+              right (3 dots) — two identical hamburgers side by side is what
+              read as "overlapping" before. */}
+          {isTablet && (
+            <button
+              onClick={() => setSlidesNavOpen(true)}
+              className="shrink-0 p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg border border-slate-700 cursor-pointer"
+              title="Slides"
+              aria-label="Open slides navigator"
+            >
+              <Menu size={16} />
+            </button>
+          )}
+
+          <div className="p-1.5 bg-blue-600 rounded-lg text-white shadow-md shrink-0">
             <Tv size={18} />
           </div>
-          <div className="flex flex-col">
+          <div className="flex flex-col min-w-0 flex-1">
             <input
               type="text"
               value={deck.title}
               onChange={(e) => setDeck((prev) => ({ ...prev, title: e.target.value }))}
-              className="bg-transparent text-xs font-black tracking-wide text-white focus:bg-slate-800/80 focus:outline-none px-1.5 py-0.5 rounded border border-transparent focus:border-slate-700"
+              className="w-full min-w-0 bg-transparent text-xs font-black tracking-wide text-white focus:bg-slate-800/80 focus:outline-none px-1.5 py-0.5 rounded border border-transparent focus:border-slate-700"
             />
-            <span className="text-[10px] text-slate-400 font-medium">Drive OSX Presentation Studio • Live Sync</span>
+            {/* Decorative subtitle — the first thing to go once space is tight. */}
+            {!isTablet && (
+              <span className="text-[10px] text-slate-400 font-medium truncate">
+                Drive OSX Presentation Studio • Live Sync
+              </span>
+            )}
           </div>
         </div>
 
-        {/* Action Controls */}
-        <div className="flex items-center gap-2">
-          {/* Share Collab */}
-          <button
-            onClick={() => setShowShareModal(true)}
-            className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-lg border border-slate-700 transition-colors flex items-center gap-1.5 cursor-pointer"
-          >
-            <Share2 size={13} className="text-blue-400" /> Share (2)
-          </button>
+        {/* Action Controls — on a wide window, every action is its own
+            button. Below `isTablet` that row has nowhere to go (there is no
+            wrap and nothing left to shrink), so everything except the
+            primary Present action folds into a single overflow menu instead
+            of quietly clipping off the edge of the window. */}
+        <div className="flex items-center gap-2 shrink-0">
+          {!isTablet ? (
+            <>
+              {/* Share Collab */}
+              <button
+                onClick={() => setShowShareModal(true)}
+                className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-lg border border-slate-700 transition-colors flex items-center gap-1.5 cursor-pointer"
+              >
+                <Share2 size={13} className="text-blue-400" /> Share (2)
+              </button>
 
-          {/* Comments Toggle */}
-          <button
-            onClick={() => setCommentsDrawerOpen(!commentsDrawerOpen)}
-            className={`px-3 py-1 text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 border cursor-pointer ${
-              commentsDrawerOpen
-                ? 'bg-blue-600 text-white border-blue-600'
-                : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
-            }`}
-          >
-            <MessageCircle size={13} />
-            <span>Comments ({activeSlide.comments.length})</span>
-          </button>
+              {/* Comments Toggle */}
+              <button
+                onClick={() => setCommentsDrawerOpen(!commentsDrawerOpen)}
+                className={`px-3 py-1 text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 border cursor-pointer ${
+                  commentsDrawerOpen
+                    ? 'bg-blue-600 text-white border-blue-600'
+                    : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                }`}
+              >
+                <MessageCircle size={13} />
+                <span>Comments ({activeSlide.comments.length})</span>
+              </button>
 
-          {/* Export Group */}
-          <div className="flex items-center gap-1 bg-blue-600 rounded-lg p-0.5 shadow-md">
-            <button
-              onClick={handleExportPPTX}
-              className="px-2.5 py-1 text-white text-xs font-bold hover:bg-blue-700 rounded transition-colors flex items-center gap-1 cursor-pointer"
-              title="Export as Native PowerPoint .PPTX"
-            >
-              <Download size={13} /> PPTX
-            </button>
-            <button
-              onClick={handleExportPDF}
-              className="px-2 py-1 text-white text-xs font-bold hover:bg-blue-700 rounded transition-colors cursor-pointer"
-              title="Export as PDF Document"
-            >
-              PDF
-            </button>
-          </div>
+              {/* Export Group */}
+              <div className="flex items-center gap-1 bg-blue-600 rounded-lg p-0.5 shadow-md">
+                <button
+                  onClick={handleExportPPTX}
+                  className="px-2.5 py-1 text-white text-xs font-bold hover:bg-blue-700 rounded transition-colors flex items-center gap-1 cursor-pointer"
+                  title="Export as Native PowerPoint .PPTX"
+                >
+                  <Download size={13} /> PPTX
+                </button>
+                <button
+                  onClick={handleExportPDF}
+                  className="px-2 py-1 text-white text-xs font-bold hover:bg-blue-700 rounded transition-colors cursor-pointer"
+                  title="Export as PDF Document"
+                >
+                  PDF
+                </button>
+              </div>
 
-          {/* Save to System Disk */}
-          <button
-            onClick={handleSaveToDisk}
-            className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg border border-slate-700 cursor-pointer"
-            title="Save to Drive System Disk"
-          >
-            <Download size={14} />
-          </button>
+              {/* Save to System Disk */}
+              <button
+                onClick={handleSaveToDisk}
+                className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg border border-slate-700 cursor-pointer"
+                title="Save to Drive System Disk"
+              >
+                <Download size={14} />
+              </button>
+            </>
+          ) : (
+            <div className="relative shrink-0">
+              <button
+                onClick={() => setShowActionsMenu((v) => !v)}
+                className={`p-1.5 rounded-lg border cursor-pointer flex items-center gap-1 ${
+                  commentsDrawerOpen
+                    ? 'bg-blue-600 border-blue-600 text-white'
+                    : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
+                }`}
+                title="More actions"
+                aria-label="More actions"
+              >
+                <MoreVertical size={16} />
+                {activeSlide.comments.length > 0 && (
+                  <span className="text-[10px] font-bold leading-none">{activeSlide.comments.length}</span>
+                )}
+              </button>
 
-          {/* Presentation Mode Button */}
+              {showActionsMenu && (
+                <div className="absolute top-10 right-0 w-52 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl p-1.5 z-40 space-y-0.5">
+                  <button
+                    onClick={() => {
+                      setShowShareModal(true);
+                      setShowActionsMenu(false);
+                    }}
+                    className="w-full text-left px-3 py-2 text-xs font-bold text-slate-200 hover:bg-slate-800 hover:text-white rounded-lg cursor-pointer flex items-center gap-2"
+                  >
+                    <Share2 size={14} className="text-blue-400" /> Share (2)
+                  </button>
+                  <button
+                    onClick={() => {
+                      setCommentsDrawerOpen((v) => !v);
+                      setShowActionsMenu(false);
+                    }}
+                    className="w-full text-left px-3 py-2 text-xs font-bold text-slate-200 hover:bg-slate-800 hover:text-white rounded-lg cursor-pointer flex items-center gap-2"
+                  >
+                    <MessageCircle size={14} /> Comments ({activeSlide.comments.length})
+                  </button>
+                  <button
+                    onClick={() => {
+                      handleExportPPTX();
+                      setShowActionsMenu(false);
+                    }}
+                    className="w-full text-left px-3 py-2 text-xs font-bold text-slate-200 hover:bg-slate-800 hover:text-white rounded-lg cursor-pointer flex items-center gap-2"
+                  >
+                    <Download size={14} /> Export PPTX
+                  </button>
+                  <button
+                    onClick={() => {
+                      handleExportPDF();
+                      setShowActionsMenu(false);
+                    }}
+                    className="w-full text-left px-3 py-2 text-xs font-bold text-slate-200 hover:bg-slate-800 hover:text-white rounded-lg cursor-pointer flex items-center gap-2"
+                  >
+                    <FileDown size={14} /> Export PDF
+                  </button>
+                  <button
+                    onClick={() => {
+                      handleSaveToDisk();
+                      setShowActionsMenu(false);
+                    }}
+                    className="w-full text-left px-3 py-2 text-xs font-bold text-slate-200 hover:bg-slate-800 hover:text-white rounded-lg cursor-pointer flex items-center gap-2"
+                  >
+                    <Download size={14} /> Save to Disk
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Presentation Mode Button — the primary action, so it's the one
+              button that never folds into the overflow menu. */}
           <button
             onClick={() => setIsPresentationMode(true)}
             className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold rounded-lg shadow-md transition-all flex items-center gap-1.5 cursor-pointer"
           >
-            <Play size={13} /> Present
+            <Play size={13} /> {!isMobile && 'Present'}
           </button>
         </div>
       </div>
 
       {/* ================= 2. SECONDARY TOOLBAR RIBBON ================= */}
       <div className="bg-slate-900 border-b border-slate-800 px-4 py-1.5 flex items-center justify-between overflow-x-auto shrink-0">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           {/* Create Slide & Layout Chooser */}
-          <div className="relative">
+          <div className="relative shrink-0">
             <button
               onClick={() => setShowLayoutMenu(!showLayoutMenu)}
-              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-extrabold rounded-lg flex items-center gap-1.5 shadow-xs cursor-pointer"
+              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-extrabold rounded-lg flex items-center gap-1.5 shadow-xs cursor-pointer whitespace-nowrap"
             >
-              <Plus size={14} /> Slide Layouts
+              <Plus size={14} /> {isTablet ? 'Layouts' : 'Slide Layouts'}
             </button>
 
             {showLayoutMenu && (
@@ -508,7 +638,7 @@ export default function PresentationApp() {
           </div>
 
           {/* Quick Insert Elements Buttons */}
-          <div className="h-5 w-px bg-slate-800 mx-1" />
+          <div className="h-5 w-px bg-slate-800 mx-1 shrink-0" />
 
           <button
             onClick={() =>
@@ -519,22 +649,22 @@ export default function PresentationApp() {
                 color: '#0f172a',
               })
             }
-            className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-lg border border-slate-700 flex items-center gap-1 cursor-pointer"
+            className="shrink-0 px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-lg border border-slate-700 flex items-center gap-1 cursor-pointer whitespace-nowrap"
           >
             <Type size={13} className="text-sky-400" /> Text
           </button>
 
           <button
             onClick={() => setShowInsertModal(true)}
-            className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-lg border border-slate-700 flex items-center gap-1 cursor-pointer"
+            className="shrink-0 px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-lg border border-slate-700 flex items-center gap-1 cursor-pointer whitespace-nowrap"
           >
-            <Square size={13} className="text-amber-400" /> Shapes & Charts...
+            <Square size={13} className="text-amber-400" /> {isTablet ? 'Shapes' : 'Shapes & Charts...'}
           </button>
 
           {/* Slide Transition Selector */}
-          <div className="h-5 w-px bg-slate-800 mx-1" />
+          <div className="h-5 w-px bg-slate-800 mx-1 shrink-0" />
 
-          <div className="flex items-center gap-1.5 text-xs">
+          <div className="flex items-center gap-1.5 text-xs shrink-0 whitespace-nowrap">
             <span className="text-slate-400 font-bold">Transition:</span>
             <select
               value={activeSlide.transition}
@@ -553,7 +683,7 @@ export default function PresentationApp() {
           </div>
 
           {/* Background Fill */}
-          <div className="flex items-center gap-1.5 text-xs ml-2">
+          <div className="flex items-center gap-1.5 text-xs ml-2 shrink-0 whitespace-nowrap">
             <span className="text-slate-400 font-bold">Bg Fill:</span>
             <input
               type="color"
@@ -569,8 +699,8 @@ export default function PresentationApp() {
 
         {/* Selected Element Quick Properties */}
         {selectedElementId && (
-          <div className="flex items-center gap-2 bg-slate-800/80 px-3 py-1 rounded-lg border border-slate-700 text-xs font-semibold text-slate-300">
-            <span className="text-blue-400 font-bold">Element Selected</span>
+          <div className="flex items-center gap-2 bg-slate-800/80 px-3 py-1 rounded-lg border border-slate-700 text-xs font-semibold text-slate-300 shrink-0 ml-2 whitespace-nowrap">
+            {!isTablet && <span className="text-blue-400 font-bold">Element Selected</span>}
             <button
               onClick={() => handleDeleteElement(selectedElementId)}
               className="hover:text-rose-400 p-1 cursor-pointer"
@@ -583,12 +713,41 @@ export default function PresentationApp() {
       </div>
 
       {/* ================= 3. MAIN WORKSPACE VIEWPORT ================= */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* LEFT SLIDES THUMBNAIL NAVIGATOR SIDEBAR */}
-        <div className="w-56 bg-slate-950 border-r border-slate-800 flex flex-col p-3 overflow-y-auto space-y-3 shrink-0 custom-scrollbar">
-          <span className="text-[10px] font-black uppercase text-slate-500 tracking-wider">
-            Slides Navigator ({deck.slides.length})
-          </span>
+      <div className="flex-1 flex overflow-hidden relative">
+        {/* Backdrop for the slide rail when it's a drawer, not an inline pane. */}
+        {isTablet && slidesNavOpen && (
+          <div
+            className="absolute inset-0 z-20 bg-black/40"
+            onClick={() => setSlidesNavOpen(false)}
+          />
+        )}
+
+        {/* LEFT SLIDES THUMBNAIL NAVIGATOR SIDEBAR — inline on wide windows;
+            below `isTablet` there isn't 224px to spare, so it becomes an
+            overlay drawer opened from the header's menu button instead. */}
+        <div
+          className={`w-56 bg-slate-950 border-r border-slate-800 flex-col p-3 overflow-y-auto space-y-3 shrink-0 custom-scrollbar ${
+            isTablet
+              ? slidesNavOpen
+                ? 'flex absolute inset-y-0 left-0 z-30 shadow-2xl'
+                : 'hidden'
+              : 'flex'
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-black uppercase text-slate-500 tracking-wider">
+              Slides Navigator ({deck.slides.length})
+            </span>
+            {isTablet && (
+              <button
+                onClick={() => setSlidesNavOpen(false)}
+                className="text-slate-400 hover:text-white p-1 cursor-pointer"
+                aria-label="Close slides navigator"
+              >
+                <X size={14} />
+              </button>
+            )}
+          </div>
 
           {deck.slides.map((s, idx) => {
             const isActive = s.id === activeSlideId;
@@ -598,6 +757,7 @@ export default function PresentationApp() {
                 onClick={() => {
                   setActiveSlideId(s.id);
                   setSelectedElementId(null);
+                  if (isTablet) setSlidesNavOpen(false);
                 }}
                 className={`p-2 rounded-xl border transition-all cursor-pointer flex flex-col gap-1.5 relative group ${
                   isActive
@@ -606,11 +766,17 @@ export default function PresentationApp() {
                 }`}
               >
                 {/* Slide Number Header */}
-                <div className="flex items-center justify-between text-[11px] font-bold text-slate-400">
-                  <span className={isActive ? 'text-blue-400 font-extrabold' : ''}>
+                <div className="flex items-center justify-between gap-1 text-[11px] font-bold text-slate-400">
+                  <span className={`truncate min-w-0 ${isActive ? 'text-blue-400 font-extrabold' : ''}`}>
                     {idx + 1}. {s.title}
                   </span>
-                  <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                  {/* Hover-revealed on a wide window; drawer mode is opened by
+                      a tap with no hover to reveal these, so they stay on. */}
+                  <div
+                    className={`flex items-center gap-0.5 transition-opacity shrink-0 ${
+                      isTablet ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                    }`}
+                  >
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -680,8 +846,13 @@ export default function PresentationApp() {
           })}
         </div>
 
-        {/* CENTER SLIDE CANVAS EDITOR */}
-        <div className="flex-1 bg-slate-900/60 p-8 flex flex-col items-center justify-center relative overflow-auto custom-scrollbar">
+        {/* CENTER SLIDE CANVAS EDITOR — the p-8 breathing room is the first
+            thing given back to the canvas once the window is tight. */}
+        <div
+          className={`flex-1 bg-slate-900/60 flex flex-col items-center justify-center relative overflow-auto custom-scrollbar ${
+            isMobile ? 'p-3' : isTablet ? 'p-5' : 'p-8'
+          }`}
+        >
           <div className="w-full max-w-4xl">
             <SlideCanvas
               slide={activeSlide}
@@ -693,8 +864,12 @@ export default function PresentationApp() {
           </div>
 
           {/* PRESENTER NOTES PANEL (BOTTOM OF EDITOR STAGE) */}
-          <div className="w-full max-w-4xl mt-6 bg-slate-950 border border-slate-800 rounded-2xl p-4 shadow-xl">
-            <div className="flex items-center justify-between mb-2">
+          <div className={`w-full max-w-4xl bg-slate-950 border border-slate-800 rounded-2xl p-4 shadow-xl ${isTablet ? 'mt-4' : 'mt-6'}`}>
+            <div
+              className={`flex mb-2 ${
+                isMobile ? 'flex-col items-start gap-0.5' : 'items-center justify-between'
+              }`}
+            >
               <div className="flex items-center gap-2 text-xs font-extrabold text-blue-400">
                 <FileText size={15} /> Speaker / Presenter Notes
               </div>
@@ -714,59 +889,73 @@ export default function PresentationApp() {
           </div>
         </div>
 
-        {/* RIGHT COMMENTS DRAWER */}
+        {/* RIGHT COMMENTS DRAWER — a side pane down to `isMobile`; below that
+            there's no room to squeeze the canvas further, so it becomes a
+            full overlay instead, same as the slide rail does above. */}
         {commentsDrawerOpen && (
-          <div className="w-80 bg-slate-950 border-l border-slate-800 flex flex-col font-sans shrink-0">
-            <div className="p-3 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
-              <div className="flex items-center gap-2 text-xs font-extrabold text-white">
-                <MessageCircle size={15} className="text-blue-400" />
-                <span>Slide Comments & Feedback</span>
-              </div>
-              <button
+          <>
+            {isMobile && (
+              <div
+                className="absolute inset-0 z-20 bg-black/40"
                 onClick={() => setCommentsDrawerOpen(false)}
-                className="text-slate-400 hover:text-white p-1"
-              >
-                <X size={15} />
-              </button>
-            </div>
-
-            <div className="flex-1 p-3 space-y-3 overflow-y-auto custom-scrollbar">
-              {activeSlide.comments.length === 0 ? (
-                <div className="text-center py-8 text-slate-500 text-xs font-medium">
-                  No comments on this slide yet.<br />Add a review note below!
-                </div>
-              ) : (
-                activeSlide.comments.map((c) => (
-                  <div key={c.id} className="p-3 bg-slate-900 border border-slate-800 rounded-xl space-y-1.5">
-                    <div className="flex items-center justify-between text-[11px]">
-                      <span className="font-extrabold text-blue-400">{c.author}</span>
-                      <span className="text-[10px] text-slate-500">{c.createdAt}</span>
-                    </div>
-                    <p className="text-xs text-slate-300 font-medium leading-relaxed">{c.text}</p>
-                  </div>
-                ))
-              )}
-            </div>
-
-            <div className="p-3 bg-slate-900 border-t border-slate-800 flex items-center gap-2">
-              <input
-                type="text"
-                value={commentInput}
-                onChange={(e) => setCommentInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleAddComment();
-                }}
-                placeholder="Write slide comment..."
-                className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium"
               />
-              <button
-                onClick={handleAddComment}
-                className="p-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg cursor-pointer"
-              >
-                <Send size={13} />
-              </button>
+            )}
+            <div
+              className={`bg-slate-950 border-l border-slate-800 flex flex-col font-sans shrink-0 ${
+                isMobile ? 'absolute inset-y-0 right-0 z-30 w-full max-w-xs shadow-2xl' : 'w-80'
+              }`}
+            >
+              <div className="p-3 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
+                <div className="flex items-center gap-2 text-xs font-extrabold text-white">
+                  <MessageCircle size={15} className="text-blue-400" />
+                  <span>Slide Comments & Feedback</span>
+                </div>
+                <button
+                  onClick={() => setCommentsDrawerOpen(false)}
+                  className="text-slate-400 hover:text-white p-1"
+                >
+                  <X size={15} />
+                </button>
+              </div>
+
+              <div className="flex-1 p-3 space-y-3 overflow-y-auto custom-scrollbar">
+                {activeSlide.comments.length === 0 ? (
+                  <div className="text-center py-8 text-slate-500 text-xs font-medium">
+                    No comments on this slide yet.<br />Add a review note below!
+                  </div>
+                ) : (
+                  activeSlide.comments.map((c) => (
+                    <div key={c.id} className="p-3 bg-slate-900 border border-slate-800 rounded-xl space-y-1.5">
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="font-extrabold text-blue-400">{c.author}</span>
+                        <span className="text-[10px] text-slate-500">{c.createdAt}</span>
+                      </div>
+                      <p className="text-xs text-slate-300 font-medium leading-relaxed">{c.text}</p>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <div className="p-3 bg-slate-900 border-t border-slate-800 flex items-center gap-2">
+                <input
+                  type="text"
+                  value={commentInput}
+                  onChange={(e) => setCommentInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleAddComment();
+                  }}
+                  placeholder="Write slide comment..."
+                  className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium"
+                />
+                <button
+                  onClick={handleAddComment}
+                  className="p-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg cursor-pointer"
+                >
+                  <Send size={13} />
+                </button>
+              </div>
             </div>
-          </div>
+          </>
         )}
       </div>
 

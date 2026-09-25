@@ -1,5 +1,6 @@
-import React, { useState, useRef } from 'react';
+import React, { useState } from 'react';
 import { Slide, SlideElement } from '../types';
+import { useContainerWidth } from '../../../platform/layout/useContainerWidth';
 import {
   BarChart2,
   TrendingUp,
@@ -36,7 +37,26 @@ export const SlideCanvas: React.FC<SlideCanvasProps> = ({
   onDeleteElement,
   isReadOnly = false,
 }) => {
-  const containerRef = useRef<HTMLDivElement>(null);
+  // Every element's `x`/`y`/`width`/`height` is already a percentage of the
+  // canvas, so it scales for free. `fontSize`, though, is authored as a flat
+  // pixel value — on a phone-width window where this same aspect-[16/9] box
+  // renders at a fraction of its normal size, an unscaled 36px title no
+  // longer fits the same 20%-height box it was designed for and spills text
+  // into the element below it.
+  //
+  // `REFERENCE_CANVAS_WIDTH` is deliberately at or below the *smaller* of
+  // this canvas's two real desktop widths — the editor's `max-w-4xl` (896px)
+  // and full-screen Presentation Mode's `max-w-5xl` (1024px) — with scale
+  // clamped to never exceed 1. That keeps this a no-op at both call sites'
+  // normal desktop size: only a canvas actually shrunk by a narrow window
+  // rescales text, matching every other compact-only change in this app.
+  const REFERENCE_CANVAS_WIDTH = 880;
+  const { ref: containerRef, width: canvasWidth } = useContainerWidth<HTMLDivElement>(
+    0,
+    REFERENCE_CANVAS_WIDTH
+  );
+  const fontScale =
+    canvasWidth >= REFERENCE_CANVAS_WIDTH ? 1 : Math.max(0.45, canvasWidth / REFERENCE_CANVAS_WIDTH);
 
   // Dragging state
   const [isDragging, setIsDragging] = useState<boolean>(false);
@@ -118,7 +138,10 @@ export const SlideCanvas: React.FC<SlideCanvasProps> = ({
               isSelected && !isReadOnly ? 'ring-2 ring-blue-500 shadow-lg' : 'hover:ring-1 hover:ring-blue-300'
             }`}
           >
-            {/* Action Bar for Selected Element */}
+            {/* Action Bar for Selected Element — deliberately a sibling of the
+                clipped content wrapper below, not a child of it: it renders
+                above the element via a negative top offset, and an
+                overflow-hidden ancestor would clip it into invisibility. */}
             {isSelected && !isReadOnly && (
               <div className="absolute -top-8 left-0 flex items-center gap-1 bg-slate-900 text-white px-2 py-0.5 rounded-md text-[10px] font-extrabold shadow-md z-30 pointer-events-auto">
                 <span className="capitalize">{el.type}</span>
@@ -135,6 +158,14 @@ export const SlideCanvas: React.FC<SlideCanvasProps> = ({
               </div>
             )}
 
+            {/* Content — clipped at this element's own box, not just the
+                outer canvas. Without this, a table (which won't shrink its
+                columns below their content's natural width) or an overlong
+                chart title renders at its natural size and only gets clipped
+                once it reaches the canvas edge — which is what "content
+                overflowing near the slide border" on a narrow canvas was:
+                each element's box was never enforcing its own bound. */}
+            <div className="w-full h-full overflow-hidden rounded-lg">
             {/* TEXT ELEMENT */}
             {el.type === 'text' && (
               <div
@@ -146,7 +177,7 @@ export const SlideCanvas: React.FC<SlideCanvasProps> = ({
                 }}
                 className="w-full h-full p-2 outline-none break-words flex flex-col justify-center font-sans"
                 style={{
-                  fontSize: `${el.fontSize || 16}px`,
+                  fontSize: `${(el.fontSize || 16) * fontScale}px`,
                   fontWeight: el.fontWeight || 'normal',
                   color: el.color || '#0f172a',
                   textAlign: el.align || 'left',
@@ -198,14 +229,19 @@ export const SlideCanvas: React.FC<SlideCanvasProps> = ({
 
             {/* CHART ELEMENT */}
             {el.type === 'chart' && (
-              <div className="w-full h-full bg-slate-900 rounded-xl p-3 text-white border border-slate-800 flex flex-col justify-between shadow-inner">
-                <span className="text-xs font-bold text-emerald-400 truncate">{el.chartTitle || 'Chart Analysis'}</span>
-                <div className="flex-1 flex items-end justify-around gap-2 pt-2 pb-1">
+              <div className="w-full h-full bg-slate-900 rounded-xl p-3 text-white border border-slate-800 flex flex-col justify-between shadow-inner min-w-0">
+                <span
+                  className="font-bold text-emerald-400 truncate block"
+                  style={{ fontSize: `${12 * fontScale}px` }}
+                >
+                  {el.chartTitle || 'Chart Analysis'}
+                </span>
+                <div className="flex-1 flex items-end justify-around gap-2 pt-2 pb-1 min-w-0">
                   {(el.chartData || []).map((d, idx) => {
                     const max = Math.max(...(el.chartData || []).map((i) => i.value), 1);
                     const pct = Math.min(100, Math.max(15, (d.value / max) * 100));
                     return (
-                      <div key={idx} className="flex-1 flex flex-col items-center h-full justify-end">
+                      <div key={idx} className="flex-1 min-w-0 flex flex-col items-center h-full justify-end">
                         <div
                           className="w-full rounded-t-sm transition-all duration-300"
                           style={{
@@ -213,7 +249,10 @@ export const SlideCanvas: React.FC<SlideCanvasProps> = ({
                             backgroundColor: d.color || '#3b82f6',
                           }}
                         />
-                        <span className="text-[9px] text-slate-400 font-bold truncate max-w-full mt-1">
+                        <span
+                          className="text-slate-400 font-bold truncate max-w-full mt-1 block"
+                          style={{ fontSize: `${9 * fontScale}px` }}
+                        >
                           {d.label}
                         </span>
                       </div>
@@ -223,16 +262,26 @@ export const SlideCanvas: React.FC<SlideCanvasProps> = ({
               </div>
             )}
 
-            {/* TABLE ELEMENT */}
+            {/* TABLE ELEMENT — `table-layout: fixed` makes the browser honor
+                the table's own width instead of growing to fit its cells'
+                natural (min-content) size, and `truncate` on each cell turns
+                a too-narrow column into an ellipsis instead of a table wider
+                than the box it's clipped by. */}
             {el.type === 'table' && (
-              <div className="w-full h-full bg-white rounded-xl border border-slate-300 overflow-hidden shadow-md text-xs font-sans">
-                <table className="w-full h-full border-collapse">
+              <div className="w-full h-full bg-white rounded-xl border border-slate-300 overflow-hidden shadow-md font-sans">
+                <table className="w-full h-full border-collapse table-fixed">
                   <tbody>
                     {(el.tableData || [[]]).map((row, rIdx) => (
                       <tr key={rIdx} className={rIdx === 0 ? 'bg-slate-800 text-white font-extrabold' : 'border-t border-slate-200 text-slate-800'}>
                         {row.map((cell, cIdx) => (
-                          <td key={cIdx} className="p-1.5 border-r border-slate-200 text-center text-[11px] font-semibold">
-                            {cell}
+                          <td
+                            key={cIdx}
+                            className="p-1.5 border-r border-slate-200 text-center font-semibold overflow-hidden"
+                            style={{ fontSize: `${11 * fontScale}px` }}
+                          >
+                            <span className="block truncate" title={cell}>
+                              {cell}
+                            </span>
                           </td>
                         ))}
                       </tr>
@@ -273,6 +322,7 @@ export const SlideCanvas: React.FC<SlideCanvasProps> = ({
                 <Sparkles className="w-full h-full" />
               </div>
             )}
+            </div>
           </div>
         );
       })}
