@@ -63,36 +63,34 @@ export const SlideCanvas: React.FC<SlideCanvasProps> = ({
   const [dragOffset, setDragOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
 
-  // Handle Drag Start
-  const handleMouseDown = (e: React.MouseEvent, el: SlideElement) => {
+  // Shared by the mouse and touch handlers below — a touch drag is the same
+  // arithmetic as a mouse drag, just fed from `Touch.clientX/Y` instead of
+  // `MouseEvent.clientX/Y`. Without the touch versions, dragging an element
+  // only ever worked with a mouse, which on a phone or tablet is every drag.
+  const beginDrag = (clientX: number, clientY: number, el: SlideElement) => {
     if (isReadOnly) return;
-    e.stopPropagation();
     onSelectElement(el.id);
     setActiveDragId(el.id);
     setIsDragging(true);
 
     if (containerRef.current) {
       const rect = containerRef.current.getBoundingClientRect();
-      const clickX = ((e.clientX - rect.left) / rect.width) * 100;
-      const clickY = ((e.clientY - rect.top) / rect.height) * 100;
-      setDragOffset({
-        x: clickX - el.x,
-        y: clickY - el.y,
-      });
+      const x = ((clientX - rect.left) / rect.width) * 100;
+      const y = ((clientY - rect.top) / rect.height) * 100;
+      setDragOffset({ x: x - el.x, y: y - el.y });
     }
   };
 
-  // Handle Mouse Move over Canvas
-  const handleMouseMove = (e: React.MouseEvent) => {
+  const updateDrag = (clientX: number, clientY: number) => {
     if (!isDragging || !activeDragId || !containerRef.current || isReadOnly) return;
     const rect = containerRef.current.getBoundingClientRect();
-    const mouseX = ((e.clientX - rect.left) / rect.width) * 100;
-    const mouseY = ((e.clientY - rect.top) / rect.height) * 100;
+    const x = ((clientX - rect.left) / rect.width) * 100;
+    const y = ((clientY - rect.top) / rect.height) * 100;
 
     const el = slide.elements.find((item) => item.id === activeDragId);
     if (el) {
-      const newX = Math.max(0, Math.min(100 - el.width, mouseX - dragOffset.x));
-      const newY = Math.max(0, Math.min(100 - el.height, mouseY - dragOffset.y));
+      const newX = Math.max(0, Math.min(100 - el.width, x - dragOffset.x));
+      const newY = Math.max(0, Math.min(100 - el.height, y - dragOffset.y));
       onUpdateElement({
         ...el,
         x: Math.round(newX * 10) / 10,
@@ -101,16 +99,37 @@ export const SlideCanvas: React.FC<SlideCanvasProps> = ({
     }
   };
 
-  const handleMouseUp = () => {
+  const endDrag = () => {
     setIsDragging(false);
     setActiveDragId(null);
+  };
+
+  const handleMouseDown = (e: React.MouseEvent, el: SlideElement) => {
+    e.stopPropagation();
+    beginDrag(e.clientX, e.clientY, el);
+  };
+  const handleMouseMove = (e: React.MouseEvent) => updateDrag(e.clientX, e.clientY);
+
+  const handleTouchStart = (e: React.TouchEvent, el: SlideElement) => {
+    e.stopPropagation();
+    const touch = e.touches[0];
+    if (!touch) return;
+    beginDrag(touch.clientX, touch.clientY, el);
+  };
+  const handleTouchMove = (e: React.TouchEvent) => {
+    const touch = e.touches[0];
+    if (!touch) return;
+    updateDrag(touch.clientX, touch.clientY);
   };
 
   return (
     <div
       ref={containerRef}
       onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
+      onMouseUp={endDrag}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={endDrag}
+      onTouchCancel={endDrag}
       onClick={() => onSelectElement(null)}
       className="relative w-full aspect-[16/9] shadow-2xl rounded-2xl overflow-hidden select-none border border-slate-300 transition-all font-sans"
       style={{ backgroundColor: slide.bgColor || '#ffffff' }}
@@ -126,6 +145,7 @@ export const SlideCanvas: React.FC<SlideCanvasProps> = ({
           <div
             key={el.id}
             onMouseDown={(e) => handleMouseDown(e, el)}
+            onTouchStart={(e) => handleTouchStart(e, el)}
             style={{
               position: 'absolute',
               left: `${el.x}%`,
@@ -133,6 +153,10 @@ export const SlideCanvas: React.FC<SlideCanvasProps> = ({
               width: `${el.width}%`,
               height: `${el.height}%`,
               zIndex: el.zIndex || 1,
+              // Without this, a drag-start touch on the element is also
+              // interpreted as a pan/scroll gesture by the browser, so the
+              // canvas scrolls instead of (or as well as) the element moving.
+              touchAction: isReadOnly ? undefined : 'none',
             }}
             className={`group rounded-lg transition-shadow relative ${
               isSelected && !isReadOnly ? 'ring-2 ring-blue-500 shadow-lg' : 'hover:ring-1 hover:ring-blue-300'
