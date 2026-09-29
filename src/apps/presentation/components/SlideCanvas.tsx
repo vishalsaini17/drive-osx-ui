@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Slide, SlideElement } from '../types';
+import { PageSize, Slide, SlideElement } from '../types';
+import { aspectRatioFor } from '../format';
 import { useContainerWidth } from '../../../platform/layout/useContainerWidth';
 import {
   BarChart2,
@@ -27,6 +28,21 @@ interface SlideCanvasProps {
   onUpdateElement: (updated: SlideElement) => void;
   onDeleteElement: (id: string) => void;
   isReadOnly?: boolean;
+  /**
+   * Floor under how far `fontScale` shrinks, as a fraction of full size.
+   * The default (0.45) exists so the real editing canvas stays *readable*
+   * once a window gets genuinely narrow — but that same floor is wrong for
+   * the sidebar's slide-navigator thumbnails (index.tsx), which reuse this
+   * component read-only at ~1/4 the reference width purely for a proportional
+   * miniature, the same way Google Slides' own thumbnail rail looks: text
+   * that's small and roughly right, not artificially inflated past what
+   * would actually fit. Callers rendering a true miniature pass `0` here.
+   */
+  minFontScale?: number;
+  /** File > Page setup… (index.tsx) — defaults to the deck's own long-time
+   * implicit ratio so a deck saved before this existed still renders the
+   * same as before. */
+  pageSize?: PageSize;
 }
 
 export const SlideCanvas: React.FC<SlideCanvasProps> = ({
@@ -36,6 +52,8 @@ export const SlideCanvas: React.FC<SlideCanvasProps> = ({
   onUpdateElement,
   onDeleteElement,
   isReadOnly = false,
+  minFontScale = 0.45,
+  pageSize = '16:9',
 }) => {
   // Every element's `x`/`y`/`width`/`height` is already a percentage of the
   // canvas, so it scales for free. `fontSize`, though, is authored as a flat
@@ -56,7 +74,7 @@ export const SlideCanvas: React.FC<SlideCanvasProps> = ({
     REFERENCE_CANVAS_WIDTH
   );
   const fontScale =
-    canvasWidth >= REFERENCE_CANVAS_WIDTH ? 1 : Math.max(0.45, canvasWidth / REFERENCE_CANVAS_WIDTH);
+    canvasWidth >= REFERENCE_CANVAS_WIDTH ? 1 : Math.max(minFontScale, canvasWidth / REFERENCE_CANVAS_WIDTH);
 
   // Dragging state
   const [isDragging, setIsDragging] = useState<boolean>(false);
@@ -131,8 +149,8 @@ export const SlideCanvas: React.FC<SlideCanvasProps> = ({
       onTouchEnd={endDrag}
       onTouchCancel={endDrag}
       onClick={() => onSelectElement(null)}
-      className="relative w-full aspect-[16/9] shadow-2xl rounded-2xl overflow-hidden select-none border border-slate-300 transition-all font-sans"
-      style={{ backgroundColor: slide.bgColor || '#ffffff' }}
+      className="relative w-full shadow-2xl rounded-2xl overflow-hidden select-none border border-slate-300 transition-all font-sans"
+      style={{ backgroundColor: slide.bgColor || '#ffffff', aspectRatio: aspectRatioFor(pageSize) }}
     >
       {/* Slide Canvas Grid background subtle overlay */}
       <div className="absolute inset-0 bg-[radial-gradient(#e2e8f0_1px,transparent_1px)] [background-size:16px_16px] opacity-30 pointer-events-none" />
@@ -146,6 +164,16 @@ export const SlideCanvas: React.FC<SlideCanvasProps> = ({
             key={el.id}
             onMouseDown={(e) => handleMouseDown(e, el)}
             onTouchStart={(e) => handleTouchStart(e, el)}
+            // `mousedown` stopping propagation (in `handleMouseDown`) doesn't
+            // stop the `click` event the browser fires on mouseup — that's a
+            // separate event, dispatched on whatever element the pointer is
+            // over when the button is released, and it still bubbles to the
+            // canvas's own `onClick={() => onSelectElement(null)}` below.
+            // Without this, the element selects correctly on mousedown and
+            // then immediately deselects the instant the mouse button is
+            // released — selection only ever "held" for as long as the
+            // button stayed down.
+            onClick={(e) => e.stopPropagation()}
             style={{
               position: 'absolute',
               left: `${el.x}%`,

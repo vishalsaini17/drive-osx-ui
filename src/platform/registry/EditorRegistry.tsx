@@ -1,5 +1,6 @@
 import { AppManifest } from './AppRegistry';
 import { BOOK_MIME_TYPE } from '../documents/book/bookFormat';
+import { PRESENTATION_MIME_TYPE } from '../../apps/presentation/format';
 
 export interface EditorMapping {
   appId: string;
@@ -35,8 +36,17 @@ export const EDITOR_REGISTRY: EditorMapping[] = [
   },
   {
     appId: 'presentation',
-    mimeTypes: ['application/vnd.ms-powerpoint', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
-    extensions: ['ppt', 'pptx'],
+    // `.deck`/`PRESENTATION_MIME_TYPE` is this app's own native format
+    // (apps/presentation/format.ts) — same reasoning as `.book` below:
+    // without it registered here, a deck saved through the app has no
+    // mapping back to it, and double-clicking one in File Explorer falls
+    // through to a dead end instead of reopening it.
+    mimeTypes: [
+      PRESENTATION_MIME_TYPE,
+      'application/vnd.ms-powerpoint',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    ],
+    extensions: ['deck', 'ppt', 'pptx'],
     label: 'Presentation',
   },
   {

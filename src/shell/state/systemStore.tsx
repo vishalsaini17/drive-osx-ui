@@ -111,6 +111,20 @@ interface SystemState {
    */
   pendingWordbookFiles: Record<string, { fileId: string; name: string; folderId: string | null }>;
   /**
+   * The `.deck` presentation file requested into the primary Presentation
+   * window on next load, mirroring `wordbookFileId` above.
+   */
+  presentationFileId: string | null;
+  presentationFileName: string | null;
+  presentationCurrentFolderId: string | null;
+  /**
+   * Files requested into a brand-new Presentation window (`forceNewWindow`),
+   * keyed by that window's own unique id — same pattern as
+   * `pendingWordbookFiles`, consumed once on mount via
+   * `consumePendingPresentationFile`.
+   */
+  pendingPresentationFiles: Record<string, { fileId: string; name: string; folderId: string | null }>;
+  /**
    * A File Manager window opened as a picker (`requestFilePick`) reads its own
    * entry once, on mount, via `consumeFilePickerRequest` — keyed by that
    * picker window's own unique id, same pattern as `pendingEditorWindowFiles`.
@@ -226,6 +240,11 @@ interface SystemState {
   openBookFileInNewWordbookWindow: (fileId: string, name: string, folderId?: string | null) => string;
   /** Reads and clears one window's pending file request (see `pendingWordbookFiles`). */
   consumePendingWordbookFile: (windowId: string) => { fileId: string; name: string; folderId: string | null } | null;
+  openPresentationFileInViewer: (fileId: string, name: string, folderId?: string | null) => void;
+  /** Always opens a fresh Presentation window for this file, never the one already showing something else. Returns that window's id. */
+  openPresentationFileInNewViewerWindow: (fileId: string, name: string, folderId?: string | null) => string;
+  /** Reads and clears one window's pending file request (see `pendingPresentationFiles`). */
+  consumePendingPresentationFile: (windowId: string) => { fileId: string; name: string; folderId: string | null } | null;
   /** Opens a fresh File Manager window in picker mode for `requesterWindowId`. Returns the picker window's id. */
   requestFilePick: (requesterWindowId: string, mode: 'file' | 'folder') => string;
   /** Reads and clears one picker window's request (see `pendingFilePickerRequests`). */
@@ -392,6 +411,10 @@ export const useSystemStore = create<SystemState>((set, get) => ({
   wordbookFileName: null,
   wordbookCurrentFolderId: null,
   pendingWordbookFiles: {},
+  presentationFileId: null,
+  presentationFileName: null,
+  presentationCurrentFolderId: null,
+  pendingPresentationFiles: {},
   pendingFilePickerRequests: {},
   filePickerResults: {},
   fileManagerCurrentFolderId: null,
@@ -972,12 +995,14 @@ export const useSystemStore = create<SystemState>((set, get) => ({
         const { [id]: _removedPending, ...restPending } = state.pendingEditorWindowFiles;
         const { [id]: _removedPendingPdf, ...restPendingPdf } = state.pendingPdfViewerFiles;
         const { [id]: _removedPendingBook, ...restPendingBook } = state.pendingWordbookFiles;
+        const { [id]: _removedPendingDeck, ...restPendingDeck } = state.pendingPresentationFiles;
         const { [id]: _removedPickerRequest, ...restPickerRequests } = state.pendingFilePickerRequests;
         rest = {
           rememberedGeometry: restGeometry,
           pendingEditorWindowFiles: restPending,
           pendingPdfViewerFiles: restPendingPdf,
           pendingWordbookFiles: restPendingBook,
+          pendingPresentationFiles: restPendingDeck,
           pendingFilePickerRequests: restPickerRequests,
         };
       }
@@ -1290,6 +1315,37 @@ export const useSystemStore = create<SystemState>((set, get) => ({
       set((state) => {
         const { [windowId]: _consumed, ...rest } = state.pendingWordbookFiles;
         return { pendingWordbookFiles: rest };
+      });
+    }
+    return pending;
+  },
+
+  openPresentationFileInViewer: (fileId, name, folderId) => {
+    set({
+      presentationFileId: fileId,
+      presentationFileName: name,
+      presentationCurrentFolderId: folderId || null,
+    });
+    get().openAppWindow('presentation');
+  },
+
+  openPresentationFileInNewViewerWindow: (fileId, name, folderId) => {
+    const windowId = get().openAppWindow('presentation', { forceNewWindow: true });
+    set((state) => ({
+      pendingPresentationFiles: {
+        ...state.pendingPresentationFiles,
+        [windowId]: { fileId, name, folderId: folderId || null },
+      },
+    }));
+    return windowId;
+  },
+
+  consumePendingPresentationFile: (windowId) => {
+    const pending = get().pendingPresentationFiles[windowId] ?? null;
+    if (pending) {
+      set((state) => {
+        const { [windowId]: _consumed, ...rest } = state.pendingPresentationFiles;
+        return { pendingPresentationFiles: rest };
       });
     }
     return pending;

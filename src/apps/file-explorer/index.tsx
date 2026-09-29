@@ -190,6 +190,8 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
   const openPdfFileInNewViewerWindow = useSystemStore((state) => state.openPdfFileInNewViewerWindow);
   const openBookFileInWordbook = useSystemStore((state) => state.openBookFileInWordbook);
   const openBookFileInNewWordbookWindow = useSystemStore((state) => state.openBookFileInNewWordbookWindow);
+  const openPresentationFileInViewer = useSystemStore((state) => state.openPresentationFileInViewer);
+  const openPresentationFileInNewViewerWindow = useSystemStore((state) => state.openPresentationFileInNewViewerWindow);
   const consumeFilePickerRequest = useSystemStore((state) => state.consumeFilePickerRequest);
   const resolveFilePicker = useSystemStore((state) => state.resolveFilePicker);
   const handleCloseWindow = useSystemStore((state) => state.handleCloseWindow);
@@ -2588,6 +2590,14 @@ export default function FileManager({ windowId = 'fileManager' }: { windowId?: s
         openBookFileInNewWordbookWindow(item.id, item.name, currentFolderId);
       } else {
         openBookFileInWordbook(item.id, item.name, currentFolderId);
+      }
+    } else if (appKey === 'presentation') {
+      // Presentation fetches the file's own content itself (FileService.getFile)
+      // once it loads, same reasoning as wordbook above.
+      if (forceNewWindow) {
+        openPresentationFileInNewViewerWindow(item.id, item.name, currentFolderId);
+      } else {
+        openPresentationFileInViewer(item.id, item.name, currentFolderId);
       }
     } else if (appKey === 'image-viewer' || appKey === 'audio-player' || appKey === 'video-player' || appKey === 'code-viewer') {
       setActivePreviewItem(item);

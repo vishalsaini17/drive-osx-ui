@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Slide } from '../types';
+import { PageSize, Slide } from '../types';
 import {
   X,
   ChevronLeft,
@@ -20,12 +20,14 @@ interface PresentationModeProps {
   slides: Slide[];
   initialSlideIndex?: number;
   onClose: () => void;
+  pageSize?: PageSize;
 }
 
 export const PresentationMode: React.FC<PresentationModeProps> = ({
   slides,
   initialSlideIndex = 0,
   onClose,
+  pageSize,
 }) => {
   const [currentIndex, setCurrentIndex] = useState<number>(initialSlideIndex);
   const [showNotes, setShowNotes] = useState<boolean>(false);
@@ -216,6 +218,7 @@ export const PresentationMode: React.FC<PresentationModeProps> = ({
             onUpdateElement={() => {}}
             onDeleteElement={() => {}}
             isReadOnly={true}
+            pageSize={pageSize}
           />
         </div>
 
