@@ -19,7 +19,7 @@ const WEIGHT_UNITS: UnitDefinition[] = [
   { id: "kg", name: "Kilograms", symbol: "kg", ratioToBase: 1 },
   { id: "g", name: "Grams", symbol: "g", ratioToBase: 0.001 },
   { id: "mg", name: "Milligrams", symbol: "mg", ratioToBase: 0.000001 },
-  { id: "lb", name: "Pounds", symbol: "lb", ratioToBase: 0.45359237 },
+  { id: "lb", name: "Pounds", symbol: "lb", ratioToBase: 0.45359237 }, 
   { id: "oz", name: "Ounces", symbol: "oz", ratioToBase: 0.028349523125 },
   { id: "t", name: "Metric Tons", symbol: "t", ratioToBase: 1000 },
   { id: "st", name: "Stones", symbol: "st", ratioToBase: 6.35029 },
@@ -326,21 +326,19 @@ export default function UnitConverter() {
           </button>
         ))}
       </div> */}
+      {/* Below the 620px isCompact threshold there isn't room for six labels
+          on one row (the app's window can go down to 440px), so the bar
+          wraps into a 3x2 grid instead of squeezing or truncating tabs. */}
       <div
-        className="
-    flex items-center gap-1.5
-    p-1.5
-    bg-zinc-100 dark:bg-zinc-800/60
-    rounded-2xl
-    border border-zinc-200 dark:border-zinc-800
-    text-xs
-  "
+        className={`${
+          isCompact ? "grid grid-cols-3" : "flex items-center"
+        } gap-1.5 p-1.5 bg-zinc-100 dark:bg-zinc-800/60 rounded-2xl border border-zinc-200 dark:border-zinc-800 text-xs`}
       >
         {CATEGORIES.filter((item) => item.id !== "encryption").map((item) => (
           <button
             key={item.id}
             onClick={() => handleCategoryChange(item.id)}
-            className={`flex-1 py-2 px-2 rounded-xl font-bold cursor-pointer transition-all text-center whitespace-nowrap ${
+            className={`${isCompact ? "" : "flex-1 whitespace-nowrap"} py-2 px-2 rounded-xl font-bold cursor-pointer transition-all text-center ${
               category === item.id
                 ? "bg-purple-600 text-white shadow-xs"
                 : "text-zinc-600 dark:text-zinc-300 hover:bg-zinc-200/60 dark:hover:bg-zinc-700/50"
@@ -350,17 +348,19 @@ export default function UnitConverter() {
           </button>
         ))}
 
-        <div className="w-px h-7 bg-zinc-300 dark:bg-zinc-700 mx-1 shrink-0" />
+        {!isCompact && (
+          <div className="w-px h-7 bg-zinc-300 dark:bg-zinc-700 mx-1 shrink-0" />
+        )}
 
         <button
           onClick={() => handleCategoryChange("encryption")}
-          className={`flex-1 py-2 px-2 rounded-xl font-bold cursor-pointer transition-all text-center whitespace-nowrap ${
+          className={`${isCompact ? "" : "flex-1 whitespace-nowrap"} py-2 px-2 rounded-xl font-bold cursor-pointer transition-all text-center ${
             category === "encryption"
               ? "bg-purple-600 text-white shadow-xs"
               : "text-zinc-600 dark:text-zinc-300 hover:bg-zinc-200/60 dark:hover:bg-zinc-700/50"
           }`}
         >
-          Encrypt / Decrypt
+          {isCompact ? "Encrypt" : "Encrypt / Decrypt"}
         </button>
       </div>
 

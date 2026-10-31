@@ -6,6 +6,12 @@ export type ShapeType = 'rectangle' | 'circle' | 'arrow' | 'star' | 'triangle' |
 
 export type ChartType = 'bar' | 'line' | 'pie';
 
+/** Slide dimensions (File > Page setup…), same three presets Google Slides
+ * offers minus "Custom" — every slide in a deck shares one, since per-slide
+ * aspect ratio would make the thumbnail rail and Presentation Mode's own
+ * layout ambiguous. */
+export type PageSize = '4:3' | '16:9' | '16:10';
+
 export interface SlideElement {
   id: string;
   type: 'text' | 'image' | 'video' | 'table' | 'chart' | 'shape' | 'icon';
@@ -73,6 +79,7 @@ export interface PresentationDeck {
   id: string;
   title: string;
   theme: 'modern-dark' | 'clean-light' | 'emerald-glass' | 'sunset-gradient';
+  pageSize: PageSize;
   slides: Slide[];
 }
 

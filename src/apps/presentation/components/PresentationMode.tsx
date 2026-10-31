@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Slide } from '../types';
+import { PageSize, Slide } from '../types';
 import {
   X,
   ChevronLeft,
@@ -14,17 +14,20 @@ import {
   Tv,
 } from 'lucide-react';
 import { SlideCanvas } from './SlideCanvas';
+import { useContainerWidth } from '../../../platform/layout/useContainerWidth';
 
 interface PresentationModeProps {
   slides: Slide[];
   initialSlideIndex?: number;
   onClose: () => void;
+  pageSize?: PageSize;
 }
 
 export const PresentationMode: React.FC<PresentationModeProps> = ({
   slides,
   initialSlideIndex = 0,
   onClose,
+  pageSize,
 }) => {
   const [currentIndex, setCurrentIndex] = useState<number>(initialSlideIndex);
   const [showNotes, setShowNotes] = useState<boolean>(false);
@@ -36,6 +39,14 @@ export const PresentationMode: React.FC<PresentationModeProps> = ({
   const [isTimerRunning, setIsTimerRunning] = useState<boolean>(true);
 
   const currentSlide = slides[currentIndex] || slides[0];
+
+  // This overlay fills whatever the app window actually is — which on a
+  // narrow window (or a phone, where the shell forces the window to fill the
+  // real screen below its own mobile breakpoint) can be well under the width
+  // the fixed w-96 notes panel below assumed. Same container-width approach
+  // as the editor behind it, not the browser viewport.
+  const { ref: rootRef, width } = useContainerWidth<HTMLDivElement>(0, 1024);
+  const isCompact = width < 760;
 
   // Timer Interval
   useEffect(() => {
@@ -93,6 +104,7 @@ export const PresentationMode: React.FC<PresentationModeProps> = ({
 
   return (
     <div
+      ref={rootRef}
       onMouseMove={handleMouseMove}
       className="fixed inset-0 z-50 bg-slate-950 text-white flex flex-col font-sans overflow-hidden select-none"
     >
@@ -105,23 +117,32 @@ export const PresentationMode: React.FC<PresentationModeProps> = ({
       )}
 
       {/* Top Controls Overlay */}
-      <div className="bg-slate-900/90 backdrop-blur-md px-6 py-3 border-b border-slate-800 flex items-center justify-between shrink-0 z-30">
-        <div className="flex items-center gap-3">
-          <div className="p-1.5 bg-blue-600 rounded-lg text-white">
+      <div
+        className={`bg-slate-900/90 backdrop-blur-md py-3 border-b border-slate-800 flex items-center justify-between gap-2 shrink-0 z-30 ${
+          isCompact ? 'px-3' : 'px-6'
+        }`}
+      >
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="p-1.5 bg-blue-600 rounded-lg text-white shrink-0">
             <Tv size={18} />
           </div>
-          <div>
-            <h3 className="font-black text-sm text-white tracking-wide">{currentSlide.title}</h3>
-            <span className="text-[11px] text-slate-400 font-semibold">
+          <div className="min-w-0">
+            <h3 className="font-black text-sm text-white tracking-wide truncate">{currentSlide.title}</h3>
+            <span className="text-[11px] text-slate-400 font-semibold whitespace-nowrap">
               Slide {currentIndex + 1} of {slides.length}
             </span>
           </div>
         </div>
 
-        {/* Presenter Utilities */}
-        <div className="flex items-center gap-3">
+        {/* Presenter Utilities — labels drop below `isCompact` so this row
+            keeps up with the slide title chip instead of wrapping onto it. */}
+        <div className={`flex items-center shrink-0 ${isCompact ? 'gap-1.5' : 'gap-3'}`}>
           {/* Timer Widget */}
-          <div className="flex items-center gap-2 bg-slate-800/80 px-3 py-1.5 rounded-xl border border-slate-700 text-xs font-mono font-bold">
+          <div
+            className={`flex items-center gap-2 bg-slate-800/80 py-1.5 rounded-xl border border-slate-700 text-xs font-mono font-bold ${
+              isCompact ? 'px-2' : 'px-3'
+            }`}
+          >
             <Clock size={14} className="text-emerald-400" />
             <span>{formatTime(seconds)}</span>
             <button
@@ -142,39 +163,52 @@ export const PresentationMode: React.FC<PresentationModeProps> = ({
           {/* Laser Pointer Toggle */}
           <button
             onClick={() => setIsLaserPointerActive(!isLaserPointerActive)}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 border ${
+            className={`py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 border ${
+              isCompact ? 'px-2.5' : 'px-3'
+            } ${
               isLaserPointerActive
                 ? 'bg-rose-600 text-white border-rose-500 shadow-md shadow-rose-900/50'
                 : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
             }`}
+            title="Laser Pointer"
           >
-            <MousePointer size={14} /> Laser Pointer
+            <MousePointer size={14} /> {!isCompact && 'Laser Pointer'}
           </button>
 
           {/* Speaker Notes Toggle */}
           <button
             onClick={() => setShowNotes(!showNotes)}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 border ${
+            className={`py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 border ${
+              isCompact ? 'px-2.5' : 'px-3'
+            } ${
               showNotes
                 ? 'bg-blue-600 text-white border-blue-500 shadow-md'
                 : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
             }`}
+            title="Presenter Notes"
           >
-            <FileText size={14} /> Presenter Notes
+            <FileText size={14} /> {!isCompact && 'Presenter Notes'}
           </button>
 
           {/* Exit Fullscreen Presentation */}
           <button
             onClick={onClose}
-            className="px-3.5 py-1.5 bg-rose-600/80 hover:bg-rose-600 text-white rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shadow-md"
+            className={`py-1.5 bg-rose-600/80 hover:bg-rose-600 text-white rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shadow-md ${
+              isCompact ? 'px-2.5' : 'px-3.5'
+            }`}
+            title="Exit (Esc)"
           >
-            <X size={14} /> Exit (Esc)
+            <X size={14} /> {!isCompact && 'Exit (Esc)'}
           </button>
         </div>
       </div>
 
       {/* Main Presentation Viewport & Speaker Notes Split */}
-      <div className="flex-1 flex items-center justify-center relative p-8 overflow-hidden">
+      <div
+        className={`flex-1 flex items-center justify-center relative overflow-hidden ${
+          isCompact ? 'p-3' : 'p-8'
+        }`}
+      >
         {/* Slide Canvas Wrapper with Transition */}
         <div className={`w-full max-w-5xl ${getTransitionClass(currentSlide.transition)}`}>
           <SlideCanvas
@@ -184,12 +218,19 @@ export const PresentationMode: React.FC<PresentationModeProps> = ({
             onUpdateElement={() => {}}
             onDeleteElement={() => {}}
             isReadOnly={true}
+            pageSize={pageSize}
           />
         </div>
 
-        {/* Presenter Notes Drawer Overlay */}
+        {/* Presenter Notes Drawer Overlay — a right-hand panel on a wide
+            window; on `isCompact` a w-96 (384px) panel would run off the edge
+            of a phone-width screen, so it becomes a bottom sheet instead. */}
         {showNotes && (
-          <div className="absolute right-6 bottom-6 top-6 w-96 bg-slate-900/95 border border-slate-800 rounded-2xl shadow-2xl backdrop-blur-md p-5 flex flex-col z-40">
+          <div
+            className={`bg-slate-900/95 border border-slate-800 rounded-2xl shadow-2xl backdrop-blur-md p-5 flex flex-col z-40 ${
+              isCompact ? 'absolute inset-x-3 bottom-3 top-1/2' : 'absolute right-6 bottom-6 top-6 w-96'
+            }`}
+          >
             <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-3">
               <div className="flex items-center gap-2">
                 <FileText size={16} className="text-blue-400" />
@@ -210,8 +251,12 @@ export const PresentationMode: React.FC<PresentationModeProps> = ({
       </div>
 
       {/* Bottom Floating Slideshow Navigator */}
-      <div className="bg-slate-900/90 backdrop-blur-md px-6 py-3 border-t border-slate-800 flex items-center justify-between shrink-0 z-30">
-        <div className="flex items-center gap-2">
+      <div
+        className={`bg-slate-900/90 backdrop-blur-md py-3 border-t border-slate-800 flex items-center justify-between gap-2 shrink-0 z-30 ${
+          isCompact ? 'px-3' : 'px-6'
+        }`}
+      >
+        <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={() => setCurrentIndex((prev) => Math.max(0, prev - 1))}
             disabled={currentIndex === 0}
@@ -223,30 +268,35 @@ export const PresentationMode: React.FC<PresentationModeProps> = ({
           <button
             onClick={() => setCurrentIndex((prev) => Math.min(slides.length - 1, prev + 1))}
             disabled={currentIndex === slides.length - 1}
-            className="p-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white rounded-xl cursor-pointer transition-colors flex items-center gap-1.5 text-xs font-bold px-4"
+            className={`p-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white rounded-xl cursor-pointer transition-colors flex items-center gap-1.5 text-xs font-bold ${
+              isCompact ? 'px-2.5' : 'px-4'
+            }`}
             title="Next Slide (Right Arrow / Space)"
           >
-            <span>Next</span>
+            {!isCompact && <span>Next</span>}
             <ChevronRight size={18} />
           </button>
         </div>
 
         {/* Thumbnail Dots Bar */}
-        <div className="flex items-center gap-1.5 overflow-x-auto max-w-md px-2">
+        <div className="flex items-center gap-1.5 overflow-x-auto min-w-0 max-w-md px-2">
           {slides.map((s, idx) => (
             <button
               key={s.id}
               onClick={() => setCurrentIndex(idx)}
-              className={`h-2 rounded-full transition-all cursor-pointer ${
+              className={`shrink-0 h-2 rounded-full transition-all cursor-pointer ${
                 idx === currentIndex ? 'w-8 bg-blue-500' : 'w-2 bg-slate-700 hover:bg-slate-500'
               }`}
             />
           ))}
         </div>
 
-        <span className="text-xs font-extrabold text-slate-400">
-          Use ← → Arrow Keys to navigate
-        </span>
+        {/* Decorative hint — the first thing dropped once space is tight. */}
+        {!isCompact && (
+          <span className="text-xs font-extrabold text-slate-400 shrink-0">
+            Use ← → Arrow Keys to navigate
+          </span>
+        )}
       </div>
     </div>
   );
